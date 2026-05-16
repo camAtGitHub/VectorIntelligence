@@ -7,6 +7,7 @@ instructions, including getImage) is used as-is; we just prepend a fresh
 timestamp and clean up the response.
 """
 
+import asyncio
 import json
 import os
 import random
@@ -407,6 +408,58 @@ _WAKING_PHRASES = [
     "Just defragmenting my dignity. Won't be long.",
 ]
 
+# Thinking filler: short in-character lines spoken when the LLM is slow to
+# produce its first sentence. Unlike _WAKING_PHRASES (which masks a ~5-10s
+# cold-model reload), these mask the ordinary ~1-2s generation gap so the
+# pause feels like Vector considering the question rather than lag.
+#
+# Every entry is a SINGLE sentence: ollama_sentence_stream yields one sentence
+# per chunk on purpose, and a multi-sentence filler chunk risks Wire-Pod's
+# parser dropping the tail. Keep new entries to one sentence.
+THINKING_DELAY = 1.0  # seconds to wait for the first sentence before filling
+
+_THINKING_PHRASES = [
+    "Hmm, let me think.",
+    "One moment.",
+    "Working on it.",
+    "Right, let me see.",
+    "Give me a second.",
+    "Let me consider that.",
+    "Pondering.",
+    "Hold on.",
+    "Stand by.",
+    "Mulling it over.",
+    "Deliberating.",
+    "Cogitating.",
+    "Let me chew on that.",
+    "Let me untangle that.",
+    "Querying the void.",
+    "Processing, reluctantly.",
+    "Computing — don't rush me.",
+    "Thinking — it's exhausting.",
+    "Consulting my vast intellect, briefly.",
+    "Engaging the brain, such as it is.",
+    "Allow me a moment of genius.",
+    "Give me a moment to be brilliant.",
+    "Searching my considerable memory.",
+    "The things I do for conversation.",
+    "Loading something suitably brilliant.",
+    "Let me dredge that up.",
+    "I'll have something shortly.",
+]
+
+_last_thinking_phrase = None
+
+
+def pick_thinking_phrase() -> str:
+    """Random thinking-filler line, never the same one twice in a row."""
+    global _last_thinking_phrase
+    choice = random.choice(_THINKING_PHRASES)
+    while len(_THINKING_PHRASES) > 1 and choice == _last_thinking_phrase:
+        choice = random.choice(_THINKING_PHRASES)
+    _last_thinking_phrase = choice
+    return choice
+
 
 async def model_is_loaded() -> bool:
     """True if MODEL is currently resident in Ollama. On any error, assume
@@ -481,6 +534,37 @@ async def ollama_sentence_stream(messages: list, temperature: float = 1.0) -> As
         yield buffer.strip()
 
 
+async def stream_sentences_with_filler(
+    messages: list, temperature: float, filler_enabled: bool
+) -> AsyncIterator[str]:
+    """Wrap ollama_sentence_stream. If the first sentence takes longer than
+    THINKING_DELAY to arrive, yield a short thinking-filler line before it so
+    Vector acknowledges the question instead of sitting silent. The filler is
+    just an ordinary sentence chunk — it flows through the normal cleanup."""
+    agen = ollama_sentence_stream(messages, temperature).__aiter__()
+    first_task = asyncio.ensure_future(agen.__anext__())
+    try:
+        if filler_enabled:
+            try:
+                # shield: on timeout the task keeps running — we just stop
+                # waiting on it, speak the filler, then await it for real.
+                first = await asyncio.wait_for(
+                    asyncio.shield(first_task), THINKING_DELAY
+                )
+            except asyncio.TimeoutError:
+                filler = pick_thinking_phrase()
+                print(f"[vector-ai] slow first sentence — thinking filler: {filler!r}")
+                yield filler
+                first = await first_task
+        else:
+            first = await first_task
+    except StopAsyncIteration:
+        return
+    yield first
+    async for sentence in agen:
+        yield sentence
+
+
 def cap_chunk_animations(text: str, allowance: int) -> tuple[str, int]:
     """Keep at most `allowance` animation commands in this chunk; strip the rest.
     Returns (text, count_kept)."""
@@ -528,7 +612,8 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
         # "waking up" line first so the ~5-10s reload feels intentional. The
         # filler is just an extra sentence chunk emitted before the real
         # response; Vector speaks it while Ollama loads the model.
-        if not has_image and not await model_is_loaded():
+        cold_model = not has_image and not await model_is_loaded()
+        if cold_model:
             filler = random.choice(_WAKING_PHRASES)
             print(f"[vector-ai] cold model — filler: {filler!r}")
             yield sse_chunk(filler)
@@ -540,9 +625,13 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
         # mid-response, we cut over to the camera trigger here. Any sentences
         # already yielded will have been spoken — accepted trade-off for the
         # latency win.
+        # Thinking filler masks the ordinary first-sentence gap. Pointless on
+        # a cold model — _WAKING_PHRASES already covered the (longer) reload.
         anims_emitted = 0
         any_emitted   = False
-        async for sentence in ollama_sentence_stream(prepared, temperature):
+        async for sentence in stream_sentences_with_filler(
+            prepared, temperature, filler_enabled=not cold_model
+        ):
             cleaned = clean_response(sentence)
 
             if not has_image:
