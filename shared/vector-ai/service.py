@@ -246,14 +246,24 @@ def _build_memory_section() -> str:
 
 
 def prepare_messages(messages: List[Message]) -> list:
-    """Pass through Wire-Pod's system message, prepend current time + long-term
-    memories, and strip image data from older user turns so the context stays
-    compact."""
+    """Build the LLM message list with a byte-stable prompt prefix.
+
+    Ollama reuses its cached KV prefix only as far as the prompt matches the
+    previous request. A value that changes every request — like the current
+    time — must therefore NOT sit near the front, or the whole ~2000-token
+    personality/command block gets re-processed every query (a >1s stall).
+
+    So the system message holds only stable content (Wire-Pod's personality +
+    command docs, then long-term memories). The volatile timestamp rides on
+    the latest user turn, which is new content anyway, so it costs nothing.
+    Image bytes are stripped from older user turns to keep the context compact.
+    """
     last_user_idx = max(
         (i for i, m in enumerate(messages) if m.role == "user"),
         default=-1,
     )
     now = datetime.now().strftime("%A %B %d, %Y, %I:%M %p")
+    time_note = f"(Current time: {now})"
     memory_section = _build_memory_section()
 
     # Find Wire-Pod's system message (it contains personality + command docs).
@@ -263,9 +273,11 @@ def prepare_messages(messages: List[Message]) -> list:
         "",
     )
 
+    # Static content first (big, never changes), memories after (small, rarely
+    # changes). No timestamp here — see the docstring.
     out = [{
         "role":    "system",
-        "content": f"Current time: {now}\n\n{memory_section}\n\n{wirepod_system}",
+        "content": f"{wirepod_system}\n\n{memory_section}",
     }]
 
     for i, m in enumerate(messages):
@@ -273,9 +285,14 @@ def prepare_messages(messages: List[Message]) -> list:
             continue  # Already handled above.
         if not m.content:
             continue
+        is_last_user = (i == last_user_idx)
         if isinstance(m.content, list):
-            if i == last_user_idx:
-                out.append({"role": m.role, "content": m.content})
+            if is_last_user:
+                # Keep image bytes; append the timestamp as an extra text part.
+                out.append({
+                    "role":    m.role,
+                    "content": list(m.content) + [{"type": "text", "text": time_note}],
+                })
             else:
                 # Older vision turn — drop image bytes, keep text only.
                 text = " ".join(
@@ -285,7 +302,8 @@ def prepare_messages(messages: List[Message]) -> list:
                 if text:
                     out.append({"role": m.role, "content": text})
         else:
-            out.append({"role": m.role, "content": m.content})
+            content = f"{m.content}\n\n{time_note}" if is_last_user else m.content
+            out.append({"role": m.role, "content": content})
 
     return out
 
