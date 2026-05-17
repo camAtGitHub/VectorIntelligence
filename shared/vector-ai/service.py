@@ -197,9 +197,14 @@ def _build_memory_section() -> str:
     elif face and face["is_stranger"]:
         sections.append(
             "You are currently looking at someone whose face is NOT in your "
-            "enrolled list — a stranger. Treat them with mild sardonic "
-            "suspicion (in character with your Marvin/Bender/Fry tone). Don't "
-            "leak personal facts you remember about other people."
+            "enrolled list — a stranger. Don't leak personal facts you "
+            "remember about other people. Early in your reply, in character "
+            "(dry and mildly wary — your Marvin/Bender/Fry tone, never "
+            "hostile), invite them to introduce themselves so you can "
+            "recognise them next time: they should tell you their name and "
+            "ask you to remember their face — phrased like 'my name is Sam, "
+            "remember my face'. Ask only once — if the conversation so far "
+            "shows you've already asked, don't repeat it, just converse."
         )
     else:
         # No live face detection. If exactly one person has stored memories,
