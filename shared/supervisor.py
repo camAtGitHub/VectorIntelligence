@@ -47,6 +47,7 @@ STT_SERVICE   = "whisper"     # whisper | vosk
 WHISPER_MODEL = "base.en"
 HEALTH_PERIOD = 10            # seconds between health checks
 SLEEP_GAP     = 60            # a tick gap longer than this == PC slept
+LOG_MAX_BYTES = 5 * 1024 * 1024  # a log past this is rotated aside at startup
 
 EXE = ".exe" if IS_WINDOWS else ""
 
@@ -57,6 +58,20 @@ def log(msg: str):
     try:
         with open(SUP_LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def rotate_log(path: Path):
+    """If `path` is larger than LOG_MAX_BYTES, move it aside to <path>.old
+    (replacing any previous .old). Called once at startup — so logs stay
+    bounded across restarts without ever touching a file a running process
+    still holds open."""
+    try:
+        if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
+            old = path.with_name(path.name + ".old")
+            old.unlink(missing_ok=True)
+            path.rename(old)
     except OSError:
         pass
 
@@ -467,6 +482,9 @@ class Supervisor:
 
     # -- lifecycle --
     def startup(self):
+        # Rotate oversized logs before anything writes to or opens them.
+        for logpath in (SUP_LOG, CHIPPER_LOG, VECTORAI_LOG):
+            rotate_log(logpath)
         log("=== Vector Pod Supervisor starting ===")
         create_win_job()
         vip = read_vector_ip()

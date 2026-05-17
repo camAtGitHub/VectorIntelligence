@@ -30,6 +30,11 @@ class Memory(NamedTuple):
 _LEGACY_OWNER_FACE_ID = 44
 _LEGACY_OWNER_NAME    = "G"
 
+# Visual observations are only ever recalled within the last few hours, so
+# anything older is dead weight — pruned on each write to keep the table
+# bounded. (The captured images themselves are never stored at all.)
+_OBSERVATION_RETENTION = 7 * 24 * 3600  # seconds
+
 
 class MemoryStore:
     def __init__(self, db_path: Path):
@@ -287,14 +292,21 @@ class MemoryStore:
     # ── Visual memory ─────────────────────────────────────────────────────────
 
     def remember_observation(self, text: str, face_id: Optional[int] = None) -> None:
-        """Store something Vector saw (a photo description)."""
+        """Store something Vector saw (a photo description). Each write also
+        prunes observations older than _OBSERVATION_RETENTION, so the table
+        stays bounded — they are never recalled past a few hours anyway."""
         text = (text or "").strip()
         if not text:
             return
+        now = datetime.now().timestamp()
         with self._lock, self._conn() as c:
             c.execute(
                 "INSERT INTO observations (seen_at, face_id, text) VALUES (?, ?, ?)",
-                (datetime.now().timestamp(), face_id, text),
+                (now, face_id, text),
+            )
+            c.execute(
+                "DELETE FROM observations WHERE seen_at < ?",
+                (now - _OBSERVATION_RETENTION,),
             )
 
     def list_observations(self, limit: int = 5, max_age_seconds: int = 21600) -> List[dict]:
