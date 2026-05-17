@@ -25,11 +25,6 @@ class Memory(NamedTuple):
     text: str
 
 
-# Sentinel face_id used when migrating pre-multi-user rows. Override at
-# runtime if the primary user's enrolled face_id differs.
-_LEGACY_OWNER_FACE_ID = 44
-_LEGACY_OWNER_NAME    = "G"
-
 # Visual observations are only ever recalled within the last few hours, so
 # anything older is dead weight — pruned on each write to keep the table
 # bounded. (The captured images themselves are never stored at all.)
@@ -59,19 +54,14 @@ class MemoryStore:
                     text       TEXT NOT NULL
                 )
             """)
-            # Add columns if migrating from the pre-multi-user schema.
+            # Defensive: add the multi-user columns if an older single-user
+            # schema is ever encountered. A fresh install already has them
+            # (see CREATE TABLE above), so this is normally a no-op.
             cols = {r["name"] for r in c.execute("PRAGMA table_info(memories)").fetchall()}
             if "face_id" not in cols:
                 c.execute("ALTER TABLE memories ADD COLUMN face_id INTEGER")
             if "face_name" not in cols:
                 c.execute("ALTER TABLE memories ADD COLUMN face_name TEXT")
-            # Existing untagged rows were all about the primary user — tag
-            # them so they don't get treated as household-shared.
-            c.execute(
-                "UPDATE memories SET face_id = ?, face_name = ? "
-                "WHERE face_id IS NULL AND face_name IS NULL",
-                (_LEGACY_OWNER_FACE_ID, _LEGACY_OWNER_NAME),
-            )
             c.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_text_nocase
                 ON memories (text COLLATE NOCASE)
