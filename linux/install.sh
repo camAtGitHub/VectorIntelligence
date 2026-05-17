@@ -141,6 +141,9 @@ sudo python3 "$SHARED_DIR/patches/add-sensor-reactions.py" "$WIREPOD_DIR"
 info "Fixing the gRPC connection leak (defer robot.Close() in kgsim.go)..."
 sudo python3 "$SHARED_DIR/patches/fix-connection-leak.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/kgsim.go"
 
+info "Fixing name parsing so face enrollment captures just the name..."
+sudo python3 "$SHARED_DIR/patches/fix-name-extraction.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/intentparam.go"
+
 # Patched vector-go-sdk: upstream opens a gRPC connection per vector.New()
 # but never closes it, so every voice query leaks one until the robot's SDK
 # wedges. Pull the pinned SDK commit into chipper/third_party, patch in a

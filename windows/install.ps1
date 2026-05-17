@@ -210,6 +210,9 @@ python "$SharedDir\patches\add-sensor-reactions.py" $WirePodDir
 Info "Fixing the gRPC connection leak (defer robot.Close() in kgsim.go)..."
 python "$SharedDir\patches\fix-connection-leak.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\kgsim.go")
 
+Info "Fixing name parsing so face enrollment captures just the name..."
+python "$SharedDir\patches\fix-name-extraction.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\intentparam.go")
+
 # ── Patched vector-go-sdk ─────────────────────────────────────────────────────
 # The upstream SDK opens a gRPC connection per vector.New() but never closes
 # it, so every voice query leaks one until the robot's SDK wedges. Pull the
