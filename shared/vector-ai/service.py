@@ -65,6 +65,10 @@ FACE_RECENT_WINDOW = 15  # seconds — how long a face sighting stays "current".
                          # long window made Vector keep treating a speaker who
                          # had already handed off (e.g. Sarah -> G) as present.
 
+# A gap at least this long since last speaking with a person counts as a
+# fresh encounter — Vector opens his reply by greeting them by name.
+SESSION_GREETING_GAP = 300  # seconds
+
 _face_state = {
     "enrolled_id":   None,  # last enrolled (named) face_id
     "enrolled_name": None,  # last enrolled name
@@ -325,12 +329,18 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
         if prior is None:
             bits.append(
                 f"This is your first real conversation with {name}, who was "
-                "only recently enrolled — be a little curious about them."
+                f"only recently enrolled. Open your reply by addressing "
+                f"{name} by name, and be a little curious about them."
             )
         else:
             gap = now_dt.timestamp() - (prior.get("last_seen") or now_dt.timestamp())
             if gap > 90:  # a fresh session, not a mid-conversation turn
                 bits.append(f"You last spoke with {name} {_relative_time(gap)}.")
+                if gap > SESSION_GREETING_GAP:
+                    bits.append(
+                        f"This is the first thing you've said to {name} in a "
+                        f"while — open your reply by addressing them by name."
+                    )
                 if (prior.get("interaction_count") or 0) < 5:
                     bits.append(f"You've only met {name} a handful of times so far.")
                 summ = (prior.get("last_convo_summary") or "").strip().rstrip(".")
