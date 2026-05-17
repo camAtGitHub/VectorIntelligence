@@ -71,6 +71,31 @@ class MemoryStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_text_nocase
                 ON memories (text COLLATE NOCASE)
             """)
+            # Per-face interaction metadata: when Vector last spoke with this
+            # person, how many times, and a one-line recap of their last
+            # conversation. Powers temporal presence + conversation memory.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS face_meta (
+                    face_id            INTEGER PRIMARY KEY,
+                    face_name          TEXT,
+                    first_seen         REAL,
+                    last_seen          REAL,
+                    interaction_count  INTEGER DEFAULT 0,
+                    last_convo_summary TEXT,
+                    last_convo_at      REAL
+                )
+            """)
+            # Visual memory: a short description each time Vector actually
+            # takes a photo. Not deduplicated (the same scene at two times is
+            # two valid observations) — hence its own table, not `memories`.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS observations (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    seen_at REAL,
+                    face_id INTEGER,
+                    text    TEXT NOT NULL
+                )
+            """)
 
     def remember(
         self,
@@ -198,7 +223,93 @@ class MemoryStore:
             ).fetchall()
         return [(r["face_id"], r["face_name"]) for r in rows]
 
+    # ── Per-face interaction metadata ─────────────────────────────────────────
+
+    def touch_face(self, face_id: int, face_name: Optional[str]) -> Optional[dict]:
+        """Record that Vector is interacting with this face right now.
+
+        Returns the face's metadata as it was BEFORE this call (prior
+        last_seen, interaction_count, last conversation summary) so the caller
+        can build temporal context — or None if this is the first ever
+        interaction with this face."""
+        if face_id is None or face_id <= 0:
+            return None
+        now = datetime.now().timestamp()
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT face_id, face_name, first_seen, last_seen, "
+                "interaction_count, last_convo_summary, last_convo_at "
+                "FROM face_meta WHERE face_id = ?", (face_id,),
+            ).fetchone()
+            prior = dict(row) if row else None
+            if row:
+                c.execute(
+                    "UPDATE face_meta SET face_name = ?, last_seen = ?, "
+                    "interaction_count = interaction_count + 1 WHERE face_id = ?",
+                    (face_name, now, face_id),
+                )
+            else:
+                c.execute(
+                    "INSERT INTO face_meta (face_id, face_name, first_seen, "
+                    "last_seen, interaction_count) VALUES (?, ?, ?, ?, 1)",
+                    (face_id, face_name, now, now),
+                )
+        return prior
+
+    def get_face_meta(self, face_id: int) -> Optional[dict]:
+        if face_id is None or face_id <= 0:
+            return None
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT face_id, face_name, first_seen, last_seen, "
+                "interaction_count, last_convo_summary, last_convo_at "
+                "FROM face_meta WHERE face_id = ?", (face_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_convo_summary(self, face_id: int, summary: str) -> None:
+        """Store a one-line recap of the most recent conversation with a face."""
+        summary = (summary or "").strip()
+        if face_id is None or face_id <= 0 or not summary:
+            return
+        now = datetime.now().timestamp()
+        with self._lock, self._conn() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO face_meta "
+                "(face_id, first_seen, last_seen, interaction_count) "
+                "VALUES (?, ?, ?, 0)", (face_id, now, now),
+            )
+            c.execute(
+                "UPDATE face_meta SET last_convo_summary = ?, last_convo_at = ? "
+                "WHERE face_id = ?", (summary, now, face_id),
+            )
+
+    # ── Visual memory ─────────────────────────────────────────────────────────
+
+    def remember_observation(self, text: str, face_id: Optional[int] = None) -> None:
+        """Store something Vector saw (a photo description)."""
+        text = (text or "").strip()
+        if not text:
+            return
+        with self._lock, self._conn() as c:
+            c.execute(
+                "INSERT INTO observations (seen_at, face_id, text) VALUES (?, ?, ?)",
+                (datetime.now().timestamp(), face_id, text),
+            )
+
+    def list_observations(self, limit: int = 5, max_age_seconds: int = 21600) -> List[dict]:
+        """Recent things Vector saw — defaults to the last 6 hours."""
+        cutoff = datetime.now().timestamp() - max_age_seconds
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                "SELECT id, seen_at, face_id, text FROM observations "
+                "WHERE seen_at >= ? ORDER BY id DESC LIMIT ?", (cutoff, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def clear(self) -> int:
         with self._lock, self._conn() as c:
             cur = c.execute("DELETE FROM memories")
+            c.execute("DELETE FROM observations")
+            c.execute("UPDATE face_meta SET last_convo_summary = NULL, last_convo_at = NULL")
             return cur.rowcount

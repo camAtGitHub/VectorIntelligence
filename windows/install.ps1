@@ -452,10 +452,14 @@ $settings.ExecutionTimeLimit = "PT0S"   # unlimited
 Register-ScheduledTask -TaskName "VectorPod-Supervisor" -Action $action -Principal $principal -Settings $settings -Force | Out-Null
 Info "Scheduled task VectorPod-Supervisor registered (S4U, hidden, manual-start only)."
 
-# ── 8. Pull model ─────────────────────────────────────────────────────────────
-Step "Model"
-Info "Pulling gemma3:12b (downloads ~3-10 GB the first time)..."
+# ── 8. Pull models ────────────────────────────────────────────────────────────
+Step "Models"
+Info "Pulling gemma3:12b — the main conversational model (~8 GB first time)..."
 & ollama pull gemma3:12b
+# Small, fast model used only for background conversation summaries; kept
+# separate so summary calls never disturb the main model's prompt cache.
+Info "Pulling llama3.2:3b — background conversation-summary model (~2 GB)..."
+& ollama pull llama3.2:3b
 
 # ── 9. Done ───────────────────────────────────────────────────────────────────
 Step "Installation complete"

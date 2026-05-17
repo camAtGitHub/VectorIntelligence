@@ -38,6 +38,10 @@ app = FastAPI()
 # locally). vector-ai/.env can override both for a split-host setup.
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://127.0.0.1:11434")
 MODEL       = os.getenv("OLLAMA_MODEL", "gemma3:12b")
+# A small, fast model for background conversation summaries. Kept separate
+# from MODEL so a summary call doesn't evict the main model's prompt cache
+# (which would slow the next real reply). Falls back silently if absent.
+SUMMARY_MODEL = os.getenv("OLLAMA_SUMMARY_MODEL", "llama3.2:3b")
 
 # Persistent memory: SQLite next to service.py so it lives wherever vector-ai
 # is installed. Survives restarts and updates.
@@ -245,25 +249,117 @@ def _build_memory_section() -> str:
     return "\n\n".join(sections)
 
 
-def prepare_messages(messages: List[Message]) -> list:
+def _time_of_day(dt: datetime) -> str:
+    h = dt.hour
+    if 5 <= h < 12:
+        return "morning"
+    if 12 <= h < 17:
+        return "afternoon"
+    if 17 <= h < 22:
+        return "evening"
+    return "late at night"
+
+
+def _relative_time(seconds: float) -> str:
+    if seconds < 90:
+        return "moments ago"
+    if seconds < 3600:
+        n, unit = int(round(seconds / 60)), "minute"
+    elif seconds < 86400:
+        n, unit = int(round(seconds / 3600)), "hour"
+    else:
+        n, unit = int(round(seconds / 86400)), "day"
+    return f"about {n} {unit}{'' if n == 1 else 's'} ago"
+
+
+def _effective_face() -> Optional[dict]:
+    """Who Vector is effectively addressing — the live detected face, or the
+    sole enrolled profile in a single-user setup. Mirrors the face resolution
+    inside _build_memory_section so the system prompt and the per-turn context
+    note always agree on who is present."""
+    face = current_face()
+    if face is not None:
+        return face
+    profiles = MEMORY.distinct_faces()
+    if len(profiles) == 1:
+        pid, pname = profiles[0]
+        return {"face_id": pid, "name": pname, "is_stranger": False}
+    return None
+
+
+def _build_context_note(face: Optional[dict], prior: Optional[dict],
+                        now_dt: datetime) -> str:
+    """Dynamic per-turn context, appended to the latest user message.
+
+    Deliberately kept OFF the system prompt: it changes every turn, and in the
+    cached prefix that would force a full prompt re-process. Session-scoped
+    lines (last-seen, conversation recall) appear only at the START of a
+    session — gated on a >90s gap — so they don't nag on every turn."""
+    bits = [
+        f"Current time is {now_dt.strftime('%A %B %d, %Y, %I:%M %p')} "
+        f"({_time_of_day(now_dt)})."
+    ]
+
+    obs = MEMORY.list_observations(limit=5)
+    if obs:
+        seen = "; ".join(
+            f"at {datetime.fromtimestamp(o['seen_at']).strftime('%I:%M %p')}, {o['text']}"
+            for o in reversed(obs)
+        )
+        bits.append(f"Things you have actually seen recently — {seen}.")
+
+    if face and not face.get("is_stranger"):
+        name = face["name"]
+        if prior is None:
+            bits.append(
+                f"This is your first real conversation with {name}, who was "
+                "only recently enrolled — be a little curious about them."
+            )
+        else:
+            gap = now_dt.timestamp() - (prior.get("last_seen") or now_dt.timestamp())
+            if gap > 90:  # a fresh session, not a mid-conversation turn
+                bits.append(f"You last spoke with {name} {_relative_time(gap)}.")
+                if (prior.get("interaction_count") or 0) < 5:
+                    bits.append(f"You've only met {name} a handful of times so far.")
+                summ = (prior.get("last_convo_summary") or "").strip().rstrip(".")
+                if summ and gap > 900:  # 15 min+ => genuinely a new session
+                    bits.append(
+                        f"Last time you spoke with {name}, the conversation "
+                        f"was about: {summ}."
+                    )
+    elif face and face.get("is_stranger"):
+        bits.append("You don't recognise the person in front of you.")
+
+    return ("[Context for you, Vector — " + " ".join(bits)
+            + " Weave in only what naturally fits; never recite this back.]")
+
+
+def prepare_messages(messages: List[Message], face: Optional[dict]) -> list:
     """Build the LLM message list with a byte-stable prompt prefix.
 
     Ollama reuses its cached KV prefix only as far as the prompt matches the
-    previous request. A value that changes every request — like the current
-    time — must therefore NOT sit near the front, or the whole ~2000-token
-    personality/command block gets re-processed every query (a >1s stall).
+    previous request. Anything that changes every request — the time, the
+    temporal context — must therefore NOT sit near the front, or the whole
+    ~2000-token personality/command block gets re-processed every query.
 
-    So the system message holds only stable content (Wire-Pod's personality +
-    command docs, then long-term memories). The volatile timestamp rides on
-    the latest user turn, which is new content anyway, so it costs nothing.
+    So the system message holds only slow-changing content (personality +
+    command docs, then long-term memories). The volatile per-turn context
+    note rides on the latest user turn, which is new content anyway.
     Image bytes are stripped from older user turns to keep the context compact.
     """
     last_user_idx = max(
         (i for i, m in enumerate(messages) if m.role == "user"),
         default=-1,
     )
-    now = datetime.now().strftime("%A %B %d, %Y, %I:%M %p")
-    time_note = f"(Current time: {now})"
+    now_dt = datetime.now()
+
+    # Record this interaction against the current face; the returned prior
+    # metadata (last-seen, count, last conversation) drives temporal context.
+    prior_meta = None
+    if face and not face.get("is_stranger") and face.get("face_id"):
+        prior_meta = MEMORY.touch_face(face["face_id"], face.get("name"))
+
+    context_note = _build_context_note(face, prior_meta, now_dt)
     memory_section = _build_memory_section()
 
     # Find Wire-Pod's system message (it contains personality + command docs).
@@ -288,10 +384,10 @@ def prepare_messages(messages: List[Message]) -> list:
         is_last_user = (i == last_user_idx)
         if isinstance(m.content, list):
             if is_last_user:
-                # Keep image bytes; append the timestamp as an extra text part.
+                # Keep image bytes; append the context note as an extra text part.
                 out.append({
                     "role":    m.role,
-                    "content": list(m.content) + [{"type": "text", "text": time_note}],
+                    "content": list(m.content) + [{"type": "text", "text": context_note}],
                 })
             else:
                 # Older vision turn — drop image bytes, keep text only.
@@ -302,7 +398,7 @@ def prepare_messages(messages: List[Message]) -> list:
                 if text:
                     out.append({"role": m.role, "content": text})
         else:
-            content = f"{m.content}\n\n{time_note}" if is_last_user else m.content
+            content = f"{m.content}\n\n{context_note}" if is_last_user else m.content
             out.append({"role": m.role, "content": content})
 
     return out
@@ -468,6 +564,10 @@ _THINKING_PHRASES = [
     "I'll have something shortly.",
 ]
 
+# Every filler line, used to keep them out of stored memory/observations —
+# a filler is masking latency, it's not part of what Vector actually said.
+_ALL_FILLER_PHRASES = set(_THINKING_PHRASES) | set(_WAKING_PHRASES)
+
 _last_thinking_phrase = None
 
 
@@ -612,6 +712,54 @@ def cap_chunk_animations(text: str, allowance: int) -> tuple[str, int]:
     return "".join(out), kept
 
 
+# ── Conversation memory ───────────────────────────────────────────────────────
+
+async def _summarise_conversation(messages: List[Message], latest_reply: str,
+                                  face_id: int, face_name: Optional[str]) -> None:
+    """Background task: distil this conversation into one line and store it as
+    the face's 'last conversation', so Vector can recall it next session.
+
+    Runs on SUMMARY_MODEL (small/fast) so it never evicts the main model's
+    prompt cache. Failures are swallowed — a missing summary is harmless."""
+    turns = [
+        m for m in messages
+        if m.role in ("user", "assistant")
+        and isinstance(m.content, str) and m.content.strip()
+    ]
+    if len(turns) < 3:  # too short to be worth a recap
+        return
+    lines = [
+        f"{'User' if m.role == 'user' else 'Vector'}: {m.content.strip()}"
+        for m in turns[-16:]
+    ]
+    if latest_reply.strip():
+        lines.append(f"Vector: {latest_reply.strip()}")
+    transcript = "\n".join(lines)
+    prompt = [
+        {"role": "system", "content":
+            "You summarise a conversation between a user and Vector (a small "
+            "robot) in ONE short factual sentence, from Vector's point of "
+            "view, naming the actual topics discussed. No preamble, no "
+            "quotes — just the sentence."},
+        {"role": "user", "content": transcript},
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            r = await client.post(
+                f"{OLLAMA_BASE}/v1/chat/completions",
+                json={"model": SUMMARY_MODEL, "messages": prompt,
+                      "stream": False, "temperature": 0.3},
+            )
+            r.raise_for_status()
+            summary = r.json()["choices"][0]["message"]["content"]
+        summary = strip_markdown(summary).strip().strip('"').strip()
+        if summary:
+            MEMORY.set_convo_summary(face_id, summary)
+            print(f"[memory] convo summary [{face_name}]: {summary!r}")
+    except Exception as e:
+        print(f"[memory] summary failed: {e}")
+
+
 # ── Main flow ─────────────────────────────────────────────────────────────────
 
 async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIterator[str]:
@@ -636,7 +784,8 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
 
     try:
         t_req = time.monotonic()
-        prepared = prepare_messages(messages)
+        eff_face = _effective_face()
+        prepared = prepare_messages(messages, eff_face)
 
         # Cold-model mask: if the model unloaded during idle, speak a short
         # "waking up" line first so the ~5-10s reload feels intentional. The
@@ -659,6 +808,7 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
         # a cold model — _WAKING_PHRASES already covered the (longer) reload.
         anims_emitted = 0
         any_emitted   = False
+        reply_parts   = []
         async for sentence in stream_sentences_with_filler(
             prepared, temperature, filler_enabled=not cold_model
         ):
@@ -686,11 +836,37 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
             anims_emitted += kept
             if cleaned.strip():
                 print(f"[vector-ai] -> {cleaned!r}")
+                # Filler lines mask latency — they aren't part of what Vector
+                # actually said, so keep them out of memory/observations.
+                if cleaned.strip() not in _ALL_FILLER_PHRASES:
+                    reply_parts.append(cleaned.strip())
                 yield sse_chunk(cleaned)
                 any_emitted = True
 
         print(f"[vector-ai] timing: full response {time.monotonic() - t_req:.2f}s "
               f"(cold_model={cold_model})")
+
+        # ── Companion memory (post-response, non-blocking) ──
+        # Strip {{...}} commands — memory stores what Vector *said*, not the
+        # eye-colour/animation directives chipper consumed.
+        reply = re.sub(r'\{\{[^}]*\}\}', '', " ".join(reply_parts))
+        reply = re.sub(r'\s+', ' ', reply).strip()
+        mem_face = eff_face if (eff_face and not eff_face.get("is_stranger")
+                                and eff_face.get("face_id")) else None
+        # Visual memory: store what Vector saw — but only when he genuinely
+        # described the scene. A too-thin reply means the describe failed
+        # (e.g. the model re-requested the photo); "One sec." isn't a memory.
+        if has_image and len(reply) >= 25:
+            obs_face = mem_face["face_id"] if mem_face else None
+            MEMORY.remember_observation(reply[:300], face_id=obs_face)
+            print(f"[memory] +observation: {reply[:80]!r}")
+        elif has_image:
+            print(f"[memory] observation skipped (reply too thin): {reply!r}")
+        # Conversation memory: distil this exchange in the background.
+        if mem_face:
+            asyncio.create_task(_summarise_conversation(
+                list(messages), reply, mem_face["face_id"], mem_face.get("name")))
+
         if not any_emitted:
             yield sse_chunk("Hmm.")
         yield sse_chunk("", finish="stop")

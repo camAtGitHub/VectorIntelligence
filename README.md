@@ -149,6 +149,27 @@ Default is **`gemma3:12b`** (Google Gemma 3 — dense, multimodal, consistent
 first-token latency). `OLLAMA_MODEL` in `vector-ai/.env` selects it. The model
 auto-unloads after idle to free VRAM and reloads on the next query.
 
+A small second model (`llama3.2:3b`, `OLLAMA_SUMMARY_MODEL`) is used only for
+background conversation summaries — kept separate so a summary never evicts
+the main model's prompt cache.
+
+## Companion awareness
+
+`vector-ai` gives Vector context beyond the current question:
+
+- **Temporal presence** — he knows the time of day and how long since he last
+  spoke with you, and weaves it in naturally at the start of a session.
+- **Conversation memory** — each chat is quietly distilled to a one-line recap
+  per person; when they return after a break, he can pick the thread back up.
+- **Visual memory** — when he takes a photo he keeps a short description, so
+  he can recall what he saw earlier (no always-on camera — only real photos).
+- **Person-awareness** — known faces are greeted by name; a freshly enrolled
+  face is treated as a newcomer.
+
+All of this rides on the latest user turn, never the cached system prompt, so
+it costs nothing in first-token latency. Per-face data lives in the SQLite
+store next to `service.py`.
+
 ## What the patches do
 
 The installer patches Wire-Pod's source before building. Highlights:

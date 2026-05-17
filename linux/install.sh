@@ -71,8 +71,12 @@ else
     info "Ollama already installed."
 fi
 
-info "Ensuring gemma3:12b is present (this may take a few minutes the first time)..."
+info "Ensuring gemma3:12b is present (the main conversational model)..."
 ollama pull gemma3:12b
+# Small, fast model used only for background conversation summaries; kept
+# separate so summary calls never disturb the main model's prompt cache.
+info "Ensuring llama3.2:3b is present (background conversation-summary model)..."
+ollama pull llama3.2:3b
 
 # ── 4. Wire-Pod ───────────────────────────────────────────────────────────────
 step "Wire-Pod"
