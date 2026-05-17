@@ -43,11 +43,13 @@ import (
 \t"github.com/kercre123/wire-pod/chipper/pkg/vars"
 )
 
-// Ambient awareness: when Vector is idle — awake, off the charger, not
-// mid-conversation, not in night hours — he periodically takes a silent
+// Ambient awareness: whenever Vector is awake and free — not mid-conversation
+// and not in his night-hours sleep window — he periodically takes a silent
 // camera frame and lets the multimodal model decide whether anything is
-// genuinely new. Almost always nothing happens. On real novelty he speaks a
-// short line and vector-ai stores the observation so he can discuss it later.
+// genuinely new. He does this whether or not he is docked: being on the
+// charger no longer blocks observation, only being asleep does. Almost always
+// nothing happens. On real novelty he speaks a short line and vector-ai
+// stores the observation so he can discuss it later.
 //
 // Restraint is the whole point: a desk barely changes, so the model is told
 // its default answer is "nothing", a multi-minute interval keeps glances
@@ -67,9 +69,11 @@ const (
 \t// Skip a glance if a voice interaction happened within this window.
 \tambientVoiceCooldown = 2 * time.Minute
 
-\t// No ambient activity during these hours (24h clock) — Vector's sleep
-\t// window. The gap in /v1/ambient calls overnight is also what vector-ai
-\t// uses to expire quiet mode (a sleep cycle has passed).
+\t// No ambient activity during these hours (24h clock) — Vector's presumed
+\t// sleep window, and the sole "asleep" gate now that docking no longer
+\t// blocks observation. The resulting overnight gap in /v1/ambient calls is
+\t// also what vector-ai uses to expire quiet mode (a sleep cycle has passed).
+\t// Tune these to match when Vector actually sleeps.
 \tambientNightStart = 23 // 11pm
 \tambientNightEnd   = 7  // 7am
 )
@@ -118,10 +122,9 @@ func runAmbientLoop(esn, guid, target string) {
 \tfmt.Printf("[ambient] starting ambient loop for %s @ %s\\n", esn, target)
 \tfor {
 \t\ttime.Sleep(ambientInterval)
-\t\t// Idle gate: only glance around when Vector is genuinely free.
-\t\tif IsOnCharger() {
-\t\t\tcontinue
-\t\t}
+\t\t// Idle gate: glance around whenever Vector is awake and free. Being
+\t\t// docked is fine — only night hours (asleep) and an in-flight
+\t\t// conversation hold him back.
 \t\tif recentlyConversed() {
 \t\t\tcontinue
 \t\t}
@@ -191,11 +194,11 @@ func ambientObserveOnce(esn, guid, target string) {
 \t\treturn // nothing novel — the overwhelmingly common case
 \t}
 
-\t// Re-check the idle gate: a conversation may have started while we were
-\t// thinking. The observation is already stored by vector-ai, so Vector can
-\t// still mention it later — we just don't speak over the user now.
-\tif recentlyConversed() || IsOnCharger() {
-\t\tfmt.Printf("[ambient] suppressing reaction (no longer idle): %q\\n", line)
+\t// Re-check: a conversation may have started while we were thinking. The
+\t// observation is already stored by vector-ai, so Vector can still mention
+\t// it later — we just don't speak over the user now.
+\tif recentlyConversed() {
+\t\tfmt.Printf("[ambient] suppressing reaction (conversation in progress): %q\\n", line)
 \t\treturn
 \t}
 
