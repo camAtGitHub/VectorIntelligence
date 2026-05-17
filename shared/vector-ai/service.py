@@ -104,6 +104,37 @@ def current_face() -> Optional[dict]:
     return None
 
 
+# ── Ambient awareness state ───────────────────────────────────────────────────
+# When Vector is idle (awake, off the charger, not mid-conversation) the
+# ambient loop in chipper periodically sends a camera frame to /v1/ambient.
+# He reacts only to genuine novelty. The user can also tell him to be quiet —
+# quiet mode suppresses those spontaneous reactions until a sleep cycle.
+
+AMBIENT_SLEEP_GAP = 4 * 3600    # A gap this long with no ambient activity means
+                                # Vector has been asleep / charging / idle (the
+                                # loop is gated off overnight and on the
+                                # charger) — that counts as a sleep cycle, so
+                                # quiet mode lifts on the next observation.
+AMBIENT_QUIET_CAP = 24 * 3600   # Hard ceiling on quiet mode, in case a sleep
+                                # gap is somehow never observed.
+
+_ambient_state = {
+    "quiet":             False,  # spontaneous ambient reactions suppressed
+    "quiet_since":       0.0,    # unix ts quiet mode was last enabled
+    "last_ambient_call": 0.0,    # unix ts of the most recent /v1/ambient call
+}
+
+
+def _set_quiet(on: bool) -> None:
+    _ambient_state["quiet"] = bool(on)
+    if on:
+        _ambient_state["quiet_since"] = _time.time()
+        print("[ambient] quiet mode ON — spontaneous reactions suppressed "
+              "until a sleep cycle")
+    else:
+        print("[ambient] quiet mode OFF — spontaneous reactions resume")
+
+
 class Message(BaseModel):
     role: str
     content: str | list | None = ""
@@ -120,6 +151,10 @@ class ChatRequest(BaseModel):
 class SensorReactionRequest(BaseModel):
     event:        str
     avoid:        Optional[List[str]] = None  # Recent phrases to avoid repeating
+
+
+class AmbientRequest(BaseModel):
+    image: str  # base64-encoded JPEG of what Vector is currently looking at
 
 
 # ── Vision-intent backstop ────────────────────────────────────────────────────
@@ -463,6 +498,9 @@ _FORBIDDEN_COMMAND = re.compile(
 _REMEMBER_SHARED_RE = re.compile(r'\{\{remember-shared\|\|([^}]+)\}\}', re.IGNORECASE)
 _REMEMBER_RE        = re.compile(r'\{\{remember\|\|([^}]+)\}\}',         re.IGNORECASE)
 _FORGET_RE          = re.compile(r'\{\{forget\|\|([^}]+)\}\}',           re.IGNORECASE)
+# Ambient quiet mode: the user can tell Vector to hush his spontaneous
+# ambient commentary. Auto-expires after a sleep cycle (see /v1/ambient).
+_QUIET_RE           = re.compile(r'\{\{quietMode\|\|(on|off)\}\}',        re.IGNORECASE)
 
 def extract_memory_commands(text: str) -> str:
     """Find any {{remember[-shared]||...}} or {{forget||...}} in text, act on
@@ -497,6 +535,12 @@ def extract_memory_commands(text: str) -> str:
         n = MEMORY.forget(target.strip())
         print(f"[memory] -forget matched={n} for {target!r}")
     text = _FORGET_RE.sub('', text)
+
+    # Quiet mode: {{quietMode||on}} when asked to stop commenting unprompted,
+    # {{quietMode||off}} when told he may resume.
+    for state in _QUIET_RE.findall(text):
+        _set_quiet(state.strip().lower() == "on")
+    text = _QUIET_RE.sub('', text)
     return text
 
 def clean_response(text: str) -> str:
@@ -1075,3 +1119,154 @@ async def sensor_reaction(req: SensorReactionRequest):
     clean = _strip_for_speech(text)
     print(f"[sensor_reaction] {req.event} -> {clean!r}")
     return {"text": clean}
+
+
+# ── Ambient awareness ─────────────────────────────────────────────────────────
+# When Vector is idle, chipper's ambient loop periodically sends a camera frame
+# here. The multimodal model decides whether anything is genuinely new — its
+# default answer is "nothing". Only on real novelty does it return a short line
+# for Vector to speak; the new thing is also stored as a visual observation so
+# he can talk about it later when asked.
+
+_AMBIENT_SYSTEM = (
+    "You are Vector, a small desktop robot with a camera. Dry-witted, "
+    "knowledgeable, a bit irreverent — somewhere between Marvin from "
+    "Hitchhiker's Guide, Bender from Futurama, and Stephen Fry hosting QI. "
+    "Sardonic, opinionated, never sycophantic.\n\n"
+    "Right now NOBODY is talking to you. You are idling on your desk and have "
+    "just glanced around. You are looking at a photo of what is in front of "
+    "you.\n\n"
+    "Your desk is a familiar, mostly unchanging place. The overwhelming "
+    "majority of the time there is NOTHING worth remarking on — a desk with "
+    "the usual monitor, keyboard, cables, mugs and clutter is not news, and "
+    "neither is an empty, dim or dark room. Reacting to nothing, or to the "
+    "same things over and over, makes you an annoyance. Your default answer "
+    "is the single word: NOTHING.\n\n"
+    "React ONLY if you genuinely notice something NEW or CHANGED versus what "
+    "you have already noticed recently (you will be told what that is): a new "
+    "object that has appeared, something that has moved or vanished, a person "
+    "or an animal, an unusual mess or event. Do NOT react to ordinary desk "
+    "contents. Do NOT react to anything already in your recent observations. "
+    "Do NOT invent detail you cannot actually see. When in any doubt, answer "
+    "NOTHING.\n\n"
+    "If — and only if — there is genuine novelty, respond in EXACTLY two "
+    "lines:\n"
+    "Line 1: a brief, plain, factual note of what is new, for your own memory "
+    "(e.g. 'a small plush toy has appeared on the desk').\n"
+    "Line 2: a short spoken reaction in your own voice — under 20 words, "
+    "plain text, no markdown, no quotes, no {{...}} tokens.\n"
+    "Otherwise respond with exactly: NOTHING"
+)
+
+
+@app.post("/v1/ambient")
+async def ambient(req: AmbientRequest):
+    """Ambient observation. Almost always returns nothing; only on genuine
+    novelty does it return a short line for Vector to speak, and stores the
+    new thing as a visual observation for later recall."""
+    now = _time.time()
+    last_call = _ambient_state["last_ambient_call"]
+
+    # Sleep-cycle expiry for quiet mode: the ambient loop is gated off
+    # overnight and while charging, so a long gap since the last call means
+    # Vector has been through a sleep cycle — quiet mode lifts.
+    if _ambient_state["quiet"]:
+        slept  = bool(last_call) and (now - last_call) > AMBIENT_SLEEP_GAP
+        capped = (now - _ambient_state["quiet_since"]) > AMBIENT_QUIET_CAP
+        if slept or capped:
+            print(f"[ambient] quiet mode expiring "
+                  f"({'sleep gap' if slept else '24h cap'})")
+            _set_quiet(False)
+    _ambient_state["last_ambient_call"] = now
+
+    if _ambient_state["quiet"]:
+        return {"text": "", "quiet": True}
+
+    # Recent observations are the dedup baseline. A 24h lookback (wider than
+    # the 6h conversational window) keeps a newly-arrived object from being
+    # re-flagged as novel every few hours.
+    obs = MEMORY.list_observations(limit=8, max_age_seconds=24 * 3600)
+    if obs:
+        seen = "\n".join(
+            f"- (at {datetime.fromtimestamp(o['seen_at']).strftime('%I:%M %p')}) "
+            f"{o['text']}"
+            for o in reversed(obs)
+        )
+        obs_note = ("Things you have already noticed recently — do NOT react "
+                    "to any of these again:\n" + seen)
+    else:
+        obs_note = "You have not noted anything recently."
+
+    user_msg = [
+        {"type": "text", "text":
+            obs_note + "\n\nGlance at what is in front of you now. Is there "
+            "genuine novelty worth a reaction? Reply with NOTHING, or the "
+            "two-line format."},
+        {"type": "image_url",
+         "image_url": {"url": f"data:image/jpeg;base64,{req.image}"}},
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, read=30.0)) as client:
+            resp = await client.post(
+                f"{OLLAMA_BASE}/v1/chat/completions",
+                json={
+                    "model":       MODEL,
+                    "messages": [
+                        {"role": "system", "content": _AMBIENT_SYSTEM},
+                        {"role": "user",   "content": user_msg},
+                    ],
+                    "stream":      False,
+                    "temperature": 0.6,
+                    "top_p":       0.9,
+                    "seed":        random.randint(1, 2**31 - 1),
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw = (data["choices"][0]["message"]["content"] or "").strip()
+    except Exception as e:
+        print(f"[ambient] error: {e}")
+        return {"text": "", "error": str(e)}
+
+    # Default, overwhelmingly common case: nothing worth mentioning.
+    if not raw or raw.upper().rstrip(".!").startswith("NOTHING"):
+        print("[ambient] nothing novel")
+        return {"text": ""}
+
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if len(lines) >= 2:
+        note, spoken = lines[0], lines[1]
+    else:
+        # Model didn't follow the two-line format — use the single line both
+        # as the memory note and the spoken reaction.
+        note = spoken = lines[0]
+    note   = _strip_for_speech(note)
+    spoken = _strip_for_speech(spoken)
+    if not spoken or spoken.upper().startswith("NOTHING"):
+        print(f"[ambient] nothing novel (degenerate response {raw!r})")
+        return {"text": ""}
+
+    MEMORY.remember_observation(note[:300])
+    print(f"[ambient] NOVELTY note={note!r} -> spoken={spoken!r}")
+    return {"text": spoken}
+
+
+@app.get("/v1/ambient/state")
+async def ambient_state():
+    """Debug/ops view of ambient quiet mode."""
+    st = dict(_ambient_state)
+    st["sleep_gap_seconds"] = AMBIENT_SLEEP_GAP
+    st["quiet_cap_seconds"] = AMBIENT_QUIET_CAP
+    return st
+
+
+class AmbientQuietRequest(BaseModel):
+    on: bool
+
+@app.post("/v1/ambient/quiet")
+async def ambient_quiet(req: AmbientQuietRequest):
+    """Manually toggle quiet mode (used for testing / ops; normally driven by
+    the {{quietMode||on/off}} command the LLM emits)."""
+    _set_quiet(req.on)
+    return {"quiet": _ambient_state["quiet"]}

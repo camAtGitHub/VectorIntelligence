@@ -216,6 +216,9 @@ python "$SharedDir\patches\fix-name-extraction.py" (Join-Path $WirePodDir "chipp
 Info "Adding the concurrent face probe (knows the speaker before the LLM replies)..."
 python "$SharedDir\patches\add-face-probe.py" $WirePodDir
 
+Info "Adding ambient awareness (idle novelty observation loop)..."
+python "$SharedDir\patches\add-ambient-loop.py" $WirePodDir
+
 # ── Patched vector-go-sdk ─────────────────────────────────────────────────────
 # The upstream SDK opens a gRPC connection per vector.New() but never closes
 # it, so every voice query leaks one until the robot's SDK wedges. Pull the

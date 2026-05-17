@@ -38,7 +38,11 @@ import (
 // concurrently with speech-to-text — by the time the LLM request fires,
 // vector-ai already knows the current speaker, with no one-turn lag and no
 // added latency. Self-terminating: closes after the timeout or stream end.
+//
+// It also marks voice activity so the ambient awareness loop knows a
+// conversation is in progress and stays out of the way.
 func ObserveFaceBriefly(esn string) {
+\tMarkVoiceActivity()
 \tvar guid, target string
 \tfor _, bot := range vars.BotInfo.Robots {
 \t\tif strings.EqualFold(strings.TrimSpace(bot.Esn), strings.TrimSpace(esn)) {
