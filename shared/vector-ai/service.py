@@ -739,19 +739,23 @@ async def _summarise_conversation(messages: List[Message], latest_reply: str,
         {"role": "system", "content":
             "You summarise a conversation between a user and Vector (a small "
             "robot) in ONE short factual sentence, from Vector's point of "
-            "view, naming the actual topics discussed. No preamble, no "
-            "quotes — just the sentence."},
+            "view, naming the actual topics discussed. Refer to the human "
+            "only as 'the user' — never use a name for them, even if names "
+            "appear in the text. No preamble, no quotes — just the sentence."},
         {"role": "user", "content": transcript},
     ]
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        # num_gpu:0 runs the summariser on CPU — it's a background task, so
+        # CPU speed is fine, and it keeps the summary model out of VRAM.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
             r = await client.post(
-                f"{OLLAMA_BASE}/v1/chat/completions",
+                f"{OLLAMA_BASE}/api/chat",
                 json={"model": SUMMARY_MODEL, "messages": prompt,
-                      "stream": False, "temperature": 0.3},
+                      "stream": False,
+                      "options": {"num_gpu": 0, "temperature": 0.3}},
             )
             r.raise_for_status()
-            summary = r.json()["choices"][0]["message"]["content"]
+            summary = r.json().get("message", {}).get("content", "")
         summary = strip_markdown(summary).strip().strip('"').strip()
         if summary:
             MEMORY.set_convo_summary(face_id, summary)

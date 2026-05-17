@@ -149,9 +149,9 @@ Default is **`gemma3:12b`** (Google Gemma 3 — dense, multimodal, consistent
 first-token latency). `OLLAMA_MODEL` in `vector-ai/.env` selects it. The model
 auto-unloads after idle to free VRAM and reloads on the next query.
 
-A small second model (`llama3.2:3b`, `OLLAMA_SUMMARY_MODEL`) is used only for
-background conversation summaries — kept separate so a summary never evicts
-the main model's prompt cache.
+A small second model (`llama3.2:3b`, `OLLAMA_SUMMARY_MODEL`) handles only the
+background conversation summaries. It runs CPU-only (`num_gpu:0`), so it costs
+no VRAM and never evicts the main model's prompt cache.
 
 ## Companion awareness
 
