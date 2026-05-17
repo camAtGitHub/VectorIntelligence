@@ -1,14 +1,92 @@
-# Vector Robot AI Stack — Single-Machine Deployment
+# Vector Intelligence
 
-Turn an Anki/DDL Vector robot into a local, private, LLM-powered companion.
-Everything runs on one machine — no cloud, no subscription.
+Turn an Anki / Digital Dream Labs **Vector** robot into a genuinely smart
+companion — one that recognises the people in your home, remembers them and
+your conversations, sees, and talks with real character. Everything runs on
+your own machine: **no cloud, no subscription, no data leaving the house.**
+
+Tested on Windows 10/11 and Debian-family Linux.
+
+---
+
+## What Vector can do
+
+### He knows who he's talking to — and remembers each person
+
+This is the heart of it. Vector does **multi-user face recognition**: enrol a
+face once and he keeps a **separate memory profile for that person**. He
+greets people by name, and the facts he learns are filed per person —
+*your* preferences stay yours, *your* housemate's stay theirs — alongside a
+pool of shared household facts that apply to everyone.
+
+A face check runs **concurrently with your speech**, so he knows who is
+speaking *before* he answers — no lag, no mixing people up. Tell him
+something about yourself and he quietly files it; ask him later and he
+recalls it. He even cross-references — if someone is mentioned in another
+person's memories, that context surfaces naturally.
+
+Meet someone new? Vector notices an **unfamiliar face** and, in character,
+invites them to introduce themselves. They just say *"Hey Vector, my name is
+Sam, remember my face"* and from then on he knows them.
+
+### He remembers your conversations
+
+Every chat is quietly distilled into a short recap, kept per person. Come
+back after a break and Vector can **pick the thread back up** — *"Last time
+you were grumbling about cardio — did you survive it?"* He feels less like a
+stateless oracle and more like someone who was actually paying attention.
+
+### He remembers what he's seen
+
+Ask Vector *"what do you see?"* and he looks, then describes the scene. He
+also **keeps a short note of what he saw**, so later you can ask *"what was
+I wearing earlier?"* and he genuinely knows. No always-on camera — he only
+remembers real, deliberate photo moments.
+
+### He has a sense of time and presence
+
+Vector knows the time of day and how long it's been since you last spoke.
+You'll get *"back already?"*, *"it's been a few hours"*, or *"gone midnight
+again — we should both be charging"* — woven in naturally, never recited.
+
+### He turns to face you
+
+When you speak to him, Vector rapid-turns toward your voice before he
+replies — so he's facing whoever is talking. (He stays put when he's on his
+charging pod.)
+
+### He has a personality
+
+Vector is dry, sardonic and a little world-weary — somewhere between Marvin
+from *Hitchhiker's Guide*, Bender from *Futurama*, and Stephen Fry hosting
+*QI*. He is not a chirpy assistant. He has opinions.
+
+### He reacts to the world
+
+Pick him up, put him down, or give him a scratch and he responds in
+character. His **eye colour shifts** with the mood of the conversation.
+
+### Natural, fast, private voice
+
+Say "Hey Vector", talk normally, and interrupt him any time with a tap of
+his back button. Speech recognition runs on your GPU and the language model
+runs locally, so replies come back quickly — and nothing you say ever leaves
+your computer.
+
+---
+
+## How it works
+
+One **supervisor** process owns the whole stack, keeps every piece alive,
+and self-heals from the things that break a robot-on-WiFi setup (link drops,
+PC sleep, the robot's IP changing).
 
 ```
                     ┌─────────────────────────────────────────┐
 [Vector] ◄────────► │  VectorPod-Supervisor (one process)      │
    wake word,       │                                          │
    voice, camera    │   ├─ chipper      :443   Wire-Pod — voice │
-                    │   ├─ vector-ai    :8000  LLM glue + memory│
+                    │   ├─ vector-ai    :8000  AI glue + memory │
                     │   ├─ Ollama       :11434 gemma3:12b       │
                     │   └─ mDNS                escapepod.local  │
                     │                                          │
@@ -18,193 +96,118 @@ Everything runs on one machine — no cloud, no subscription.
                     └─────────────────────────────────────────┘
 ```
 
-A **supervisor** process owns the whole stack. It launches and keeps alive
-Wire-Pod (the robot-facing voice server), `vector-ai` (a Python service that
-wires Wire-Pod to the LLM and adds memory, vision and personality), and
-Ollama (the local model runtime). It also advertises Vector's server over
-mDNS and self-heals from the things that break a robot-on-WiFi setup.
+- **chipper** (Wire-Pod) — the robot-facing voice server: wake word, audio,
+  camera, the gRPC link to Vector.
+- **vector-ai** — a Python service that wires Wire-Pod to the language model
+  and adds everything above: personality, the per-person memory store
+  (SQLite), vision handling, conversation summaries, the companion smarts.
+- **Ollama** running **`gemma3:12b`** — the local, multimodal language model
+  (a small `llama3.2:3b` handles background conversation summaries on CPU).
+- **Whisper** — GPU-accelerated speech-to-text.
+- **the supervisor** — a single process that launches and watches the lot,
+  advertises Vector's server over mDNS, and auto-recovers from failures.
 
-Tested on Windows 10/11 and Debian-family Linux.
-
----
-
-## What's in this bundle
-
-```
-VectorDeploy/
-├── README.md
-├── shared/                          assets identical on both platforms
-│   ├── supervisor.py                the one process that owns the stack
-│   ├── vector-ai/{service.py, memory.py, requirements.txt, .env}
-│   ├── config/{wirepod-apiConfig.json, wirepod-intents-en-US.json,
-│   │           vector-supervisor.service}
-│   └── patches/                     source patches applied to Wire-Pod
-├── windows/
-│   ├── install.ps1 / install.cmd            one-time setup
-│   ├── initial-setup.ps1                    drives Wire-Pod first-run wizard
-│   ├── apply-wirepod-config.ps1             applies the AI config
-│   ├── start-vector.cmd / stop-vector.cmd   daily use (double-click)
-│   └── ...
-└── linux/
-    ├── install.sh
-    ├── apply-wirepod-config.sh
-    └── start-vector.sh / stop-vector.sh
-```
+The installer builds Wire-Pod from a pinned upstream source with a set of
+small, in-tree patches (latency tuning, the per-person memory hooks, sensor
+reactions, the connection-leak fix, and more) — see `shared/patches/`.
 
 ---
 
-## Hardware requirements
+## Installation
 
-- **GPU**: ~8 GB VRAM free for `gemma3:12b` (tested on RTX 4080 Super)
-- **Disk**: ~18 GB free (Wire-Pod + Whisper.cpp build, Ollama + Whisper models)
-- **OS**: Windows 10/11 x64, or Debian/Ubuntu/Mint x64 / ARM64
-- **Network**: Vector and the host on the **same LAN**, ideally good 2.4GHz
-  WiFi for Vector (he is 2.4GHz-only — a weak link is the #1 cause of trouble)
+### Hardware
 
----
+- **GPU** — ~8 GB of free VRAM for `gemma3:12b` (developed on an RTX 4080
+  Super; any reasonably modern GPU with the headroom works).
+- **Disk** — ~18 GB free (Wire-Pod + Whisper build, the Ollama and Whisper
+  models).
+- **OS** — Windows 10/11 x64, or Debian/Ubuntu/Mint x64 / ARM64.
+- **Network** — Vector and the host on the **same LAN**. Vector is
+  2.4 GHz-only; a weak WiFi link to him is the single most common cause of
+  trouble, so keep him near the router.
 
-# Windows install
+### Windows
 
-### One-time setup
-
-1. **Open PowerShell as Administrator** in this folder, run:
+1. **Open PowerShell as Administrator** in this folder and run:
    ```powershell
    .\windows\install.ps1
    ```
-   Installs (via `winget`) anything missing — Go, Python, Git, MSYS2/mingw,
-   Ollama — then clones and builds Wire-Pod (VOSK + Whisper chipper builds),
-   builds whisper.cpp, sets up the `vector-ai` venv, registers the single
-   **VectorPod-Supervisor** scheduled task, opens the firewall (443/8080/80/8084),
-   and pulls `gemma3:12b`. First run: 15–25 minutes, mostly downloads.
+   It installs anything missing via `winget` (Go, Python, Git, MSYS2/mingw,
+   Ollama, the Vulkan SDK), clones and builds Wire-Pod, builds GPU Whisper,
+   sets up the `vector-ai` environment, registers the **VectorPod-Supervisor**
+   scheduled task, opens the firewall, and pulls the models. First run is
+   roughly 15–25 minutes, mostly downloads.
 
-2. **Bring the stack up:** double-click `windows\start-vector.cmd`.
+2. **Bring the stack up** — double-click `windows\start-vector.cmd`.
 
 3. **Run the first-run wizard:**
    ```powershell
    .\windows\initial-setup.ps1
    ```
-   Sets escape-pod mode so Vector pairs locally, downloads the STT model,
-   generates SSL certs.
+   Sets escape-pod mode so Vector pairs locally, downloads the speech model,
+   generates certificates.
 
 4. **Apply the AI config** (personality, vision rules, command vocabulary):
    ```powershell
    .\windows\apply-wirepod-config.ps1
    ```
 
-5. **Enrol Vector** via the **Robots** tab at http://localhost:8080. The
-   supervisor advertises `escapepod.local` so Vector finds the server.
+5. **Pair Vector** via the **Robots** tab at <http://localhost:8080>. The
+   supervisor advertises `escapepod.local`, so Vector finds the server
+   himself.
 
-### Daily use
-
-Double-click **`start-vector.cmd`** / **`stop-vector.cmd`** — that's it.
-Each is one `schtasks` call: start/stop the supervisor. Stopping it frees
-VRAM (the model unloads). `.ps1` versions exist too if you prefer them.
-
----
-
-# Linux install
+### Linux
 
 ```bash
 cd linux && bash install.sh
 ```
-Installs deps, builds Wire-Pod + whisper.cpp, grants chipper
-`cap_net_bind_service` (so it binds :443 without root), registers
-`vector-supervisor.service`. Then `bash start-vector.sh`, run the web-UI
-wizard at `http://<ip>:8080`, `bash apply-wirepod-config.sh`, enrol Vector.
 
-Daily use: `bash start-vector.sh` / `bash stop-vector.sh`.
+This installs dependencies, builds Wire-Pod and Whisper, grants chipper
+permission to bind privileged ports without root, and registers
+`vector-supervisor.service`. Then:
 
----
-
-## The supervisor
-
-`supervisor.py` is the heart of the deployment. One process that:
-
-- **launches and keeps alive** Ollama, chipper, and vector-ai — restarts any
-  that die
-- **advertises `escapepod.local`** over mDNS so Vector can find the server
-- **auto-recovers** from the failure modes a robot-on-WiFi actually hits:
-  - *Vector WiFi-link drop* — reconnects chipper the moment the link returns
-  - *PC wake-from-sleep* — refreshes mDNS, re-asserts routing, bounces chipper
-  - *Vector IP drift* — rediscovers him by mDNS, rewrites the stored IP
-  - *LAN route hijack* — re-asserts a direct route if a VPN/Tailscale grabs it
-- **clean shutdown** — children are bound to it (Windows job object / Linux
-  cgroup), so stopping the supervisor reliably takes the whole stack down
-
-Logs: `~/vector-pod/supervisor.log` (plus `chipper.log`, `vector-ai.log`).
+```bash
+bash start-vector.sh                 # bring the stack up
+# open the web UI at http://<this-machine-ip>:8080 and run the wizard
+bash apply-wirepod-config.sh         # apply the AI config
+# pair Vector via the Robots tab
+```
 
 ---
 
-## Speech-to-text
+## Daily operation
 
-The installer builds two chipper binaries — VOSK and Whisper. **Whisper
-`base.en`** is the default: far better than VOSK at names/accents, ~0.5s per
-utterance on CPU. The model is set by the `WHISPER_MODEL`/`STT_SERVICE`
-constants near the top of `supervisor.py` (`base.en` ↔ `small.en` for more
-accuracy at ~1.5s/utterance).
+Bring the stack up and take it down with one command each:
 
-## The LLM
+| | Windows | Linux |
+|---|---|---|
+| **Start** | `start-vector.cmd` | `bash start-vector.sh` |
+| **Stop**  | `stop-vector.cmd`  | `bash stop-vector.sh`  |
 
-Default is **`gemma3:12b`** (Google Gemma 3 — dense, multimodal, consistent
-first-token latency). `OLLAMA_MODEL` in `vector-ai/.env` selects it. The model
-auto-unloads after idle to free VRAM and reloads on the next query.
+Stopping frees the GPU VRAM — the model unloads. The first reply after a
+cold start (or a long idle) takes a few extra seconds while the model loads;
+Vector covers it with a short "waking up" line. Nothing auto-starts with the
+machine — the stack only runs when you start it.
 
-A small second model (`llama3.2:3b`, `OLLAMA_SUMMARY_MODEL`) handles only the
-background conversation summaries. It runs CPU-only (`num_gpu:0`), so it costs
-no VRAM and never evicts the main model's prompt cache.
+**Introducing a new person** — have them sit face-on to Vector and say
+*"Hey Vector, my name is [their name], remember my face"*. For a guaranteed-
+correct spelling you can instead enrol the face from the web UI's faces
+section and type the name.
 
-## Companion awareness
+**Logs** live in `~/vector-pod/` — `supervisor.log`, `chipper.log`,
+`vector-ai.log` (on Linux, also `journalctl -u vector-supervisor -f`).
 
-`vector-ai` gives Vector context beyond the current question:
-
-- **Temporal presence** — he knows the time of day and how long since he last
-  spoke with you, and weaves it in naturally at the start of a session.
-- **Conversation memory** — each chat is quietly distilled to a one-line recap
-  per person; when they return after a break, he can pick the thread back up.
-- **Visual memory** — when he takes a photo he keeps a short description, so
-  he can recall what he saw earlier (no always-on camera — only real photos).
-- **Person-awareness** — known faces are greeted by name; a freshly enrolled
-  face is treated as a newcomer.
-
-All of this rides on the latest user turn, never the cached system prompt, so
-it costs nothing in first-token latency. Per-face data lives in the SQLite
-store next to `service.py`.
-
-## What the patches do
-
-The installer patches Wire-Pod's source before building. Highlights:
-
-| Patch | Effect |
-|---|---|
-| VAD `inactiveNumMax := 75` | ~1.5s silence window — pause mid-sentence without being cut off |
-| `expand-animations.py` | +11 animations the LLM can use (fistBump, hello, dance, …) |
-| `wake-word-grace-period.py` / `-mute-during-getimage.py` | Vector's own speech/shutter doesn't self-interrupt |
-| `remove-photo-countdown.py` | photo capture is silent — no 3-2-1 theatrics |
-| `prelim-lookatme-then-llm.py` | Vector rapid-turns to face whoever spoke to him before replying — every query, unless he's on the charger |
-| `slow-tts.py` | TTS cadence tuned for intelligibility |
-| `add-eye-color-cmd.py` | LLM can shift Vector's eye colour to match mood |
-| `add-sensor-reactions.py` | in-character reactions to pickup / putdown / pets |
-| `add-button-interrupt.py` | the back button stops Vector mid-sentence |
-| `add-ondemand-face.py` | Vector identifies who he's talking to (for per-face memory) only during a conversation — never a 24/7 face-detection stream |
-| `add-face-probe.py` | a face check runs concurrently with speech-to-text, so Vector knows the current speaker before he replies — no one-turn lag |
-| `fix-name-extraction.py` | face enrollment parses just the name ("Sarah"), not the whole spoken sentence |
-| `fix-connection-leak.py` + patched `vector-go-sdk` | adds a `Close()` so every voice query releases its gRPC connection to Vector — without it the robot's SDK wedges after a few questions |
-| minimal `en-US.json` | only come-here / charger / sleep / dance / "remember my face" stay as built-in intents — everything else goes to the LLM |
-
-`apiConfig.json` carries the personality prompt (Marvin × Bender × Stephen Fry).
-
----
-
-## Troubleshooting
+### Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Vector unresponsive / wifi-exclamation | Check `supervisor.log` — it auto-recovers most drops. Persistent: it's almost always Vector's **2.4GHz WiFi link** — measure with `ping <vector-ip> -n 50`; a healthy LAN link is <5ms with no loss. Move him near the router; pick a clear 2.4GHz channel. |
-| Voice stops after a router reboot | Windows may reclassify the network "Public", blocking inbound ports. `install.ps1` opens 443/8080/80/8084 `Profile=Any`; if it recurs, `Set-NetConnectionProfile -NetworkCategory Private`. |
-| Vector reachable but traffic is slow/jittery | A VPN/Tailscale may be advertising a route for your LAN subnet. `Find-NetRoute -RemoteIPAddress <vector-ip>` — if it's not your Ethernet interface, the supervisor re-asserts a direct `/32` route; or set `--accept-routes=false` on Tailscale. |
-| "Having trouble thinking" | `stop-vector` then `start-vector`. Check Ollama is up and the model is pulled. |
-| Vector hallucinates instead of using his camera | Confirm `service.py` is current — the vision-intent regex must match the phrasing. |
-| First reply after idle is slow | Expected — the model cold-loads into VRAM (~5s). It auto-unloads when idle to keep VRAM free. |
+| Vector shows the WiFi / exclamation icon | Check `supervisor.log` — it auto-recovers most drops. If it persists it's almost always Vector's **2.4 GHz WiFi link**: `ping <vector-ip>` should be <5 ms with no loss. Move him near the router and pick a clear channel. |
+| Voice stops after a router reboot | Windows may reclassify the network as "Public" and block inbound ports. The installer opens them for all profiles; if it recurs, set the network back to Private. |
+| Reachable but slow / jittery | A VPN (e.g. Tailscale) may be advertising a route for your LAN subnet. The supervisor re-asserts a direct route to Vector; or disable route acceptance on the VPN. |
+| "Having trouble thinking" | `stop-vector` then `start-vector`; check Ollama is running and the model is pulled. |
+| First reply after idle is slow | Expected — the model is cold-loading into VRAM. It unloads when idle to keep VRAM free. |
 
-**Logs:** `~/vector-pod/supervisor.log`, `chipper.log`, `vector-ai.log`
-(Linux: also `journalctl -u vector-supervisor -f`).
+---
+
+*Built on [Wire-Pod](https://github.com/kercre123/wire-pod). Vector and the
+robot's firmware are the property of Digital Dream Labs / Anki.*
