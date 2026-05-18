@@ -303,6 +303,10 @@ _VISION_TRIGGERS = re.compile(
     r'|describe\s+(this|that|what\s+you\s+see|your\s+surroundings|my\s+\S+)'
     r'|tell\s+me\s+about\s+(this|that|my\s+\S+)'
     r'|check\s+(this|that|me|it|my\s+\S+)\s+out'
+    # Presenting / giving / showing something to Vector — he must look, not guess.
+    r"|(this|that|these|those|it)('?s|\s+is|\s+are)\s+for\s+(you|vector)"
+    r'|here\s+you\s+(go|are)'
+    r'|look\s+what\s+i\b'
     r')\b',
     re.IGNORECASE,
 )
