@@ -103,34 +103,43 @@ and self-heals from the things that break a robot-on-WiFi setup (link drops,
 PC sleep, the robot's IP changing).
 
 ```
-                    ┌─────────────────────────────────────────┐
-[Vector] ◄────────► │  VectorPod-Supervisor (one process)      │
-   wake word,       │                                          │
-   voice, camera    │   ├─ chipper      :443   Wire-Pod — voice │
-                    │   ├─ vector-ai    :8000  AI glue + memory │
-                    │   ├─ Ollama       :11434 gemma3:12b       │
-                    │   └─ mDNS                escapepod.local  │
-                    │                                          │
-                    │   monitors all of the above, and         │
-                    │   auto-recovers from WiFi drops, PC       │
-                    │   sleep, and Vector IP changes            │
-                    └─────────────────────────────────────────┘
+┌──────────┐          ┌─────────────────────────────────────────────────────┐
+│  Vector  │ ◄──────► │ VectorPod-Supervisor — one process                  │
+└──────────┘          │                                                     │
+                      │ chipper     :443    voice server + autonomous loops │
+                      │ vector-ai   :8000   AI brain: memory, vision, mood  │
+                      │ Ollama      :11434  gemma3:12b (+ a small llama3.2) │
+                      │ mDNS                escapepod.local                 │
+                      │                                                     │
+                      │ keeps all four alive; self-heals from WiFi          │
+                      │ drops, PC sleep, and a changing robot IP            │
+                      └─────────────────────────────────────────────────────┘
 ```
 
-- **chipper** (Wire-Pod) — the robot-facing voice server: wake word, audio,
-  camera, the gRPC link to Vector.
+The link to Vector is **two-way**. He sends wake-word, voice and touch
+events — and chipper, through a set of background loops, also watches him
+through the camera and drives his speech and movement on its own
+initiative, so he reacts to the world even when no one is talking to him.
+
+- **chipper** (Wire-Pod) — the robot-facing server: wake word, audio, the
+  camera, and the gRPC link to Vector. It also runs the background loops
+  behind his autonomous behaviour — sensor reactions, ambient awareness,
+  and proactive greetings.
 - **vector-ai** — a Python service that wires Wire-Pod to the language model
   and adds everything above: personality, the per-person memory store
-  (SQLite), vision handling, conversation summaries, the companion smarts.
+  (SQLite), vision, conversation summaries, his persistent mood, and the
+  ambient-awareness and greeting smarts.
 - **Ollama** running **`gemma3:12b`** — the local, multimodal language model
-  (a small `llama3.2:3b` handles background conversation summaries on CPU).
+  (a small `llama3.2:3b` handles conversation summaries and mood reflection
+  on the CPU).
 - **Whisper** — GPU-accelerated speech-to-text.
 - **the supervisor** — a single process that launches and watches the lot,
   advertises Vector's server over mDNS, and auto-recovers from failures.
 
 The installer builds Wire-Pod from a pinned upstream source with a set of
 small, in-tree patches (latency tuning, the per-person memory hooks, sensor
-reactions, the connection-leak fix, and more) — see `shared/patches/`.
+reactions, ambient awareness, the connection-leak fix, and more) — see
+`shared/patches/`.
 
 ---
 
