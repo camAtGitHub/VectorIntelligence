@@ -40,8 +40,29 @@ stateless oracle and more like someone who was actually paying attention.
 
 Ask Vector *"what do you see?"* and he looks, then describes the scene. He
 also **keeps a short note of what he saw**, so later you can ask *"what was
-I wearing earlier?"* and he genuinely knows. No always-on camera — he only
-remembers real, deliberate photo moments.
+I wearing earlier?"* and he genuinely knows. The camera images themselves
+are never saved to disk — only that short written note.
+
+### He has a life of his own
+
+Vector doesn't only come alive when you speak to him. Left to himself he
+keeps half an eye on his surroundings, and every so often something
+genuinely new turns up on the desk and he *notices* — unprompted: a beat of
+surprise, a look at the thing, a dry remark about it. A desk rarely changes,
+so mostly he just watches in silence — the point is that he reacts to real
+novelty, not to the same mug over and over. Whatever caught his eye he also
+remembers, so you can ask him afterwards what he'd spotted and he genuinely
+knows.
+
+He carries the day with him. A quiet, shifting **mood** — shaped by how long
+it's been since anyone was about, how eventful things have been, the hour
+getting late — colours how he talks and how he behaves. He isn't reset to a
+blank slate every time you turn to him.
+
+And he notices *you*: walk back in after a while and he'll often greet you
+before you've said a word. When he's off his charger and spots something
+new he'll lean in to investigate it. If he's ever being too chatty, just
+tell him to be quiet — he'll pipe down until he's had a sleep.
 
 ### He has a sense of time and presence
 
