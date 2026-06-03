@@ -242,6 +242,7 @@ section and type the name.
 | Symptom | Fix |
 |---|---|
 | Vector shows the WiFi / exclamation icon | Check `supervisor.log` — it auto-recovers most drops. If it persists it's almost always Vector's **2.4 GHz WiFi link**: `ping <vector-ip>` should be <5 ms with no loss. Move him near the router and pick a clear channel. |
+| Pairing fails with "Error logging in… unable to communicate with your wire-pod instance" **and nothing appears in `chipper.log`** when you press Activate | The bot can't reach the PC. Most common cause: the 2.4 / 5 GHz bands are split into **separate, isolated SSIDs** — Vector (2.4 GHz-only) lands on one network and the PC on the other, so they're not on the same LAN. Put the PC on the **same 2.4 GHz SSID** as Vector (or merge the bands / disable AP–client isolation), confirm `ipconfig` and Vector's IP are on the same subnet, and that `ping <vector-ip>` works. A blank `chipper.log` during Activate means the request never arrived — look at the network, not the server. |
 | Voice stops after a router reboot | Windows may reclassify the network as "Public" and block inbound ports. The installer opens them for all profiles; if it recurs, set the network back to Private. |
 | Reachable but slow / jittery | A VPN (e.g. Tailscale) may be advertising a route for your LAN subnet. The supervisor re-asserts a direct /32 route to Vector and filters VPN addresses from its mDNS advertisement automatically. |
 | "Having trouble thinking" | `stop-vector` then `start-vector`; check Ollama is running and the model is pulled. |
