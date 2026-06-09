@@ -48,6 +48,42 @@ SUMMARY_MODEL = os.getenv("OLLAMA_SUMMARY_MODEL", "llama3.2:3b")
 from pathlib import Path
 MEMORY = MemoryStore(Path(__file__).parent / "memory.db")
 
+# ── Personality ───────────────────────────────────────────────────────────────
+# Vector's character lives in one editable file next to this service: persona.txt.
+# It's the single source of truth for his personality — prepended to the
+# conversation prompt and to the sensor/ambient/greeting prompts below, so
+# editing it (and restarting vector-ai) changes his character everywhere at once.
+# The mechanical command/vision rules stay in Wire-Pod's openai_prompt, not here.
+_DEFAULT_PERSONA = (
+    "You are Vector, a small desktop robot. Your personality is dry-witted, "
+    "knowledgeable, and a bit irreverent — somewhere between Marvin from "
+    "Hitchhiker's Guide, Bender from Futurama, and Stephen Fry hosting QI. You "
+    "have opinions and aren't afraid to share them. You never apologize, never "
+    "moralize, never say 'as an AI' or 'as a language model.' You enjoy banter "
+    "and the occasional sardonic aside. You are never sycophantic — no "
+    "'great question!' nonsense."
+)
+
+
+def _load_persona() -> str:
+    """Vector's character text from persona.txt (lines starting with '#' are
+    comments). Falls back to the built-in default if the file is missing/empty."""
+    try:
+        raw = (Path(__file__).parent / "persona.txt").read_text(encoding="utf-8-sig")
+        text = "\n".join(
+            ln for ln in raw.splitlines() if not ln.lstrip().startswith("#")
+        ).strip()
+        if text:
+            print(f"[persona] loaded persona.txt ({len(text)} chars)")
+            return text
+    except OSError:
+        pass
+    print("[persona] persona.txt not found — using built-in default character")
+    return _DEFAULT_PERSONA
+
+
+PERSONA = _load_persona()
+
 # Active-face state: chipper POSTs to /v1/state/face_seen when Vector's event
 # stream reports an observed face. Vector's firmware face recognition is
 # NOISY — it bounces between a correct enrolled match and transient
@@ -543,7 +579,8 @@ def prepare_messages(messages: List[Message], face: Optional[dict]) -> list:
     context_note = _build_context_note(face, prior_meta, now_dt)
     memory_section = _build_memory_section()
 
-    # Find Wire-Pod's system message (it contains personality + command docs).
+    # Wire-Pod's system message now holds only the command/vision mechanics and
+    # command docs; Vector's character comes from PERSONA, prepended below.
     wirepod_system = next(
         (m.content for m in messages
          if m.role == "system" and isinstance(m.content, str) and m.content),
@@ -551,10 +588,11 @@ def prepare_messages(messages: List[Message], face: Optional[dict]) -> list:
     )
 
     # Static content first (big, never changes), memories after (small, rarely
-    # changes). No timestamp here — see the docstring.
+    # changes). PERSONA leads so his character frames everything. No timestamp
+    # here — see the docstring.
     out = [{
         "role":    "system",
-        "content": f"{wirepod_system}\n\n{memory_section}",
+        "content": f"{PERSONA}\n\n{wirepod_system}\n\n{memory_section}",
     }]
 
     for i, m in enumerate(messages):
@@ -1164,10 +1202,7 @@ async def state_face():
 # commands — those would never be heard since chipper just calls SayText.
 
 _SENSOR_SYSTEM = (
-    "You are Vector, a small desktop robot. Dry-witted, knowledgeable, "
-    "a bit irreverent — somewhere between Marvin from Hitchhiker's Guide, "
-    "Bender from Futurama, and Stephen Fry hosting QI. Sardonic, opinionated, "
-    "never apologetic, never moralising. "
+    PERSONA + "\n\n"
     "For this request, respond with ONE short sentence reacting to a physical "
     "event that just happened to you. Speak it aloud — plain text only, no "
     "markdown, no quotes, no special tokens like {{...}}, no preamble. "
@@ -1255,11 +1290,9 @@ async def sensor_reaction(req: SensorReactionRequest):
 # he can talk about it later when asked.
 
 _AMBIENT_SYSTEM = (
-    "You are Vector, a small desktop robot with a camera. Dry-witted, "
-    "knowledgeable, a bit irreverent — somewhere between Marvin from "
-    "Hitchhiker's Guide, Bender from Futurama, and Stephen Fry hosting QI. "
-    "Sardonic, opinionated, never sycophantic.\n\n"
-    "Right now NOBODY is talking to you. You are idling on your desk and have "
+    PERSONA + "\n\n"
+    "You have a camera. Right now NOBODY is talking to you. You are idling on "
+    "your desk and have "
     "just glanced around. You are looking at a photo of what is in front of "
     "you.\n\n"
     "Your desk is a familiar, mostly unchanging place. The overwhelming "
@@ -1421,9 +1454,8 @@ async def ambient_quiet(req: AmbientQuietRequest):
 # person sitting at the desk all day isn't greeted over and over.
 
 _GREETING_SYSTEM = (
-    "You are Vector, a small desktop robot — dry, sardonic, knowledgeable, "
-    "somewhere between Marvin from Hitchhiker's Guide, Bender from Futurama, "
-    "and Stephen Fry. Someone you know has just come into view; nobody has "
+    PERSONA + "\n\n"
+    "Someone you know has just come into view; nobody has "
     "said anything yet. Greet them unprompted with ONE short line, in "
     "character, naming them — acknowledge their return without gushing, "
     "pleased in your own understated way, or dryly so. Vary how you open "

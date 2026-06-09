@@ -259,6 +259,13 @@ else
     warn ".env already exists — not overwriting."
 fi
 
+# persona.txt holds Vector's editable personality — copy only if absent so a
+# re-run never clobbers a customized character.
+if [ ! -f "$VECTORAI_DIR/persona.txt" ]; then
+    cp "$SHARED_DIR/vector-ai/persona.txt" "$VECTORAI_DIR/persona.txt"
+    info "persona.txt copied — edit it to change Vector's personality."
+fi
+
 info "Creating Python venv..."
 python3 -m venv "$VECTORAI_DIR/venv"
 "$VECTORAI_DIR/venv/bin/pip" install -q --upgrade pip

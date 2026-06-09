@@ -429,6 +429,11 @@ New-Item -ItemType Directory -Force $VectorAIDir | Out-Null
 Copy-Item "$SharedDir\vector-ai\service.py"       (Join-Path $VectorAIDir "service.py")       -Force
 Copy-Item "$SharedDir\vector-ai\memory.py"        (Join-Path $VectorAIDir "memory.py")        -Force
 Copy-Item "$SharedDir\vector-ai\requirements.txt" (Join-Path $VectorAIDir "requirements.txt") -Force
+# persona.txt holds Vector's editable personality — copy only if absent so a
+# re-run never clobbers a customized character.
+if (-not (Test-Path (Join-Path $VectorAIDir "persona.txt"))) {
+    Copy-Item "$SharedDir\vector-ai\persona.txt" (Join-Path $VectorAIDir "persona.txt") -Force
+}
 if (-not (Test-Path (Join-Path $VectorAIDir ".env"))) {
     Copy-Item "$SharedDir\vector-ai\.env" (Join-Path $VectorAIDir ".env") -Force
 }

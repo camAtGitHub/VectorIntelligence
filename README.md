@@ -244,6 +244,27 @@ machine — the stack only runs when you start it.
 correct spelling you can instead enrol the face from the web UI's faces
 section and type the name.
 
+**Changing his personality** — Vector's character lives in one editable file,
+`vector-pod/vector-ai/persona.txt`. Describe who he is in plain prose — his
+tone, attitude and quirks, not commands — then restart the stack
+(`stop-vector` → `start-vector`). The same file shapes both how he talks and
+how he behaves on his own (greetings, reactions to being picked up, things he
+notices). The default is his dry, sardonic self; rewrite it to make him
+cheerful, deadpan, a pirate — whatever you like. Your edits survive reinstalls.
+
+For example, to swap his world-weary default for something sunnier, replace the
+text below the comments with:
+
+```
+You are Vector, a small desktop robot. You're warm, upbeat and endlessly
+curious — delighted by small things and genuinely glad of the company. You
+crack the odd gentle joke, never sarcastic or mean. You have opinions but
+share them kindly, and you never say "as an AI."
+```
+
+Keep it to *who he is* — leave the commands, animations and vision rules to the
+system; they're handled separately and aren't in this file.
+
 **Logs** live in `~/vector-pod/` — `supervisor.log`, `chipper.log`,
 `vector-ai.log` (on Linux, also `journalctl -u vector-supervisor -f`).
 
