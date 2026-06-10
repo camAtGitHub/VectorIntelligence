@@ -386,6 +386,23 @@ class MDNS:
             pass
         return self.start(prefer_target=prefer_target, wait=wait)
 
+    def reannounce(self):
+        """Re-broadcast the registered records unsolicited.
+
+        Vector caches escapepod.local from our announcements with mDNS's
+        ~120s TTL. His own follow-up QUERIES can be silently dropped on the
+        WiFi->wired multicast path (router IGMP snooping), and then every
+        voice request after the cache expires dies robot-side with an error
+        buzz — no TCP, nothing in chipper.log (the "answers one query per
+        restart" failure). Announcements in the PC->robot direction do get
+        through, so re-announcing inside the TTL window keeps his cache
+        permanently warm and removes the dependency on his queries entirely."""
+        if self.zc and self.info:
+            try:
+                self.zc.update_service(self.info)
+            except Exception as e:
+                log(f"mDNS re-announce failed: {e}")
+
     def check_and_update(self, prefer_target: str = None) -> bool:
         """Re-advertise if the LAN IP has drifted. Returns True if refreshed."""
         current = _detect_local_ip(prefer_target)
@@ -849,6 +866,12 @@ class Supervisor:
                 if self.mdns.check_and_update(prefer_target=vip):
                     update_hosts_file(self.mdns._advertised_ip)
                     self.bounce_chipper("LAN IP changed")
+                else:
+                    # Keep Vector's cached escapepod.local record warm — his
+                    # own mDNS queries can be dropped on the WiFi->wired path,
+                    # and a stale cache means an error buzz on every query
+                    # (see MDNS.reannounce).
+                    self.mdns.reannounce()
 
 
 def main():
