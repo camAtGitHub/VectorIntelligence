@@ -16,7 +16,14 @@ sudo systemctl start vector-supervisor.service
 ok "Supervisor starting — bringing up Ollama, Wire-Pod and vector-ai."
 
 sleep 18
-if curl -s --max-time 5 http://127.0.0.1:8000/health >/dev/null 2>&1; then
+# vector-ai's port comes from pod.conf (AI_PORT, default 8090).
+AI_PORT=8090
+POD_CONF="$HOME/vector-pod/pod.conf"
+if [ -f "$POD_CONF" ]; then
+    PORT_FROM_CONF=$(sed -n 's/^[[:space:]]*AI_PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$POD_CONF" | head -1 || true)
+    [ -n "${PORT_FROM_CONF:-}" ] && AI_PORT="$PORT_FROM_CONF"
+fi
+if curl -s --max-time 5 "http://127.0.0.1:$AI_PORT/health" >/dev/null 2>&1; then
     ok "vector-ai up."
 else
     warn "vector-ai not up yet (supervisor will keep retrying)."

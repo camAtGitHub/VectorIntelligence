@@ -32,14 +32,21 @@ die()   { echo -e "${RED}[✗] $*${NC}" >&2; exit 1; }
 # written to pod.conf so the supervisor and initial-setup.sh stay in agreement.
 WEB_PORT=8080
 WEB_PORT_SET=false
+# vector-ai's localhost port. Default 8090 — deliberately not 8000, which too
+# many other tools squat on.
+AI_PORT=8090
+AI_PORT_SET=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --web-port)   WEB_PORT="${2:-}"; WEB_PORT_SET=true; shift 2 ;;
         --web-port=*) WEB_PORT="${1#*=}"; WEB_PORT_SET=true; shift ;;
-        *) die "Unknown argument: $1 (supported: --web-port N)" ;;
+        --ai-port)    AI_PORT="${2:-}"; AI_PORT_SET=true; shift 2 ;;
+        --ai-port=*)  AI_PORT="${1#*=}"; AI_PORT_SET=true; shift ;;
+        *) die "Unknown argument: $1 (supported: --web-port N, --ai-port N)" ;;
     esac
 done
 [[ "$WEB_PORT" =~ ^[0-9]+$ ]] || die "--web-port must be numeric (got: '$WEB_PORT')."
+[[ "$AI_PORT" =~ ^[0-9]+$ ]] || die "--ai-port must be numeric (got: '$AI_PORT')."
 
 # ── 1. System dependencies ────────────────────────────────────────────────────
 step "System dependencies"
@@ -244,16 +251,21 @@ cp "$SHARED_DIR/vector-ai/memory.py"        "$VECTORAI_DIR/memory.py"
 cp "$SHARED_DIR/vector-ai/requirements.txt" "$VECTORAI_DIR/requirements.txt"
 cp "$SHARED_DIR/supervisor.py"              "$HOME/vector-pod/supervisor.py"
 
-# pod.conf — single source of truth for the web UI port, read by supervisor.py
-# and initial-setup.sh. An explicit --web-port wins; otherwise preserve any
-# value already there so re-running the installer won't clobber a manual edit.
+# pod.conf — single source of truth for the web UI port (WEB_PORT) and
+# vector-ai's port (AI_PORT), read by supervisor.py, the setup scripts and
+# chipper. An explicit flag wins; otherwise preserve any value already there,
+# key by key, so re-running the installer won't clobber a manual edit.
 POD_CONF="$HOME/vector-pod/pod.conf"
 if ! $WEB_PORT_SET && [ -f "$POD_CONF" ]; then
     EXISTING=$(sed -n 's/^[[:space:]]*WEB_PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$POD_CONF" | head -1 || true)
     [ -n "${EXISTING:-}" ] && WEB_PORT="$EXISTING"
 fi
-echo "WEB_PORT=$WEB_PORT" > "$POD_CONF"
-info "pod.conf written (WEB_PORT=$WEB_PORT)."
+if ! $AI_PORT_SET && [ -f "$POD_CONF" ]; then
+    EXISTING=$(sed -n 's/^[[:space:]]*AI_PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$POD_CONF" | head -1 || true)
+    [ -n "${EXISTING:-}" ] && AI_PORT="$EXISTING"
+fi
+printf 'WEB_PORT=%s\nAI_PORT=%s\n' "$WEB_PORT" "$AI_PORT" > "$POD_CONF"
+info "pod.conf written (WEB_PORT=$WEB_PORT, AI_PORT=$AI_PORT)."
 
 if [ ! -f "$VECTORAI_DIR/.env" ]; then
     cp "$SHARED_DIR/vector-ai/.env" "$VECTORAI_DIR/.env"

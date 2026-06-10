@@ -21,8 +21,15 @@ Info "Supervisor starting — it brings up Ollama, Wire-Pod and vector-ai."
 
 # Give the supervisor a moment, then report what it got up.
 Start-Sleep -Seconds 18
+# vector-ai's port comes from pod.conf (AI_PORT, default 8090).
+$AiPort = 8090
+$PodConf = Join-Path $env:USERPROFILE "vector-pod\pod.conf"
+if (Test-Path $PodConf) {
+    $m = Get-Content $PodConf | Where-Object { $_ -match '^\s*AI_PORT\s*=\s*(\d+)\s*$' } | Select-Object -First 1
+    if ($m -match 'AI_PORT\s*=\s*(\d+)') { $AiPort = [int]$Matches[1] }
+}
 $ok = $true
-try { Invoke-RestMethod "http://127.0.0.1:8000/health" -TimeoutSec 5 | Out-Null; Info "vector-ai up." }
+try { Invoke-RestMethod "http://127.0.0.1:$AiPort/health" -TimeoutSec 5 | Out-Null; Info "vector-ai up." }
 catch { Warn "vector-ai not up yet (supervisor will keep retrying)."; $ok = $false }
 if (Test-NetConnection 127.0.0.1 -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue) {
     Info "Wire-Pod (chipper) up."

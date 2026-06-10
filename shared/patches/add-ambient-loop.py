@@ -170,7 +170,7 @@ func askVectorAIAmbient(jpeg []byte) string {
 \t\t"image": base64.StdEncoding.EncodeToString(jpeg),
 \t})
 \tclient := &http.Client{Timeout: 35 * time.Second}
-\tresp, err := client.Post("http://127.0.0.1:8000/v1/ambient", "application/json", bytes.NewReader(payload))
+\tresp, err := client.Post(vectorAIBase+"/v1/ambient", "application/json", bytes.NewReader(payload))
 \tif err != nil {
 \t\tfmt.Printf("[ambient] vector-ai call failed: %v\\n", err)
 \t\treturn ""
@@ -395,7 +395,7 @@ func askVectorAIGreeting(faceID int32, name string) string {
 \t\t"name":    name,
 \t})
 \tclient := &http.Client{Timeout: 20 * time.Second}
-\tresp, err := client.Post("http://127.0.0.1:8000/v1/proactive_greeting", "application/json", bytes.NewReader(payload))
+\tresp, err := client.Post(vectorAIBase+"/v1/proactive_greeting", "application/json", bytes.NewReader(payload))
 \tif err != nil {
 \t\tfmt.Printf("[greeting] vector-ai call failed: %v\\n", err)
 \t\treturn ""

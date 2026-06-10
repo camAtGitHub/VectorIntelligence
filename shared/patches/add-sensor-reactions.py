@@ -31,6 +31,8 @@ import (
 \t"fmt"
 \t"math/rand"
 \t"net/http"
+\t"os"
+\t"strconv"
 \t"sync"
 \t"sync/atomic"
 \t"time"
@@ -48,6 +50,18 @@ import (
 // window).
 
 const sensorCooldownDuration = 20 * time.Second
+
+// vectorAIBase is the local vector-ai service's base URL, shared by every
+// chipper loop that calls it (sensor, ambient, greeting, face). The port
+// comes from VECTORAI_PORT — set by the supervisor from pod.conf's AI_PORT —
+// so moving vector-ai off its default never needs a chipper rebuild.
+var vectorAIBase = func() string {
+\tp := os.Getenv("VECTORAI_PORT")
+\tif _, err := strconv.Atoi(p); err != nil {
+\t\tp = "8090"
+\t}
+\treturn "http://127.0.0.1:" + p
+}()
 
 var sensorCooldowns sync.Map // key: "<esn>:<event>", value: time.Time
 
@@ -166,7 +180,7 @@ func askVectorAIForReaction(event string) string {
 \t}
 \tbody, _ := json.Marshal(payload)
 \tclient := &http.Client{Timeout: 12 * time.Second}
-\tresp, err := client.Post("http://127.0.0.1:8000/v1/sensor_reaction", "application/json", bytes.NewReader(body))
+\tresp, err := client.Post(vectorAIBase+"/v1/sensor_reaction", "application/json", bytes.NewReader(body))
 \tif err != nil {
 \t\tfmt.Printf("[sensor] vector-ai call failed: %v\\n", err)
 \t\treturn ""
@@ -220,7 +234,7 @@ func notifyFaceSeen(faceID int32, name string) {
 \t\t"name":    name,
 \t})
 \tclient := &http.Client{Timeout: 3 * time.Second}
-\tresp, err := client.Post("http://127.0.0.1:8000/v1/state/face_seen", "application/json", bytes.NewReader(payload))
+\tresp, err := client.Post(vectorAIBase+"/v1/state/face_seen", "application/json", bytes.NewReader(payload))
 \tif err != nil {
 \t\tfmt.Printf("[face] notify failed: %v\\n", err)
 \t\treturn

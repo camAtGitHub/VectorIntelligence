@@ -51,15 +51,22 @@ HEALTH_PERIOD = 10            # seconds between health checks
 SLEEP_GAP     = 60            # a tick gap longer than this == PC slept
 LOG_MAX_BYTES = 5 * 1024 * 1024  # a log past this is rotated aside at startup
 WEB_PORT      = "8080"        # Wire-Pod web UI / config server port
+AI_PORT       = "8090"        # vector-ai service port (localhost only). NOT
+                              # 8000 — too many other tools default to it
+                              # (uvicorn, python -m http.server, MCP servers)
+                              # and a squatter leaves vector-ai crash-looping.
 
-# The installer's -WebPort / --web-port writes an override to pod.conf next to
-# this file, so the supervisor, the setup scripts and the firewall all agree on
-# one value. Only WEB_PORT is read here, and only if it's numeric.
+# The installer's -WebPort/--web-port and -AiPort/--ai-port write overrides to
+# pod.conf next to this file, so the supervisor, the setup scripts, chipper and
+# the firewall all agree on one value. Only numeric values are accepted.
 try:
     for _line in (POD_DIR / "pod.conf").read_text(encoding="utf-8").splitlines():
-        _line = _line.strip()
-        if _line.startswith("WEB_PORT=") and _line.split("=", 1)[1].strip().isdigit():
-            WEB_PORT = _line.split("=", 1)[1].strip()
+        _key, _, _val = _line.strip().partition("=")
+        if _val.strip().isdigit():
+            if _key.strip() == "WEB_PORT":
+                WEB_PORT = _val.strip()
+            elif _key.strip() == "AI_PORT":
+                AI_PORT = _val.strip()
 except OSError:
     pass
 
@@ -644,6 +651,9 @@ class Supervisor:
         # vars.go); default 8080. Pin it from WEB_PORT so a port chosen at
         # install time (pod.conf) actually takes effect.
         env["WEBSERVER_PORT"] = WEB_PORT
+        # Our chipper patches (sensor/ambient/greeting/face) call vector-ai at
+        # this port; passing it here means a port change never needs a rebuild.
+        env["VECTORAI_PORT"] = AI_PORT
         return env
 
     def start_ollama(self):
@@ -670,7 +680,7 @@ class Supervisor:
         self.vectorai = Child(
             "vector-ai",
             [py, "-u", "-m", "uvicorn", "service:app",
-             "--host", "127.0.0.1", "--port", "8000"],
+             "--host", "127.0.0.1", "--port", AI_PORT],
             VECTORAI_DIR, VECTORAI_LOG)
         self.vectorai.start()
 
@@ -680,7 +690,7 @@ class Supervisor:
                 and tcp_ok("127.0.0.1", 443, timeout=2))
 
     def vectorai_healthy(self) -> bool:
-        return http_ok("http://127.0.0.1:8000/health", timeout=4)
+        return http_ok(f"http://127.0.0.1:{AI_PORT}/health", timeout=4)
 
     def vector_reachable(self) -> bool:
         ip = read_vector_ip()

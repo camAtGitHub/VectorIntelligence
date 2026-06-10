@@ -36,10 +36,22 @@ with open("$CONFIG_DST", encoding="utf-8") as f:
 for key in ("knowledge", "STT", "weather"):
     live[key] = our[key]
 
+# Pin the LLM endpoint to vector-ai's actual port (pod.conf AI_PORT, default
+# 8090) so a port chosen at install time carries through to chipper.
+ai_port = "8090"
+try:
+    for line in open("$HOME/vector-pod/pod.conf", encoding="utf-8"):
+        k, _, v = line.strip().partition("=")
+        if k.strip() == "AI_PORT" and v.strip().isdigit():
+            ai_port = v.strip()
+except OSError:
+    pass
+live["knowledge"]["endpoint"] = "http://127.0.0.1:%s/v1" % ai_port
+
 with open("$CONFIG_DST", "w", encoding="utf-8") as f:
     json.dump(live, f, indent=2, ensure_ascii=False)
 
-print("Config merged OK.")
+print("Config merged OK (vector-ai endpoint :%s)." % ai_port)
 PYEOF
 
 info "Restarting Wire-Pod..."

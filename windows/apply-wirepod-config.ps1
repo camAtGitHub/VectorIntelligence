@@ -33,8 +33,19 @@ with open(src, encoding='utf-8')  as f: our  = json.load(f)
 with open(dst, encoding='utf-8')  as f: live = json.load(f)
 for k in ('knowledge', 'STT', 'weather'):
     live[k] = our[k]
+# Pin the LLM endpoint to vector-ai's actual port (pod.conf AI_PORT, default
+# 8090) so a port chosen at install time carries through to chipper.
+ai_port = '8090'
+try:
+    for line in open(r'$env:USERPROFILE\vector-pod\pod.conf', encoding='utf-8'):
+        k, _, v = line.strip().partition('=')
+        if k.strip() == 'AI_PORT' and v.strip().isdigit():
+            ai_port = v.strip()
+except OSError:
+    pass
+live['knowledge']['endpoint'] = f'http://127.0.0.1:{ai_port}/v1'
 with open(dst, 'w', encoding='utf-8') as f: json.dump(live, f, indent=2, ensure_ascii=False)
-print('Config merged.')
+print('Config merged (vector-ai endpoint :' + ai_port + ').')
 "@
 if ($LASTEXITCODE -ne 0) { Write-Host "Merge failed." -ForegroundColor Red; exit 1 }
 

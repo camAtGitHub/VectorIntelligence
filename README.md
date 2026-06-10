@@ -107,7 +107,7 @@ PC sleep, the robot's IP changing).
 │  Vector  │ ◄──────► │ VectorPod-Supervisor — one process                  │
 └──────────┘          │                                                     │
                       │ chipper     :443    voice server + autonomous loops │
-                      │ vector-ai   :8000   AI brain: memory, vision, mood  │
+                      │ vector-ai   :8090   AI brain: memory, vision, mood  │
                       │ Ollama      :11434  gemma3:12b (+ a small llama3.2) │
                       │ mDNS                escapepod.local                 │
                       │                                                     │
@@ -163,11 +163,13 @@ reactions, ambient awareness, the connection-leak fix, and more) — see
    .\windows\install.ps1
    ```
 
-   > **Custom web UI port?** Add `-WebPort <n>` (e.g.
+   > **Custom ports?** Add `-WebPort <n>` (e.g.
    > `.\windows\install.ps1 -WebPort 8086`) to move Wire-Pod's web UI / config
-   > server off the default 8080. It's saved to `vector-pod\pod.conf`; the
-   > supervisor, setup scripts and firewall all read it from there. The
-   > voice/pairing ports (443, 80, 8084) are fixed — Vector expects those.
+   > server off the default 8080, and/or `-AiPort <n>` to move the local
+   > vector-ai service off its default 8090. Both are saved to
+   > `vector-pod\pod.conf`; the supervisor, setup scripts, chipper and firewall
+   > all read them from there. The voice/pairing ports (443, 80, 8084) are
+   > fixed — Vector expects those.
 
    It installs anything missing via `winget` (Go, Python, Git, MSYS2/mingw,
    Ollama, the Vulkan SDK), clones and builds Wire-Pod, builds GPU Whisper,
@@ -210,7 +212,8 @@ cd linux && bash install.sh
 ```
 
 > Add `--web-port <n>` (e.g. `bash install.sh --web-port 8086`) to move the web
-> UI off the default 8080; it's saved to `~/vector-pod/pod.conf`.
+> UI off the default 8080, and/or `--ai-port <n>` to move the local vector-ai
+> service off its default 8090; both are saved to `~/vector-pod/pod.conf`.
 
 This installs dependencies, builds Wire-Pod and Whisper, grants chipper
 permission to bind privileged ports without root, and registers

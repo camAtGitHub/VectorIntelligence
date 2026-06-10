@@ -18,7 +18,7 @@
     "openai_voice_with_english": false,
     "save_chat": true,
     "commands_enable": true,
-    "endpoint": "http://127.0.0.1:8000/v1",
+    "endpoint": "http://127.0.0.1:8090/v1",
     "top_p": 1,
     "temp": 1.2
   },

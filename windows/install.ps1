@@ -16,7 +16,12 @@ param(
     # Wire-Pod's web UI / config-server port (its WEBSERVER_PORT). Default 8080.
     # Saved to pod.conf so the supervisor, setup scripts and firewall agree on it.
     [ValidateRange(1, 65535)]
-    [int]$WebPort = 8080
+    [int]$WebPort = 8080,
+    # vector-ai's localhost port. Default 8090 — deliberately not 8000, which
+    # too many other tools squat on. Saved to pod.conf (AI_PORT); the
+    # supervisor, chipper and apply-wirepod-config all read it from there.
+    [ValidateRange(1, 65535)]
+    [int]$AiPort = 8090
 )
 $ErrorActionPreference = "Stop"
 
@@ -24,9 +29,12 @@ $ErrorActionPreference = "Stop"
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Re-launching as administrator..." -ForegroundColor Yellow
-    # Forward -WebPort only when the user actually passed it, so the elevated
-    # run can distinguish an explicit choice from the default (see Pod config).
-    $fwd = if ($PSBoundParameters.ContainsKey('WebPort')) { " -WebPort $WebPort" } else { "" }
+    # Forward port flags only when the user actually passed them, so the
+    # elevated run can distinguish an explicit choice from the default (see
+    # Pod config).
+    $fwd = ""
+    if ($PSBoundParameters.ContainsKey('WebPort')) { $fwd += " -WebPort $WebPort" }
+    if ($PSBoundParameters.ContainsKey('AiPort'))  { $fwd += " -AiPort $AiPort" }
     Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"$fwd"
     exit
 }
@@ -514,21 +522,29 @@ if ($content -notmatch "escapepod\.local") {
 ipconfig /flushdns | Out-Null
 
 # ── Pod config (pod.conf) ─────────────────────────────────────────────────────
-# Single source of truth for the web UI port. supervisor.py, initial-setup.ps1
-# and the firewall rule below all read WEB_PORT from here so they never drift.
-# An explicit -WebPort wins; otherwise we preserve whatever's already in
-# pod.conf, so re-running the installer doesn't clobber a hand-edited port.
+# Single source of truth for the web UI port (WEB_PORT) and vector-ai's port
+# (AI_PORT). supervisor.py, the setup scripts, chipper and the firewall rule
+# below all read these so they never drift. An explicit flag wins; otherwise
+# we preserve whatever's already in pod.conf, key by key, so re-running the
+# installer doesn't clobber a hand-edited port.
 Step "Pod config"
 New-Item -ItemType Directory -Force $InstallRoot | Out-Null
 $PodConf = Join-Path $InstallRoot "pod.conf"
-if (-not $PSBoundParameters.ContainsKey('WebPort') -and (Test-Path $PodConf)) {
-    $existing = Get-Content $PodConf | Where-Object { $_ -match '^\s*WEB_PORT\s*=\s*(\d+)\s*$' } | Select-Object -First 1
-    if ($existing -match 'WEB_PORT\s*=\s*(\d+)') { $WebPort = [int]$Matches[1] }
+if (Test-Path $PodConf) {
+    $conf = Get-Content $PodConf
+    if (-not $PSBoundParameters.ContainsKey('WebPort')) {
+        $m = $conf | Where-Object { $_ -match '^\s*WEB_PORT\s*=\s*(\d+)\s*$' } | Select-Object -First 1
+        if ($m -match 'WEB_PORT\s*=\s*(\d+)') { $WebPort = [int]$Matches[1] }
+    }
+    if (-not $PSBoundParameters.ContainsKey('AiPort')) {
+        $m = $conf | Where-Object { $_ -match '^\s*AI_PORT\s*=\s*(\d+)\s*$' } | Select-Object -First 1
+        if ($m -match 'AI_PORT\s*=\s*(\d+)') { $AiPort = [int]$Matches[1] }
+    }
 }
 # ASCII (no BOM) — supervisor.py reads this as UTF-8 and a BOM would break its
-# `WEB_PORT=` line check.
-Set-Content -Path $PodConf -Value "WEB_PORT=$WebPort" -Encoding ASCII
-Info "Web UI port: $WebPort (pod.conf at $PodConf)."
+# key=value line checks.
+Set-Content -Path $PodConf -Value @("WEB_PORT=$WebPort", "AI_PORT=$AiPort") -Encoding ASCII
+Info "Web UI port: $WebPort, vector-ai port: $AiPort (pod.conf at $PodConf)."
 
 # ── 6. Firewall ──────────────────────────────────────────────────────────────
 Step "Windows Firewall"
