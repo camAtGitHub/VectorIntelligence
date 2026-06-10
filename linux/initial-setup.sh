@@ -21,7 +21,7 @@ fi
 BASE="http://localhost:$WEB_PORT"
 
 curl -s --connect-timeout 3 "$BASE" >/dev/null \
-    || fail "Wire-Pod web UI not responding on $WEB_PORT. Run: sudo systemctl start wire-pod"
+    || fail "Wire-Pod web UI not responding on $WEB_PORT. Run: bash start-vector.sh"
 
 info "Setting STT language to en-US..."
 resp=$(curl -s -X POST "$BASE/api/set_stt_info" \

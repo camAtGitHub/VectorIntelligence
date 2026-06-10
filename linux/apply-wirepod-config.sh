@@ -54,7 +54,10 @@ with open("$CONFIG_DST", "w", encoding="utf-8") as f:
 print("Config merged OK (vector-ai endpoint :%s)." % ai_port)
 PYEOF
 
-info "Restarting Wire-Pod..."
-sudo systemctl restart wire-pod.service
+# Restart the stack so chipper re-reads apiConfig.json. The supervisor owns
+# chipper (and vector-ai / Ollama), so bouncing its service is how the new
+# config takes effect — same fix as the Windows side's defunct-task bug (#3).
+info "Restarting the supervisor..."
+sudo systemctl restart vector-supervisor.service
 sleep 2
-sudo systemctl is-active wire-pod.service && info "Wire-Pod is running." || warn "Wire-Pod failed to start — check: journalctl -u wire-pod -n 30"
+sudo systemctl is-active vector-supervisor.service && info "Supervisor is running — give it ~15s to bring chipper back up." || warn "Supervisor failed to start — check: journalctl -u vector-supervisor -n 30"
