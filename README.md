@@ -249,7 +249,9 @@ correct spelling you can instead enrol the face from the web UI's faces
 section and type the name.
 
 **Changing his personality** — Vector's character lives in one editable file,
-`vector-pod/vector-ai/persona.txt`. Describe who he is in plain prose — his
+`vector-pod\vector-ai\persona.txt` on Windows, `~/vector-ai/persona.txt` on
+Linux. (Missing? It's created automatically the first time the stack starts —
+or grab it from `shared/vector-ai/` in this repo.) Describe who he is in plain prose — his
 tone, attitude and quirks, not commands — then restart the stack
 (`stop-vector` → `start-vector`). The same file shapes both how he talks and
 how he behaves on his own (greetings, reactions to being picked up, things he
