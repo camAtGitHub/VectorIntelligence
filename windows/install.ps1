@@ -268,6 +268,9 @@ Patch "$SharedDir\patches\add-face-probe.py" $WirePodDir
 Info "Adding ambient awareness (idle novelty observation loop)..."
 Patch "$SharedDir\patches\add-ambient-loop.py" $WirePodDir
 
+Info "Adding multi-behavior presence tick (Work Day Mode + future FSMs)..."
+Patch "$SharedDir\patches\add-behavior-tick.py" $WirePodDir
+
 Info "Adding speech volume bump (idles quiet, rises only to speak)..."
 Patch "$SharedDir\patches\add-speech-volume-bump.py" $WirePodDir
 

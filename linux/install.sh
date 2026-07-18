@@ -164,6 +164,9 @@ sudo python3 "$SHARED_DIR/patches/add-face-probe.py" "$WIREPOD_DIR"
 info "Adding ambient awareness (idle novelty observation loop)..."
 sudo python3 "$SHARED_DIR/patches/add-ambient-loop.py" "$WIREPOD_DIR"
 
+info "Adding multi-behavior presence tick (Work Day Mode + future FSMs)..."
+sudo python3 "$SHARED_DIR/patches/add-behavior-tick.py" "$WIREPOD_DIR"
+
 info "Adding speech volume bump (idles quiet, rises only to speak)..."
 sudo python3 "$SHARED_DIR/patches/add-speech-volume-bump.py" "$WIREPOD_DIR"
 
