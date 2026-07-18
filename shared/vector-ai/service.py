@@ -28,6 +28,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from memory import MemoryStore
+from behaviors.runtime import BehaviorRuntime
+from behaviors.config import load_runtime_config, load_workday_config
+from behaviors.continuity import ContinuityStore
+from behaviors.workday import parse_work_commands, pause_until_ts
 
 # Make print() flush immediately so journalctl / vector-ai.log show lines in real time.
 sys.stdout.reconfigure(line_buffering=True)
@@ -87,6 +91,18 @@ async def _configure_access_log() -> None:
         )
     else:
         print("[vector-ai] DEBUG logging off (set VECTORAI_DEBUG=1 in .env)")
+    # Clock-only workday transitions (waiting_morning → no_show) without chipper.
+    asyncio.create_task(_behavior_clock_loop())
+
+
+async def _behavior_clock_loop() -> None:
+    """Every 60s: clock transitions for Work Day even if presence ticks stall."""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            BEHAVIOR_RUNTIME.clock_tick(time.time())
+        except Exception as e:
+            print(f"[behaviors] clock loop error: {e}")
 
 
 # -- LLM backend (OpenRouter by default; OpenAI-compatible HTTP only) ----------
@@ -147,6 +163,28 @@ _DEBUG_LOG_MAX = 10 * 1024 * 1024  # rotate debug log at 10 MB
 # Persistent memory: SQLite next to service.py so it lives wherever vector-ai
 # is installed. Survives restarts and updates.
 MEMORY = MemoryStore(Path(__file__).parent / "memory.db")
+
+# -- Multi-behavior runtime (Work Day Mode first passenger) --------------------
+# Intelligence lives under behaviors/; this service only wires HTTP + chat hooks.
+_LAST_USER_VOICE_TS = 0.0  # updated on each chat generate for speech suppress
+_runtime_cfg = load_runtime_config()
+_workday_cfg = load_workday_config()
+_continuity = ContinuityStore(Path(__file__).resolve().parent / "workday.db")
+BEHAVIOR_RUNTIME = BehaviorRuntime(
+    _runtime_cfg,
+    _workday_cfg,
+    _continuity,
+    quiet_fn=lambda: bool(_ambient_state.get("quiet")),
+    voice_ts_fn=lambda: _LAST_USER_VOICE_TS,
+)
+if _workday_cfg.enabled:
+    print(
+        f"[behaviors] Work Day Mode ON "
+        f"(tz={_workday_cfg.tz}, start={_workday_cfg.start_begin}-"
+        f"{_workday_cfg.start_end}, end={_workday_cfg.end})"
+    )
+else:
+    print("[behaviors] Work Day Mode OFF (set WORKDAY_ENABLED=1 to enable)")
 
 
 def _redact_content(content: Any) -> Any:
@@ -849,6 +887,27 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
             f"your tone naturally - never state, explain or announce it."
         )
 
+    # Work Day continuity strip (noticeable in chat; no extra speech stream).
+    if _workday_cfg.enabled and BEHAVIOR_RUNTIME.workday is not None:
+        try:
+            local_dt = now_dt
+            if _workday_cfg.tz is not None:
+                try:
+                    from zoneinfo import ZoneInfo
+                    # now_dt is usually naive local host time; prefer workday tz clock
+                    local_dt = datetime.now(_workday_cfg.tz)
+                except Exception:
+                    local_dt = now_dt
+            date_s = local_dt.strftime("%Y-%m-%d")
+            strip = _continuity.day_strip(date_s)
+            if strip:
+                bits.append(
+                    f"{strip} Use this only if it fits the conversation; "
+                    f"do not announce 'work day mode'."
+                )
+        except Exception as e:
+            print(f"[behaviors] day_strip inject failed: {e}")
+
     return ("[Context for you, Vector - " + " ".join(bits)
             + " Weave in only what naturally fits; never recite this back.]")
 
@@ -1001,7 +1060,42 @@ def extract_memory_commands(text: str) -> str:
     for state in _QUIET_RE.findall(text):
         _set_quiet(state.strip().lower() == "on")
     text = _QUIET_RE.sub('', text)
+
+    # Work Day control tags (pause / resume / afternoon yes-no).
+    text = _apply_work_commands(text)
     return text
+
+
+def _apply_work_commands(text: str) -> str:
+    """Parse {{work…}} tags, update Work Day state, strip tags from speech."""
+    if not text or "{{work" not in text.lower():
+        return text
+    cleaned, actions = parse_work_commands(text)
+    if not actions or BEHAVIOR_RUNTIME.workday is None:
+        return cleaned if actions else text
+    try:
+        local_dt = datetime.now(_workday_cfg.tz)
+        date_s = local_dt.strftime("%Y-%m-%d")
+        now = time.time()
+        for kind, arg in actions:
+            if kind == "afternoon":
+                if arg == "yes":
+                    BEHAVIOR_RUNTIME.workday.on_afternoon_yes(date_s, now=now)
+                    print(f"[workday] afternoon YES for {date_s}")
+                else:
+                    BEHAVIOR_RUNTIME.workday.on_afternoon_no(date_s)
+                    print(f"[workday] afternoon NO for {date_s}")
+            elif kind == "pause":
+                until = pause_until_ts(local_dt, arg, _workday_cfg.tz)
+                BEHAVIOR_RUNTIME.workday.on_pause(date_s, until_ts=until)
+                print(f"[workday] pause until {arg} ({until})")
+            elif kind == "resume":
+                BEHAVIOR_RUNTIME.workday.on_resume(date_s)
+                print(f"[workday] resume for {date_s}")
+    except Exception as e:
+        print(f"[workday] command apply failed: {e}")
+    return cleaned
+
 
 def clean_response(text: str) -> str:
     text = strip_markdown(text)
@@ -1284,6 +1378,8 @@ async def _summarise_conversation(messages: List[Message], latest_reply: str,
 # -- Main flow -----------------------------------------------------------------
 
 async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIterator[str]:
+    global _LAST_USER_VOICE_TS
+    _LAST_USER_VOICE_TS = time.time()  # suppress proactive speech during chat
     last_user_text = next(
         (m.content for m in reversed(messages)
          if m.role == "user" and isinstance(m.content, str)),
@@ -1772,6 +1868,77 @@ async def ambient_quiet(req: AmbientQuietRequest):
     the {{quietMode||on/off}} command the LLM emits)."""
     _set_quiet(req.on)
     return {"quiet": _ambient_state["quiet"]}
+
+
+# -- Multi-behavior presence tick (Work Day Mode + future FSMs) ----------------
+
+class BehaviorTickRequest(BaseModel):
+    occupied: bool = False
+    face: Optional[dict] = None  # {face_id, name, is_stranger}
+    on_charger: bool = False
+    voice_recent: bool = False
+
+
+@app.post("/v1/behaviors/tick")
+async def behaviors_tick(req: BehaviorTickRequest):
+    """Chipper presence tick: occupancy every time; face only at junctures.
+
+    Returns at most one proactive speak line and whether chipper should run a
+    short face probe before the next tick (need_identity).
+    """
+    now = time.time()
+    BEHAVIOR_RUNTIME.ingest_tick_payload(
+        now=now,
+        occupied=bool(req.occupied),
+        face=req.face,
+        on_charger=bool(req.on_charger),
+        voice_recent=bool(req.voice_recent),
+    )
+    # Chipper may flag recent voice; also honor our chat-side timestamp.
+    if req.voice_recent:
+        global _LAST_USER_VOICE_TS
+        _LAST_USER_VOICE_TS = max(_LAST_USER_VOICE_TS, now)
+    result = BEHAVIOR_RUNTIME.tick(now)
+    if result.speak:
+        print(f"[behaviors] speak: {result.speak!r} debug={result.debug}")
+    elif result.need_identity:
+        print(f"[behaviors] need_identity debug={result.debug}")
+    out = {
+        "speak": result.speak or "",
+        "need_identity": bool(result.need_identity),
+    }
+    if DEBUG:
+        out["debug"] = result.debug
+    return out
+
+
+@app.get("/v1/behaviors/state")
+async def behaviors_state():
+    """Debug/ops view of workday mode + presence cache."""
+    now = time.time()
+    try:
+        local_dt = datetime.now(_workday_cfg.tz)
+        date_s = local_dt.strftime("%Y-%m-%d")
+        rec = _continuity.load_workday(date_s)
+        mode = rec.mode.value
+        strip = _continuity.day_strip(date_s)
+    except Exception as e:
+        mode, strip, date_s = "error", str(e), ""
+    snap = BEHAVIOR_RUNTIME.presence.snapshot
+    return {
+        "workday_enabled": _workday_cfg.enabled,
+        "date": date_s,
+        "mode": mode,
+        "day_strip": strip,
+        "occupied": snap.occupied,
+        "identity_fresh": BEHAVIOR_RUNTIME.presence.identity_fresh(now),
+        "face": (
+            {"face_id": snap.face.face_id, "name": snap.face.name,
+             "is_stranger": snap.face.is_stranger}
+            if snap.face else None
+        ),
+        "behaviors": [b.id for b in BEHAVIOR_RUNTIME.behaviors],
+    }
 
 
 # -- Proactive greeting (Phase 3a) ---------------------------------------------
