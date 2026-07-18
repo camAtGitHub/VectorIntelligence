@@ -105,11 +105,10 @@ func runBehaviorTickLoop(esn, guid, target string) {
 		}
 		time.Sleep(sleep)
 
-		// Stay out of the way of active conversation (same gate as ambient).
+		// Skip only mid-conversation to avoid hammering the robot during chat.
+		// Do NOT gate on ambientInNightHours: vector-ai owns work windows via
+		// WORKDAY_TZ (host local midnight ≠ user TZ can miss morning arm).
 		if recentlyConversed() {
-			continue
-		}
-		if ambientInNightHours() {
 			continue
 		}
 
@@ -253,11 +252,10 @@ func behaviorTickOnce(esn, guid, target string) bool {
 	if line == "" {
 		return true
 	}
-	// Re-check conversation; never speak over the user.
-	if recentlyConversed() {
-		fmt.Printf("[behavior-tick] suppressing speak (conversation): %q\n", line)
-		return true
-	}
+	// Trust vector-ai: it already applied quiet / voice suppress / min-gap and
+	// committed speech-gated side effects (poke/away/late_check). Dropping the
+	// line here after a post-HTTP recentlyConversed check would leave timers
+	// advanced without speech — always deliver non-empty speak.
 	fmt.Printf("[behavior-tick] speak: %q\n", line)
 	// Keep ambient/greeting clear of our proactive line.
 	MarkVoiceActivity()

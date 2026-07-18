@@ -287,6 +287,10 @@ func ambientReact(robot *vector.Vector, text string, investigate bool) {
 \t\tDurationScalar: 1.0,
 \t}); err != nil {
 \t\tfmt.Printf("[ambient] SayText failed: %v\\n", err)
+\t} else {
+\t\t// Count ambient speech as voice activity so workday/greeting suppress
+\t\t// windows and other loops stay clear (avoids ambient→workday double-speak).
+\t\tMarkVoiceActivity()
 \t}
 \ttime.Sleep(500 * time.Millisecond) // let the audio tail finish
 \tbc.Send(&vectorpb.BehaviorControlRequest{

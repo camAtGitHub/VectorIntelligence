@@ -686,6 +686,51 @@ def test_arbiter_deny_does_not_commit_poke() -> None:
         check("denied poke not committed", rec.last_poke_at == start)
 
 
+def test_identity_reject_cooldown_after_stale_cache() -> None:
+    """Stranger reject then face cache expires: still no need_identity in cooldown."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        cooldown = 600
+        face_max = 120
+        b = WorkDayBehavior(
+            _wd_cfg(identity_reject_cooldown_s=cooldown),
+            store,
+        )
+        now = 1_800_000_000.0
+        stranger = FaceIdentity(face_id=-3, name="", is_stranger=True)
+        # Morning window, occupied + fresh stranger identity → reject + cooldown
+        r1 = b.plan(_ctx(b, True, stranger, 9, 15, now, identity_fresh=True))
+        check("stranger reject no arm", r1.need_identity is False)
+        rec = store.load_workday("2026-07-18")
+        check("cooldown set", rec.identity_reject_until >= now + cooldown - 1)
+
+        # Past FACE_CACHE_MAX_AGE: identity no longer fresh, but still in cooldown
+        later = now + face_max + 10
+        r2 = b.plan(
+            _ctx(b, True, None, 9, 20, later, identity_fresh=False)
+        )
+        check("stale + cooldown: no need_identity", r2.need_identity is False)
+        check(
+            "cooldown reason",
+            r2.debug.get("reason") == "identity_reject_cooldown",
+        )
+
+        # After cooldown expires → need_identity again
+        after = now + cooldown + 1
+        r3 = b.plan(
+            _ctx(b, True, None, 9, 30, after, identity_fresh=False)
+        )
+        check("after cooldown need_identity", r3.need_identity is True)
+
+
+def test_single_pipe_work_tags() -> None:
+    text, actions = parse_work_commands("Ok {{workAfternoon|yes}}")
+    check("single-pipe afternoon yes", actions == [("afternoon", "yes")])
+    check("single-pipe stripped", "{{" not in text)
+    text, actions = parse_work_commands("{{workPause|until=14:00}}")
+    check("single-pipe pause", actions == [("pause", "14:00")])
+
+
 if __name__ == "__main__":
     print("test_behaviors")
     test_parse_hhmm()
@@ -717,4 +762,6 @@ if __name__ == "__main__":
     test_bad_config_does_not_crash()
     test_malformed_work_tags_stripped()
     test_arbiter_deny_does_not_commit_poke()
+    test_identity_reject_cooldown_after_stale_cache()
+    test_single_pipe_work_tags()
     print("ALL PASS")

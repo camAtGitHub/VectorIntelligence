@@ -15,17 +15,18 @@ from .types import (
     WorkdayMode,
 )
 
-# Strict tags (parsed as actions).
+# Strict tags (parsed as actions). Accept || or single | separators.
 _AFTERNOON_RE = re.compile(
-    r"\{\{workAfternoon\|\|(yes|no)\}\}", re.IGNORECASE
+    r"\{\{workAfternoon\|{1,2}(yes|no)\}\}", re.IGNORECASE
 )
 _PAUSE_RE = re.compile(
-    r"\{\{workPause\|\|until=(\d{1,2}:\d{2})\}\}", re.IGNORECASE
+    r"\{\{workPause\|{1,2}until=(\d{1,2}:\d{2})\}\}", re.IGNORECASE
 )
 _RESUME_RE = re.compile(r"\{\{workResume\}\}", re.IGNORECASE)
 # Near-miss / malformed work tags — strip from TTS even if not actioned.
+# Allows single | or || and optional payload after pipes.
 _WORK_TAG_STRIP_RE = re.compile(
-    r"\{\{\s*work[A-Za-z]*\s*(?:\|\|[^}]*)?\}\}", re.IGNORECASE
+    r"\{\{\s*work[A-Za-z]*\s*(?:\|{1,2}[^}]*)?\}\}", re.IGNORECASE
 )
 
 
