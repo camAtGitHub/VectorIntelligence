@@ -9,7 +9,7 @@ endpoint whether anything is genuinely new.
 The whole design is built around restraint: a desk barely changes, so the
 model's default answer is "nothing", glances are minutes apart, and a
 post-reaction cooldown stops Vector from remarking again straight away. Only on
-genuine novelty does he speak a short line — and vector-ai stores the new thing
+genuine novelty does he speak a short line - and vector-ai stores the new thing
 as a visual observation so he can talk about it later when asked.
 
 Also exposes MarkVoiceActivity(), which the face probe calls at the start of
@@ -43,8 +43,8 @@ import (
 \t"github.com/kercre123/wire-pod/chipper/pkg/vars"
 )
 
-// Ambient awareness: whenever Vector is awake and free — not mid-conversation
-// and not in his night-hours sleep window — he periodically takes a silent
+// Ambient awareness: whenever Vector is awake and free - not mid-conversation
+// and not in his night-hours sleep window - he periodically takes a silent
 // camera frame and lets the multimodal model decide whether anything is
 // genuinely new. He does this whether or not he is docked: being on the
 // charger no longer blocks observation, only being asleep does. Almost always
@@ -69,7 +69,7 @@ const (
 \t// Skip a glance if a voice interaction happened within this window.
 \tambientVoiceCooldown = 2 * time.Minute
 
-\t// No ambient activity during these hours (24h clock) — Vector's presumed
+\t// No ambient activity during these hours (24h clock) - Vector's presumed
 \t// sleep window, and the sole "asleep" gate now that docking no longer
 \t// blocks observation. The resulting overnight gap in /v1/ambient calls is
 \t// also what vector-ai uses to expire quiet mode (a sleep cycle has passed).
@@ -79,7 +79,7 @@ const (
 
 \t// How often, when idle, Vector briefly probes for a known face to greet.
 \t// Each probe opens a short face-event stream, which is heavy on Vector's
-\t// firmware — so keep these windows brief and infrequent.
+\t// firmware - so keep these windows brief and infrequent.
 \tgreetingInterval = 2 * time.Minute
 )
 
@@ -129,7 +129,7 @@ func runAmbientLoop(esn, guid, target string) {
 \tfailStreak := 0
 \tfor {
 \t\t// Failure backoff: when glances keep failing (robot asleep, link down,
-\t\t// gateway wedged) poke him less often — opening a fresh connection and
+\t\t// gateway wedged) poke him less often - opening a fresh connection and
 \t\t// leaving a hanging RPC on a struggling gateway every cycle makes
 \t\t// things worse and floods the log. 3m -> 6m -> 12m -> 24m, reset on
 \t\t// the first success.
@@ -143,7 +143,7 @@ func runAmbientLoop(esn, guid, target string) {
 \t\t}
 \t\ttime.Sleep(sleep)
 \t\t// Idle gate: glance around whenever Vector is awake and free. Being
-\t\t// docked is fine — only night hours (asleep) and an in-flight
+\t\t// docked is fine - only night hours (asleep) and an in-flight
 \t\t// conversation hold him back.
 \t\tif recentlyConversed() {
 \t\t\tcontinue
@@ -163,7 +163,7 @@ func runAmbientLoop(esn, guid, target string) {
 }
 
 // askVectorAIAmbient sends a camera frame to vector-ai and returns the line
-// Vector should speak. Empty string means "nothing worth saying" — the
+// Vector should speak. Empty string means "nothing worth saying" - the
 // overwhelmingly common case.
 func askVectorAIAmbient(jpeg []byte) string {
 \tpayload, _ := json.Marshal(map[string]string{
@@ -200,7 +200,7 @@ func ambientObserveOnce(esn, guid, target string) bool {
 \t\tfmt.Printf("[ambient] connect failed for %s: %v\\n", esn, err)
 \t\treturn false
 \t}
-\t// Release the gRPC connection when done — otherwise every cycle leaks one.
+\t// Release the gRPC connection when done - otherwise every cycle leaks one.
 \tdefer robot.Close()
 
 \t// Vector keeps his camera feed off when idle or docked, so a cold
@@ -226,12 +226,12 @@ func ambientObserveOnce(esn, guid, target string) bool {
 
 \tline := askVectorAIAmbient(img.Data)
 \tif line == "" {
-\t\treturn true // nothing novel — the overwhelmingly common case
+\t\treturn true // nothing novel - the overwhelmingly common case
 \t}
 
 \t// Re-check: a conversation may have started while we were thinking. The
 \t// observation is already stored by vector-ai, so Vector can still mention
-\t// it later — we just don't speak over the user now.
+\t// it later - we just don't speak over the user now.
 \tif recentlyConversed() {
 \t\tfmt.Printf("[ambient] suppressing reaction (conversation in progress): %q\\n", line)
 \t\treturn true
@@ -247,7 +247,7 @@ func ambientObserveOnce(esn, guid, target string) bool {
 
 // ambientReact makes Vector react to something synchronously: it acquires
 // behavior control, optionally performs a brief investigative move, speaks the
-// line, then releases — all before returning, so the caller's deferred Close
+// line, then releases - all before returning, so the caller's deferred Close
 // never cuts the moment off. The shared fire-and-forget sayText helper is
 // unsafe here: the ambient loop's connection is short-lived.
 func ambientReact(robot *vector.Vector, text string, investigate bool) {
@@ -296,7 +296,7 @@ func ambientReact(robot *vector.Vector, text string, investigate bool) {
 \t})
 }
 
-// ambientInvestigateMove is a brief, modest "I noticed something" beat — a
+// ambientInvestigateMove is a brief, modest "I noticed something" beat - a
 // curious tilt of the head and a short approach toward what Vector saw. It is
 // deliberately small, not navigation. Behavior control must already be held,
 // and Vector must be off the charger.
@@ -354,7 +354,7 @@ func runGreetingLoop(esn, guid, target string) {
 \t\t\tcontinue
 \t\t}
 \t\tfmt.Printf("[greeting] %s -> %q\\n", name, line)
-\t\tMarkVoiceActivity() // a greeting counts as an interaction — keep loops clear
+\t\tMarkVoiceActivity() // a greeting counts as an interaction - keep loops clear
 \t\tambientReact(robot, line, false)
 \t\trobot.Close()
 \t}
@@ -429,7 +429,7 @@ def patch_startserver(path: Path) -> bool:
     src = src.replace(anchor, insert, 1)
 
     # Alias-import the ttr package if not already imported (add-sensor-reactions
-    # also adds this — whichever patch runs first wins, both are idempotent).
+    # also adds this - whichever patch runs first wins, both are idempotent).
     if 'ttr "github.com/kercre123/wire-pod/chipper/pkg/wirepod/ttr"' not in src:
         src = re.sub(
             r'(import \(\n)',

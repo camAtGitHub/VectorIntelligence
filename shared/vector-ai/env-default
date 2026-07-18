@@ -1,0 +1,36 @@
+# -- Vector AI - LLM backend (OpenRouter) --------------------------------------
+# Wire-Pod still talks to THIS service at http://127.0.0.1:8090/v1 (OpenAI-
+# compatible). Only the upstream behind vector-ai is configured here.
+#
+# Personality: edit persona.txt next to this file (not the API key / model).
+# Command/vision rules: Wire-Pod knowledge openai_prompt (apply-wirepod-config).
+
+# Required - https://openrouter.ai/keys
+OPENROUTER_API_KEY=
+
+# OpenAI-compatible base URL (no trailing slash required)
+LLM_BASE_URL=https://openrouter.ai/api/v1
+
+# Main multimodal model (chat + vision / ambient / getImage).
+# Browse: https://openrouter.ai/models
+LLM_MODEL=google/gemini-2.0-flash
+
+# Cheap/fast model for mood reflection + conversation summaries.
+# Can be the same as LLM_MODEL if you prefer.
+LLM_SUMMARY_MODEL=google/gemini-2.0-flash-lite
+
+# Max user/assistant turns forwarded to the LLM (Wire-Pod may keep more).
+LLM_MAX_HISTORY_MESSAGES=24
+
+# Timeouts (seconds)
+LLM_TIMEOUT_CONNECT=15
+LLM_TIMEOUT_READ=120
+
+# Debug: log Wire-Pod requests + OpenRouter send/recv (images redacted).
+# Writes to vector-ai.log (stdout) AND vector-ai-debug.log next to service.py.
+# VECTORAI_DEBUG=1
+# VECTORAI_DEBUG_MAX_CHARS=4000
+
+# Optional OpenRouter leaderboard attribution
+# LLM_HTTP_REFERER=https://github.com/yourname/VectorIntelligence
+# LLM_APP_TITLE=VectorIntelligence

@@ -3,11 +3,11 @@
 
 Faces normally only reach the server through the per-response interrupt
 stream, so the face used to scope query N is whoever was seen during
-response N-1 — a one-turn lag (a stranger is greeted on their *second*
+response N-1 - a one-turn lag (a stranger is greeted on their *second*
 utterance, a speaker hand-off lands a turn late).
 
 This patch adds ObserveFaceBriefly(), launched as a goroutine at the start
-of a voice request — it runs concurrently with speech-to-text, so by the
+of a voice request - it runs concurrently with speech-to-text, so by the
 time the LLM request fires vector-ai already knows the current speaker.
 Zero added latency: it overlaps the user speaking.
 
@@ -35,7 +35,7 @@ import (
 // ObserveFaceBriefly opens a short-lived robot_observed_face stream and
 // reports who Vector is looking at to vector-ai (via notifyFaceSeen). It is
 // launched as a goroutine at the START of a voice request, so it runs
-// concurrently with speech-to-text — by the time the LLM request fires,
+// concurrently with speech-to-text - by the time the LLM request fires,
 // vector-ai already knows the current speaker, with no one-turn lag and no
 // added latency. Self-terminating: closes after the timeout or stream end.
 //
@@ -59,7 +59,7 @@ func ObserveFaceBriefly(esn string) {
 \t\tfmt.Printf("[face-probe] connect failed for %s: %v\\n", esn, err)
 \t\treturn
 \t}
-\t// Release the gRPC connection when the probe ends — otherwise it leaks.
+\t// Release the gRPC connection when the probe ends - otherwise it leaks.
 \tdefer robot.Close()
 \tctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 \tdefer cancel()
@@ -78,7 +78,7 @@ func ObserveFaceBriefly(esn string) {
 \tfor {
 \t\tresp, err := strm.Recv()
 \t\tif err != nil {
-\t\t\treturn // context timeout or stream closed — probe done
+\t\t\treturn // context timeout or stream closed - probe done
 \t\t}
 \t\tif rof := resp.Event.GetRobotObservedFace(); rof != nil {
 \t\t\tnotifyFaceSeen(rof.GetFaceId(), rof.GetName())

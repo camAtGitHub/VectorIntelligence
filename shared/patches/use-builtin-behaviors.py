@@ -5,7 +5,7 @@ Several entries in Wire-Pod's animationMap reference anim names that don't
 actually exist on Vector's firmware (notably `anim_dance_bobbing_01`). Instead
 of trying to find a single anim that matches, special-case these in
 DoPlayAnimation* to fire Vector's full built-in behaviour (the choreographed
-dance, etc.) via AppIntent — same mechanism Wire-Pod already uses for
+dance, etc.) via AppIntent - same mechanism Wire-Pod already uses for
 `knowledge_question`.
 
 Currently mapped:

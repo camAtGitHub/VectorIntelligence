@@ -2,7 +2,7 @@
 """Tune Vector's TTS cadence.
 
 Wire-Pod ships with DurationScalar=0.95 (~5% faster than natural). We set it
-to 1.0 (natural pace) — a balance between intelligibility and not sounding
+to 1.0 (natural pace) - a balance between intelligibility and not sounding
 sluggish during longer responses. Higher = slower; 1.1 is noticeably slow,
 0.95 is the rushed default. Tune by changing the value below or passing it
 on the command line.

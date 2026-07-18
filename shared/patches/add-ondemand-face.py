@@ -2,20 +2,20 @@
 """Add on-demand face detection to Wire-Pod's response interrupter.
 
 Vector should know who he's talking to so memory can be scoped per face,
-but subscribing to robot_observed_face 24/7 is a firehose — Vector emits a
+but subscribing to robot_observed_face 24/7 is a firehose - Vector emits a
 face event on every frame, which overloads his firmware and degrades his
 whole network stack over time.
 
 This patch adds robot_observed_face to the interrupt loop's event whitelist
 *only*. That stream opens per-response and closes when the response ends,
-so face detection runs solely for the lifetime of a voice interaction —
+so face detection runs solely for the lifetime of a voice interaction -
 never a continuous background stream.
 
 Observed faces are reported to vector-ai via notifyFaceSeen (defined in
 sensor_reactions.go by add-sensor-reactions.py), which rate-limits the calls.
 
 Run after the other kgsim_interrupt.go patches (wake-word-grace-period,
-add-button-interrupt, wake-word-mute-during-getimage) — its anchors are
+add-button-interrupt, wake-word-mute-during-getimage) - its anchors are
 chosen not to collide with theirs, but this keeps the ordering obvious.
 
 Idempotent. Modifies chipper/pkg/wirepod/ttr/kgsim_interrupt.go.
@@ -28,7 +28,7 @@ SENTINEL = "Event_RobotObservedFace"
 # 1. Add robot_observed_face to the interrupt stream's event whitelist.
 ANCHOR_WHITELIST = '\t\t\t\t\tList: []string{"robot_state", "wake_word"},\n'
 REPLACE_WHITELIST = (
-    "\t\t\t\t\t// robot_observed_face is included here — and ONLY here —\n"
+    "\t\t\t\t\t// robot_observed_face is included here - and ONLY here -\n"
     "\t\t\t\t\t// so face detection runs only for the lifetime of a voice\n"
     "\t\t\t\t\t// interaction (this stream opens per-response and closes\n"
     "\t\t\t\t\t// when it ends). Never a 24/7 firehose.\n"

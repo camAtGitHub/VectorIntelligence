@@ -3,7 +3,7 @@
 
 Wire-Pod's interrupt loop (kgsim_interrupt.go) already stops a response on
 a wake-word event or a touch-sensor spike, but ignores the physical back
-button — which registers as the IS_BUTTON_PRESSED status bit in
+button - which registers as the IS_BUTTON_PRESSED status bit in
 robot_state, not as a wake-word event. This patch adds a check for that
 bit so pressing the button stops him talking immediately.
 
@@ -35,7 +35,7 @@ REPLACEMENT = (
     "\t\t\t\t} else {\n"
     "\t\t\t\t\tvalsAboveValue = 0\n"
     "\t\t\t\t}\n"
-    "\t\t\t\t// Physical back button — interrupt immediately, no grace period.\n"
+    "\t\t\t\t// Physical back button - interrupt immediately, no grace period.\n"
     "\t\t\t\tif rsEvt.Status&uint32(vectorpb.RobotStatus_ROBOT_STATUS_IS_BUTTON_PRESSED) != 0 {\n"
     "\t\t\t\t\tlogger.Println(\"Interrupting LLM response (source: back button)\")\n"
     "\t\t\t\t\tstopResponse = true\n"

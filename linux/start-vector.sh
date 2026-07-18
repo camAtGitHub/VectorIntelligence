@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Bring Vector's stack up. The vector-supervisor service owns everything —
-# it launches Ollama, chipper and vector-ai, advertises mDNS, and
-# auto-recovers from drops/sleep/IP changes. So "start" is just that.
+# Bring Vector's stack up. The vector-supervisor service owns everything -
+# it launches chipper and vector-ai (OpenRouter by default), advertises mDNS,
+# and auto-recovers from drops/sleep/IP changes. So "start" is just that.
 set -e
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}[+]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 
 if ! systemctl list-unit-files | grep -q '^vector-supervisor\.service'; then
-    warn "vector-supervisor.service not found — run install.sh first."
+    warn "vector-supervisor.service not found - run install.sh first."
     exit 1
 fi
 
 sudo systemctl start vector-supervisor.service
-ok "Supervisor starting — bringing up Ollama, Wire-Pod and vector-ai."
+ok "Supervisor starting - Wire-Pod (chipper) + vector-ai (OpenRouter)."
 
 sleep 18
 # vector-ai's port comes from pod.conf (AI_PORT, default 8090).

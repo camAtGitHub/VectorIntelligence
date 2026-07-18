@@ -5,7 +5,7 @@ Adds entries to animationMap in kgsim_cmds.go and updates the ParamChoices
 strings for playAnimation / playAnimationWI so Wire-Pod's auto-generated
 prompt advertises them to the LLM.
 
-Robust to upstream changes — finds the animationMap slice by its declaration
+Robust to upstream changes - finds the animationMap slice by its declaration
 header rather than a specific last entry. Restores 'dance' if upstream
 removed it.
 
@@ -30,7 +30,7 @@ NEW_ANIMS = [
     # intercepted by use-builtin-behaviors.py and routed to Vector's
     # firmware via AppIntent instead.
     ("dance",       "anim_dance_bobbing_01"),
-    # lookAtUser: same trick — routed to AppIntent(imperative_lookatme).
+    # lookAtUser: same trick - routed to AppIntent(imperative_lookatme).
     # The anim name here is a placeholder; tryBuiltinBehavior catches it
     # before any animation playback would happen.
     ("lookAtUser",  "anim_attention_lookatdevice_01"),

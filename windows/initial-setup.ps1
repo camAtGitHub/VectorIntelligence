@@ -1,11 +1,11 @@
-﻿# initial-setup.ps1 — Drive Wire-Pod's first-run wizard via REST.
+# initial-setup.ps1 - Drive Wire-Pod's first-run wizard via REST.
 #
 # Equivalent to visiting the Wire-Pod web UI in a browser, choosing English
 # STT, waiting for the VOSK model to download, and clicking "use IP mode on
 # port 443". Then applies our AI config.
 #
 # Run ONCE after install.ps1 + start-vector.ps1.
-# Idempotent — running it again is harmless.
+# Idempotent - running it again is harmless.
 
 $ErrorActionPreference = "Continue"
 
@@ -56,7 +56,7 @@ if ($resp.Content -match "downloading") {
 
 # Step 3: Switch Wire-Pod to "escape pod" mode (epconfig=true). The Pi
 # deployment runs in this mode, and the wpsetup.keriganc.com pairing flow
-# expects it — Vector gets handed `escapepod.local:443` as the server endpoint
+# expects it - Vector gets handed `escapepod.local:443` as the server endpoint
 # and resolves it via mDNS to our machine. IP mode (use_ip) was the alternative
 # but caused pairing activation to fail because of how wpsetup pushes config.
 Info "Switching Wire-Pod to escape pod mode and binding port 443..."

@@ -2,7 +2,7 @@
 """Turn Vector to face the speaker before the LLM replies.
 
 On every LLM-bound voice query (not just vision ones), dispatch
-intent_imperative_lookatme via IntentPass BEFORE calling the LLM — Vector's
+intent_imperative_lookatme via IntentPass BEFORE calling the LLM - Vector's
 firmware uses his still-fresh sound-direction cache to rapid-turn toward
 whoever just spoke. Skipped when he's on the charger, so he never drives
 off his pod (vision queries get a brief pause so he faces the user before
@@ -12,9 +12,9 @@ Dispatching the intent closes the chipper voice stream (IsFinal=true), but
 StreamingKGSim's response goes through the SDK (robot.Conn.SayText), so the
 LLM answer still reaches the user. StreamingKGSim's own
 IntentPass(intent_greeting_hello) then fails silently on the closed
-stream — harmless.
+stream - harmless.
 
-Requires ttr.IsOnCharger() — see add-sensor-reactions.py.
+Requires ttr.IsOnCharger() - see add-sensor-reactions.py.
 
 Modifies preqs/intent_graph.go. Idempotent.
 """
@@ -43,7 +43,7 @@ def patch(path: Path) -> bool:
         print(f"[prelim-lookatme] anchor not found in {path}", file=sys.stderr)
         sys.exit(1)
     insert = anchor + """
-\t// Before the LLM replies, turn Vector to face whoever just spoke — his
+\t// Before the LLM replies, turn Vector to face whoever just spoke - his
 \t// firmware still has the fresh mic-direction cache from the just-finished
 \t// voice command and rapid-turns toward the user (same mechanism as
 \t// intent_imperative_come). Skipped when he's on the charger: he must not

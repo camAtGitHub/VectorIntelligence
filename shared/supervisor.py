@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Vector Pod Supervisor — one process that owns the whole stack.
+"""Vector Pod Supervisor - one process that owns the whole stack.
 
 Replaces the three separate Scheduled Tasks (chipper / vector-ai / mDNS),
 find-vector.py, and every manual restart-and-recover step.
 
 It:
-  - launches and keeps alive Ollama, chipper, and vector-ai
+  - launches and keeps alive chipper and vector-ai
+  - optionally launches local Ollama only if USE_LOCAL_OLLAMA=1 (legacy;
+    default stack uses OpenRouter via vector-ai - no local LLM process)
   - advertises escapepod.local over mDNS (folds in the old mdns-responder)
   - health-monitors everything and restarts whatever dies
   - auto-recovers from the failure modes this deployment actually hits:
@@ -13,7 +15,7 @@ It:
       * PC wake-from-sleep     -> refresh mDNS, re-assert route, bounce chipper
       * Vector IP drift        -> rediscover via mDNS, rewrite botSdkInfo
       * Tailscale/LAN route    -> re-assert a direct /32 route to Vector
-  - on shutdown, stops the children and unloads the model to free VRAM
+  - on shutdown, stops the children
 
 No hardcoded paths or IPs: every path is derived from this file's location,
 Vector is found by mDNS, and the LAN IP is detected at runtime. Portable
@@ -34,7 +36,7 @@ from pathlib import Path
 
 IS_WINDOWS = sys.platform.startswith("win")
 
-# ── Paths — all derived, nothing hardcoded ────────────────────────────────────
+# -- Paths - all derived, nothing hardcoded ------------------------------------
 POD_DIR      = Path(__file__).resolve().parent          # .../vector-pod
 WIREPOD_DIR  = POD_DIR / "wire-pod"
 CHIPPER_DIR  = WIREPOD_DIR / "chipper"
@@ -44,17 +46,41 @@ SUP_LOG      = POD_DIR / "supervisor.log"
 CHIPPER_LOG  = POD_DIR / "chipper.log"
 VECTORAI_LOG = POD_DIR / "vector-ai.log"
 
-# ── Tunables (the few things worth changing live here, not scattered) ─────────
-STT_SERVICE   = "whisper.cpp"  # whisper.cpp | vosk (must match Wire-Pod's STT names)
+# -- Tunables (the few things worth changing live here, not scattered) ---------
+# STT_SERVICE   = "whisper.cpp"  # whisper.cpp | vosk (must match Wire-Pod's STT names)
+STT_SERVICE   = "vosk"  # whisper.cpp | vosk (must match Wire-Pod's STT names)
 WHISPER_MODEL = "base.en"
-HEALTH_PERIOD = 10            # seconds between health checks
+HEALTH_PERIOD = 30            # seconds between health checks (raised in companion mode)
 SLEEP_GAP     = 60            # a tick gap longer than this == PC slept
-LOG_MAX_BYTES = 5 * 1024 * 1024  # a log past this is rotated aside at startup
-WEB_PORT      = "8080"        # Wire-Pod web UI / config server port
+LOG_MAX_BYTES = 10 * 1024 * 1024  # rotate supervisor.log / vector-ai.log at 10 MB
+# Min seconds between vector-ai restarts (avoids log storms if health fails)
+VECTORAI_RESTART_COOLDOWN = 60
+WEB_PORT      = "9080"        # Wire-Pod web UI / config server port
 AI_PORT       = "8090"        # vector-ai service port (localhost only). NOT
-                              # 8000 — too many other tools default to it
+                              # 8000 - too many other tools default to it
                               # (uvicorn, python -m http.server, MCP servers)
                               # and a squatter leaves vector-ai crash-looping.
+VOLUME_HANG_MS = 2500         #
+VOLUME_DROP = 2               # 
+VECTOR_VOLUME_MS_PER_WORD = 400
+
+# Local Ollama is optional/legacy. Default is OpenRouter via vector-ai/.env.
+# Set USE_LOCAL_OLLAMA=1 in the environment or pod.conf to start/watch Ollama.
+USE_LOCAL_OLLAMA = os.environ.get("USE_LOCAL_OLLAMA", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Companion mode: packaged/prebuilt Wire-Pod already running elsewhere.
+# Supervisor only keeps vector-ai (OpenRouter brain) alive - does not start
+# chipper or mDNS (the packaged Wire-Pod owns those).
+EXTERNAL_CHIPPER = os.environ.get("EXTERNAL_CHIPPER", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Optional override when wire-pod is not under POD_DIR/wire-pod (companion).
+# Used for botSdkInfo IP rediscovery when we still own chipper; harmless in
+# external mode.
+_WIREPOD_DIR_OVERRIDE = os.environ.get("WIREPOD_DIR", "").strip()
 
 # The installer's -WebPort/--web-port and -AiPort/--ai-port write overrides to
 # pod.conf next to this file, so the supervisor, the setup scripts, chipper and
@@ -62,20 +88,41 @@ AI_PORT       = "8090"        # vector-ai service port (localhost only). NOT
 try:
     for _line in (POD_DIR / "pod.conf").read_text(encoding="utf-8").splitlines():
         _key, _, _val = _line.strip().partition("=")
-        if _val.strip().isdigit():
-            if _key.strip() == "WEB_PORT":
-                WEB_PORT = _val.strip()
-            elif _key.strip() == "AI_PORT":
-                AI_PORT = _val.strip()
+        _k = _key.strip()
+        _v = _val.strip()
+        if _v.isdigit():
+            if _k == "WEB_PORT":
+                WEB_PORT = _v
+            elif _k == "AI_PORT":
+                AI_PORT = _v
+            elif _k == "VOLUME_DROP":
+                VOLUME_DROP = _v
+            elif _k == "VOLUME_HANG_MS":
+                VOLUME_HANG_MS = _v                       
+        if _k == "USE_LOCAL_OLLAMA":
+            USE_LOCAL_OLLAMA = _v.lower() in ("1", "true", "yes", "on")
+        if _k == "EXTERNAL_CHIPPER":
+            EXTERNAL_CHIPPER = _v.lower() in ("1", "true", "yes", "on")
+        if _k == "WIREPOD_DIR" and _v:
+            _WIREPOD_DIR_OVERRIDE = _v
 except OSError:
     pass
 
-# SDK-wedge detector: Vector's on-board gateway can wedge half-dead — TCP to
+if _WIREPOD_DIR_OVERRIDE:
+    WIREPOD_DIR = Path(_WIREPOD_DIR_OVERRIDE)
+    CHIPPER_DIR = WIREPOD_DIR / "chipper"
+    BOTINFO = CHIPPER_DIR / "jdocs" / "botSdkInfo.json"
+
+# Companion mode: less frequent health polling (we only babysit vector-ai).
+if EXTERNAL_CHIPPER:
+    HEALTH_PERIOD = 30
+
+# SDK-wedge detector: Vector's on-board gateway can wedge half-dead - TCP to
 # :443 still connects (so vector_reachable() stays True) but every NEW gRPC
 # stream hangs to deadline, and Vector shows the wifi icon while the network
 # looks perfect (issue #8). chipper's background loops surface that state as
 # repeated robot-RPC timeout lines in chipper.log; bounce chipper when several
-# arrive while Vector is TCP-reachable — closing every connection chipper
+# arrive while Vector is TCP-reachable - closing every connection chipper
 # holds is exactly what clears the gateway. The pattern deliberately requires
 # "rpc error" so vector-ai HTTP timeouts ("Client.Timeout exceeded") and
 # ordinary stream resets ("forcibly closed") never count.
@@ -88,9 +135,11 @@ EXE = ".exe" if IS_WINDOWS else ""
 
 
 def log(msg: str):
+    # Full local timestamp on every supervisor.log line.
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} [supervisor] {msg}"
     print(line, flush=True)
     try:
+        rotate_log(SUP_LOG)
         with open(SUP_LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError:
@@ -99,9 +148,9 @@ def log(msg: str):
 
 def rotate_log(path: Path):
     """If `path` is larger than LOG_MAX_BYTES, move it aside to <path>.old
-    (replacing any previous .old). Called once at startup — so logs stay
-    bounded across restarts without ever touching a file a running process
-    still holds open."""
+    (replacing any previous .old). Used for supervisor.log and vector-ai.log
+    (10 MB cap). Safe to call while appending from this process; for vector-ai
+    (child) we only rotate when oversized - worst case rename fails if locked."""
     try:
         if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
             old = path.with_name(path.name + ".old")
@@ -111,13 +160,13 @@ def rotate_log(path: Path):
         pass
 
 
-# ── Small helpers ─────────────────────────────────────────────────────────────
+# -- Small helpers -------------------------------------------------------------
 
 _last_good_ip = None  # remembered so a post-wake detection failure can't
                       # silently downgrade mDNS to loopback
 
-# ── IP-classification helpers ─────────────────────────────────────────────────
-# Tailscale CGNAT range: 100.64.0.0/10  →  100.64.x.x – 100.127.x.x
+# -- IP-classification helpers -------------------------------------------------
+# Tailscale CGNAT range: 100.64.0.0/10  ->  100.64.x.x - 100.127.x.x
 _TS_LO = (100 << 24) | (64 << 16)
 _TS_HI = (100 << 24) | (128 << 16)
 
@@ -169,11 +218,11 @@ def _detect_local_ip(prefer_target: str = None) -> str | None:
     address (100.64-127.x.x), which Vector can't reach.
 
     Instead we try multiple probes and filter explicitly:
-    • prefer_target (Vector's known LAN IP) — the most accurate probe because
+    * prefer_target (Vector's known LAN IP) - the most accurate probe because
       it finds the exact interface that routes to Vector.
-    • 224.0.0.251 (mDNS multicast) — LAN-only; VPN tunnels don't carry
+    * 224.0.0.251 (mDNS multicast) - LAN-only; VPN tunnels don't carry
       multicast, so this probe can never return a VPN address.
-    • Common LAN gateway IPs — tiebreakers for the case where neither of the
+    * Common LAN gateway IPs - tiebreakers for the case where neither of the
       above resolves."""
     # Highest-confidence: the interface that actually routes to Vector.
     if prefer_target:
@@ -183,7 +232,7 @@ def _detect_local_ip(prefer_target: str = None) -> str | None:
 
     candidates: list[str] = []
 
-    # mDNS multicast — the correct interface by definition.
+    # mDNS multicast - the correct interface by definition.
     ip = _probe_local_ip("224.0.0.251")
     if ip and not _is_tailscale_ip(ip):
         candidates.append(ip)
@@ -206,7 +255,7 @@ def local_ip(wait: float = 0.0, prefer_target: str = None) -> str:
 
     Filters Tailscale CGNAT addresses so mDNS is never published on a VPN
     interface. If prefer_target is given (e.g. Vector's known IP) we probe
-    routing to it directly — the most accurate way to pick the right interface.
+    routing to it directly - the most accurate way to pick the right interface.
     Polls for up to `wait` seconds, falls back to the last known-good address,
     and only as a true last resort returns loopback."""
     global _last_good_ip
@@ -221,9 +270,9 @@ def local_ip(wait: float = 0.0, prefer_target: str = None) -> str:
         time.sleep(1)
     # Only fall back to last-good if it's still a plausible LAN address.
     if _last_good_ip and not _is_tailscale_ip(_last_good_ip):
-        log(f"local_ip: network not ready — using last known-good {_last_good_ip}")
+        log(f"local_ip: network not ready - using last known-good {_last_good_ip}")
         return _last_good_ip
-    log("local_ip: no LAN IP available and no known-good fallback — using loopback")
+    log("local_ip: no LAN IP available and no known-good fallback - using loopback")
     return "127.0.0.1"
 
 
@@ -247,11 +296,11 @@ def tcp_ok(host: str, port: int, timeout: float = 3.0) -> bool:
         s.close()
 
 
-# ── Windows job object — children die with the supervisor ────────────────────
+# -- Windows job object - children die with the supervisor --------------------
 # Without this, processes the supervisor spawns ORPHAN when it's stopped:
 # Stop-ScheduledTask kills the supervisor but not its children, and since the
 # supervisor runs elevated (chipper needs port 443) the children are elevated
-# too — so a non-admin stop-vector can't kill them either. A job object with
+# too - so a non-admin stop-vector can't kill them either. A job object with
 # KILL_ON_JOB_CLOSE makes Windows terminate every child the moment the
 # supervisor process exits, for any reason (clean stop, crash, kill).
 
@@ -300,7 +349,7 @@ def create_win_job():
 
     job = k32.CreateJobObjectW(None, None)
     if not job:
-        log("WARNING: CreateJobObject failed — children may orphan on stop")
+        log("WARNING: CreateJobObject failed - children may orphan on stop")
         return
     info = EXT()
     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -328,6 +377,8 @@ def assign_to_job(pid: int):
 
 def chipper_binary() -> Path:
     """Prefer the Whisper chipper; fall back to the VOSK one."""
+    if STT_SERVICE == "vosk":
+        return CHIPPER_DIR / f"chipper{EXE}"
     whisper = CHIPPER_DIR / f"chipper-whisper{EXE}"
     if whisper.exists():
         return whisper
@@ -345,8 +396,8 @@ def read_vector_ip() -> str | None:
     return None
 
 
-# ── mDNS: advertise escapepod.local so Vector can find this server ───────────
-# On Linux, avahi already publishes <hostname>.local — but advertising
+# -- mDNS: advertise escapepod.local so Vector can find this server -----------
+# On Linux, avahi already publishes <hostname>.local - but advertising
 # escapepod.local explicitly is harmless and keeps behaviour identical
 # cross-platform.
 
@@ -359,7 +410,7 @@ class MDNS:
     def start(self, prefer_target: str = None, wait: float = 30.0) -> str:
         """Advertise escapepod.local. Returns the IP actually published.
 
-        prefer_target is Vector's known LAN IP — passed to local_ip() so we
+        prefer_target is Vector's known LAN IP - passed to local_ip() so we
         probe routing to Vector directly and pick the interface that talks to
         him, regardless of whether Tailscale or another VPN is present."""
         from zeroconf import IPVersion, ServiceInfo, Zeroconf
@@ -379,7 +430,7 @@ class MDNS:
         return ip
 
     def refresh(self, prefer_target: str = None, wait: float = 30.0) -> str:
-        """Re-register with the current LAN IP — after sleep or IP change."""
+        """Re-register with the current LAN IP - after sleep or IP change."""
         try:
             self.stop()
         except Exception:
@@ -393,7 +444,7 @@ class MDNS:
         ~120s TTL. His own follow-up QUERIES can be silently dropped on the
         WiFi->wired multicast path (router IGMP snooping), and then every
         voice request after the cache expires dies robot-side with an error
-        buzz — no TCP, nothing in chipper.log (the "answers one query per
+        buzz - no TCP, nothing in chipper.log (the "answers one query per
         restart" failure). Announcements in the PC->robot direction do get
         through, so re-announcing inside the TTL window keeps his cache
         permanently warm and removes the dependency on his queries entirely."""
@@ -407,7 +458,7 @@ class MDNS:
         """Re-advertise if the LAN IP has drifted. Returns True if refreshed."""
         current = _detect_local_ip(prefer_target)
         if current and current != self._advertised_ip:
-            log(f"mDNS: IP drift {self._advertised_ip} -> {current} — re-advertising")
+            log(f"mDNS: IP drift {self._advertised_ip} -> {current} - re-advertising")
             self.refresh(prefer_target=prefer_target)
             return True
         return False
@@ -424,7 +475,7 @@ class MDNS:
             self._advertised_ip = None
 
 
-# ── Vector discovery (mDNS) — replaces find-vector.py ─────────────────────────
+# -- Vector discovery (mDNS) - replaces find-vector.py -------------------------
 
 def discover_vector_ip(timeout: float = 6.0) -> str | None:
     """Browse for Vector's mDNS service; return his current IPv4 or None."""
@@ -461,7 +512,7 @@ def discover_vector_ip(timeout: float = 6.0) -> str | None:
 
 
 def update_botinfo_ip(new_ip: str) -> bool:
-    """Rewrite botSdkInfo.json with new_ip (no BOM — Wire-Pod's parser
+    """Rewrite botSdkInfo.json with new_ip (no BOM - Wire-Pod's parser
     rejects byte-order marks). Returns True if it changed."""
     try:
         data = json.loads(BOTINFO.read_text(encoding="utf-8-sig"))
@@ -481,7 +532,7 @@ def update_botinfo_ip(new_ip: str) -> bool:
     return True
 
 
-# ── LAN routing — keep Vector's traffic off any VPN/Tailscale overlay ─────────
+# -- LAN routing - keep Vector's traffic off any VPN/Tailscale overlay ---------
 
 def ensure_lan_route(vector_ip: str):
     """Pin a direct /32 host route to Vector via the LAN interface. A /32 is
@@ -515,7 +566,7 @@ if ($lan) {{
         log(f"ensure_lan_route error: {e}")
 
 
-# ── Hosts-file maintenance ────────────────────────────────────────────────────
+# -- Hosts-file maintenance ----------------------------------------------------
 
 def update_hosts_file(ip: str) -> None:
     """Keep the escapepod.local entry in the system hosts file current.
@@ -563,12 +614,12 @@ def update_hosts_file(ip: str) -> None:
             subprocess.run(["ipconfig", "/flushdns"],
                            capture_output=True, timeout=5)
     except PermissionError:
-        log("hosts: permission denied — run the supervisor elevated to auto-update")
+        log("hosts: permission denied - run the supervisor elevated to auto-update")
     except Exception as e:
         log(f"hosts: write failed: {e}")
 
 
-# ── Child processes ───────────────────────────────────────────────────────────
+# -- Child processes -----------------------------------------------------------
 
 class Child:
     def __init__(self, name, argv, cwd, logfile, env=None):
@@ -611,7 +662,7 @@ class Child:
 class WedgeDetector:
     """Decides when chipper needs a bounce to clear a wedged robot gateway.
 
-    Pure logic — the log tailing and the bounce itself live on Supervisor —
+    Pure logic - the log tailing and the bounce itself live on Supervisor -
     so the strike/window/cooldown behaviour is unit-testable on its own."""
 
     def __init__(self):
@@ -637,7 +688,7 @@ class WedgeDetector:
         return False
 
 
-# ── The supervisor ────────────────────────────────────────────────────────────
+# -- The supervisor ------------------------------------------------------------
 
 class Supervisor:
     def __init__(self):
@@ -649,16 +700,19 @@ class Supervisor:
         self.vector_was_up = True   # track link transitions
         self.wedge = WedgeDetector()
         self._chipper_log_pos = None  # byte offset; None = not yet initialized
+        self._last_vai_restart = 0.0  # cooldown for vector-ai restarts
+        self._vai_fail_logged = 0.0   # rate-limit "unhealthy" log lines
+        self._log_rotate_tick = 0
 
     # -- child definitions --
     def _chipper_env(self) -> dict:
         # Pass chipper's config explicitly rather than relying on machine-wide
-        # environment variables — keeps the install self-contained.
+        # environment variables - keeps the install self-contained.
         env = dict(os.environ)
         env["STT_SERVICE"] = STT_SERVICE
         # Wire-Pod re-reads STT_LANGUAGE from env whenever the service string
         # changes (see WriteSTT in chipper/pkg/vars/config.go), so pin it here
-        # too — otherwise a service change would blank the language until the
+        # too - otherwise a service change would blank the language until the
         # web setup's set_stt_info runs again.
         env["STT_LANGUAGE"] = "en-US"
         env["WHISPER_MODEL"] = WHISPER_MODEL
@@ -671,9 +725,16 @@ class Supervisor:
         # Our chipper patches (sensor/ambient/greeting/face) call vector-ai at
         # this port; passing it here means a port change never needs a rebuild.
         env["VECTORAI_PORT"] = AI_PORT
+        # Set non-speech sounds VOLUME_DROP levels below volume setting.
+        # env["VECTOR_VOLUME_DROP"] = VOLUME_DROP
+        # env["VECTOR_VOLUME_HANG_MS"] = VOLUME_HANG_MS
         return env
 
     def start_ollama(self):
+        """Legacy: only used when USE_LOCAL_OLLAMA is enabled."""
+        if not USE_LOCAL_OLLAMA:
+            self.ollama = None
+            return
         if http_ok("http://127.0.0.1:11434", timeout=2):
             log("Ollama already running")
             self.ollama = None  # not ours to manage
@@ -703,11 +764,23 @@ class Supervisor:
 
     # -- health --
     def chipper_healthy(self) -> bool:
+        # Companion mode: we don't own chipper; treat "something on :443" as OK
+        # if present, but never restart foreign processes.
+        if EXTERNAL_CHIPPER:
+            return tcp_ok("127.0.0.1", 9080, timeout=2)
         return (self.chipper and self.chipper.alive()
-                and tcp_ok("127.0.0.1", 443, timeout=2))
+                and tcp_ok("127.0.0.1", 9080, timeout=2))
 
     def vectorai_healthy(self) -> bool:
-        return http_ok(f"http://127.0.0.1:{AI_PORT}/health", timeout=4)
+        # Cheap check: child still running + port accepts TCP.
+        # Avoids a full HTTP GET /health every tick (new socket + uvicorn access log).
+        if self.vectorai is not None and not self.vectorai.alive():
+            return False
+        try:
+            port = int(AI_PORT)
+        except ValueError:
+            port = 8090
+        return tcp_ok("127.0.0.1", port, timeout=2)
 
     def vector_reachable(self) -> bool:
         ip = read_vector_ip()
@@ -716,7 +789,7 @@ class Supervisor:
     def _new_chipper_lines(self) -> list:
         """Lines appended to chipper.log since the last call.
 
-        The first call only records the current size — pre-existing content
+        The first call only records the current size - pre-existing content
         must not feed the wedge detector, or stale errors from before this
         supervisor started could trigger an immediate bounce."""
         try:
@@ -740,38 +813,54 @@ class Supervisor:
         for logpath in (SUP_LOG, CHIPPER_LOG, VECTORAI_LOG):
             rotate_log(logpath)
         log("=== Vector Pod Supervisor starting ===")
+        if EXTERNAL_CHIPPER:
+            log("EXTERNAL_CHIPPER=1 - companion mode (packaged Wire-Pod owns chipper/mDNS)")
+            log(f"health every {HEALTH_PERIOD}s; logs rotate at {LOG_MAX_BYTES // (1024*1024)} MB")
         create_win_job()
-        vip = read_vector_ip()
-        if vip:
-            ensure_lan_route(vip)
-        # Pass Vector's known IP as a routing hint so _detect_local_ip() probes
-        # the interface that actually talks to Vector — correct even when
-        # Tailscale is down and left stale 10.x.x.x routing entries behind.
-        lan_ip = self.mdns.start(prefer_target=vip)
-        update_hosts_file(lan_ip)
-        self.start_ollama()
+        if not EXTERNAL_CHIPPER:
+            vip = read_vector_ip()
+            if vip:
+                ensure_lan_route(vip)
+            # Pass Vector's known IP as a routing hint so _detect_local_ip() probes
+            # the interface that actually talks to Vector - correct even when
+            # Tailscale is down and left stale 10.x.x.x routing entries behind.
+            lan_ip = self.mdns.start(prefer_target=vip)
+            update_hosts_file(lan_ip)
+        if USE_LOCAL_OLLAMA:
+            log("USE_LOCAL_OLLAMA enabled - starting Ollama")
+            self.start_ollama()
+        else:
+            log("LLM via OpenRouter/cloud (vector-ai .env) - not starting Ollama")
         self.start_vectorai()
-        self.start_chipper()
+        if not EXTERNAL_CHIPPER:
+            self.start_chipper()
+        else:
+            log("Not starting chipper - use your packaged Wire-Pod for the robot link")
         log("startup complete")
 
     def shutdown_all(self):
         log("=== shutting down ===")
-        for c in (self.chipper, self.vectorai):
+        # Never stop an external/packaged chipper we didn't start.
+        children = (self.vectorai,) if EXTERNAL_CHIPPER else (self.chipper, self.vectorai)
+        for c in children:
             if c:
                 c.stop()
-        # Free VRAM: tell Ollama to unload the model (model auto-unload is
-        # intentionally kept — we just make it immediate on shutdown).
-        try:
-            subprocess.run(["ollama", "stop", "gemma3:12b"],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
-        if self.ollama:
-            self.ollama.stop()
-        self.mdns.stop()
+        if USE_LOCAL_OLLAMA:
+            try:
+                subprocess.run(["ollama", "stop", "gemma3:12b"],
+                               capture_output=True, timeout=10)
+            except Exception:
+                pass
+            if self.ollama:
+                self.ollama.stop()
+        if not EXTERNAL_CHIPPER:
+            self.mdns.stop()
         log("shutdown complete")
 
     def bounce_chipper(self, why: str):
+        if EXTERNAL_CHIPPER:
+            log(f"chipper bounce skipped (EXTERNAL_CHIPPER): {why}")
+            return
         log(f"bouncing chipper: {why}")
         if self.chipper:
             self.chipper.stop()
@@ -797,53 +886,76 @@ class Supervisor:
 
             # Wake-from-sleep: a tick that took far longer than HEALTH_PERIOD
             # means the PC was suspended. Refresh everything network-facing.
+            # Companion mode: only ensure vector-ai is still up; packaged
+            # Wire-Pod owns mDNS/chipper recovery.
             if gap > SLEEP_GAP:
-                log(f"wake-from-sleep detected (tick gap {int(gap)}s) — refreshing")
-                vip = read_vector_ip()
-                # Block up to 60s for the LAN interface to come up; pass
-                # Vector's IP so we probe the right interface immediately.
-                lan_ip = self.mdns.refresh(prefer_target=vip, wait=60)
-                log(f"wake-from-sleep: LAN IP {lan_ip}")
-                update_hosts_file(lan_ip)
-                if vip:
-                    ensure_lan_route(vip)
-                self.bounce_chipper("post-sleep refresh")
-                self.vector_was_up = True
-                _mdns_drift_count = 0
+                log(f"wake-from-sleep detected (tick gap {int(gap)}s) - refreshing")
+                if not EXTERNAL_CHIPPER:
+                    vip = read_vector_ip()
+                    # Block up to 60s for the LAN interface to come up; pass
+                    # Vector's IP so we probe the right interface immediately.
+                    lan_ip = self.mdns.refresh(prefer_target=vip, wait=60)
+                    log(f"wake-from-sleep: LAN IP {lan_ip}")
+                    update_hosts_file(lan_ip)
+                    if vip:
+                        ensure_lan_route(vip)
+                    self.bounce_chipper("post-sleep refresh")
+                    self.vector_was_up = True
+                    _mdns_drift_count = 0
+                else:
+                    if not self.vectorai_healthy():
+                        log("wake-from-sleep: restarting vector-ai")
+                        if self.vectorai:
+                            self.vectorai.stop()
+                        self.start_vectorai()
                 continue
 
-            # Ollama
-            if not http_ok("http://127.0.0.1:11434", timeout=3):
-                log("Ollama down — restarting")
+            # Periodic log size management (supervisor.log + vector-ai.log)
+            self._log_rotate_tick += 1
+            if self._log_rotate_tick >= 10:
+                self._log_rotate_tick = 0
+                rotate_log(SUP_LOG)
+                rotate_log(VECTORAI_LOG)
+
+            # Ollama (only when using a local backend)
+            if USE_LOCAL_OLLAMA and not http_ok("http://127.0.0.1:11434", timeout=3):
+                log("Ollama down - restarting")
                 self.start_ollama()
 
-            # vector-ai
+            # vector-ai - cooldown so a dead brain does not restart/log every tick
             if not self.vectorai_healthy():
-                log("vector-ai unhealthy — restarting")
-                if self.vectorai:
-                    self.vectorai.stop()
-                self.start_vectorai()
+                if now - self._last_vai_restart >= VECTORAI_RESTART_COOLDOWN:
+                    log("vector-ai unhealthy - restarting")
+                    if self.vectorai:
+                        self.vectorai.stop()
+                    self.start_vectorai()
+                    self._last_vai_restart = now
+                    self._vai_fail_logged = now
+                elif now - self._vai_fail_logged >= 300:
+                    log("vector-ai still unhealthy (will retry; check .env / OpenRouter key)")
+                    self._vai_fail_logged = now
 
-            # chipper
-            if not self.chipper_healthy():
-                log("chipper unhealthy — restarting")
+            # chipper (owned by us only when not EXTERNAL_CHIPPER)
+            if not EXTERNAL_CHIPPER and not self.chipper_healthy():
+                log("chipper unhealthy - restarting")
                 self.bounce_chipper("failed health check")
 
-            # Vector link: detect drop/return. On return, bounce chipper so it
-            # rebuilds connections instead of nursing stale ones.
+            # Vector link recovery - only when we own chipper.
+            if EXTERNAL_CHIPPER:
+                continue
             up = self.vector_reachable()
             if up and not self.vector_was_up:
-                log("Vector link recovered — bouncing chipper to reconnect")
+                log("Vector link recovered - bouncing chipper to reconnect")
                 # IP may have changed while he was gone.
                 new_ip = discover_vector_ip(timeout=5)
                 if new_ip and update_botinfo_ip(new_ip):
                     ensure_lan_route(new_ip)
                 self.bounce_chipper("Vector link recovered")
-                # The recovery bounce gives a fresh start — drop any strikes
+                # The recovery bounce gives a fresh start - drop any strikes
                 # accumulated around the outage.
                 self.wedge.strikes.clear()
             elif not up and self.vector_was_up:
-                log("Vector link lost — will reconnect when it returns")
+                log("Vector link lost - will reconnect when it returns")
             self.vector_was_up = up
 
             # SDK-wedge detector: TCP up but new robot RPCs hanging (see the
@@ -852,11 +964,11 @@ class Supervisor:
             for line in self._new_chipper_lines():
                 self.wedge.feed(line, now, up)
             if self.wedge.should_bounce(now):
-                log(f"SDK wedge suspected — Vector reachable on TCP but "
+                log(f"SDK wedge suspected - Vector reachable on TCP but "
                     f"robot RPCs are hanging; bouncing chipper to clear it")
                 self.bounce_chipper("suspected SDK wedge")
 
-            # Periodic mDNS/hosts IP-drift check — catches a LAN IP change
+            # Periodic mDNS/hosts IP-drift check - catches a LAN IP change
             # (DHCP reassignment, interface rebind) without needing a restart.
             # Runs every ~60 s (6 × HEALTH_PERIOD at the default 10 s period).
             _mdns_drift_count += 1
@@ -867,7 +979,7 @@ class Supervisor:
                     update_hosts_file(self.mdns._advertised_ip)
                     self.bounce_chipper("LAN IP changed")
                 else:
-                    # Keep Vector's cached escapepod.local record warm — his
+                    # Keep Vector's cached escapepod.local record warm - his
                     # own mDNS queries can be dropped on the WiFi->wired path,
                     # and a stale cache means an error buzz on every query
                     # (see MDNS.reannounce).

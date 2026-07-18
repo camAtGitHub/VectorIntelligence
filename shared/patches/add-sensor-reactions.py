@@ -53,7 +53,7 @@ const sensorCooldownDuration = 20 * time.Second
 
 // vectorAIBase is the local vector-ai service's base URL, shared by every
 // chipper loop that calls it (sensor, ambient, greeting, face). The port
-// comes from VECTORAI_PORT — set by the supervisor from pod.conf's AI_PORT —
+// comes from VECTORAI_PORT - set by the supervisor from pod.conf's AI_PORT -
 // so moving vector-ai off its default never needs a chipper rebuild.
 var vectorAIBase = func() string {
 \tp := os.Getenv("VECTORAI_PORT")
@@ -65,7 +65,7 @@ var vectorAIBase = func() string {
 
 var sensorCooldowns sync.Map // key: "<esn>:<event>", value: time.Time
 
-// onChargerFlag tracks whether Vector is docked — updated live from the
+// onChargerFlag tracks whether Vector is docked - updated live from the
 // robot_state stream in runSensorReactionLoop.
 var onChargerFlag atomic.Bool
 
@@ -216,7 +216,7 @@ func sensorReact(robot *vector.Vector, esn, event string, fallback []string) {
 }
 
 // notifyFaceSeen POSTs an observed-face event to vector-ai. Rate-limited
-// per (id, name) — RobotObservedFace fires repeatedly while a face is in
+// per (id, name) - RobotObservedFace fires repeatedly while a face is in
 // view, but we only need one ping every few seconds to keep the freshness
 // window alive in service.py.
 var faceNotifyLast sync.Map // key: "<id>:<name>", value: time.Time
@@ -268,7 +268,7 @@ func runSensorReactionLoop(esn, guid, target string) {
 \t\t}
 \t\tctx, cancel := context.WithCancel(context.Background())
 \t\t// Subscribe to robot_state ONLY. We deliberately do NOT subscribe to
-\t\t// robot_observed_face — Vector streams a face event every frame he
+\t\t// robot_observed_face - Vector streams a face event every frame he
 \t\t// sees a face, a continuous firehose that overloads his firmware and
 \t\t// degrades his whole network stack over time. Face/identity is
 \t\t// handled separately, on-demand.
@@ -320,7 +320,7 @@ func runSensorReactionLoop(esn, guid, target string) {
 \t\t\tprevTouched = touched
 \t\t}
 \t\t// Inner loop exited (recv error). Cancel the stream context and close
-\t\t// the connection — otherwise every reconnect leaks a gRPC connection
+\t\t// the connection - otherwise every reconnect leaks a gRPC connection
 \t\t// to the robot, eventually wedging its SDK.
 \t\tcancel()
 \t\trobot.Close()
@@ -344,7 +344,7 @@ def patch_startserver(path: Path) -> bool:
     insert = anchor + "\n\tgo ttr.StartSensorReactionsForAllBots()\n"
     src = src.replace(anchor, insert, 1)
 
-    # Alias-import the ttr package — its declared package name is wirepod_ttr,
+    # Alias-import the ttr package - its declared package name is wirepod_ttr,
     # so we alias it as `ttr` for readability.
     if 'ttr "github.com/kercre123/wire-pod/chipper/pkg/wirepod/ttr"' not in src:
         src = re.sub(

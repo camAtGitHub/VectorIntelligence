@@ -6,7 +6,7 @@ Upstream Wire-Pod has DoGetImage:
   2. Verbally count down "3", "2", "1"
   3. Take the photo
 
-Cute, but slow and audible — and the countdown is Vector speaking through
+Cute, but slow and audible - and the countdown is Vector speaking through
 his own mic, which trips the wake-word interrupt. Pi version pre-dates this
 feature and just takes the photo silently. This patch removes the viewfinder
 + countdown so Windows behaves like the working Pi build.

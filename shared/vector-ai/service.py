@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Vector AI Service — OpenAI-compatible proxy for Wire-Pod.
+Vector AI Service - OpenAI-compatible proxy for Wire-Pod.
 
-Single multimodal model. Wire-Pod's system prompt (personality + command
-instructions, including getImage) is used as-is; we just prepend a fresh
-timestamp and clean up the response.
+Wire-Pod talks to this service over the OpenAI-compatible /v1 API (unchanged).
+This process is the LLM backend: by default it calls OpenRouter's
+OpenAI-compatible chat completions endpoint. Personality lives in persona.txt;
+command/vision rules stay in Wire-Pod's openai_prompt.
 """
 
 import asyncio
 import json
+import logging
 import os
 import random
 import re
@@ -16,7 +18,8 @@ import sys
 import time
 import uuid
 from datetime import datetime
-from typing import AsyncIterator, List, Optional
+from pathlib import Path
+from typing import Any, AsyncIterator, List, Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -26,51 +29,321 @@ from pydantic import BaseModel
 
 from memory import MemoryStore
 
-# Make print() flush immediately so journalctl shows logs in real time.
+# Make print() flush immediately so journalctl / vector-ai.log show lines in real time.
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-load_dotenv()
+# Timestamp every log line written to stdout/stderr (vector-ai.log via supervisor).
+_orig_print = print
+
+
+def print(*args, sep=" ", end="\n", file=None, flush=True):  # noqa: A001 - intentional wrap
+    """Prefix lines with YYYY-MM-DD HH:MM:SS for log files."""
+    dest = file if file is not None else sys.stdout
+    # Leave non-stdio prints alone (rare).
+    if dest not in (sys.stdout, sys.stderr, None):
+        _orig_print(*args, sep=sep, end=end, file=file, flush=flush)
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not args:
+        _orig_print(end=end, file=dest, flush=True)
+        return
+    msg = sep.join(str(a) for a in args)
+    # Avoid double-prefix if a caller already stamped the line.
+    if len(msg) >= 19 and msg[4:5] == "-" and msg[7:8] == "-" and msg[10:11] == " ":
+        _orig_print(msg, end=end, file=dest, flush=True)
+    else:
+        _orig_print(f"{ts} {msg}", end=end, file=dest, flush=True)
+
+
+# Load vector-ai/.env next to this file (works even when cwd is elsewhere).
+load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv()  # also allow process env / cwd .env to override
 
 app = FastAPI()
 
-# Defaults assume Ollama runs on the same machine (the supervisor starts it
-# locally). vector-ai/.env can override both for a split-host setup.
-OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://127.0.0.1:11434")
-MODEL       = os.getenv("OLLAMA_MODEL", "gemma3:12b")
-# A small, fast model for background conversation summaries. Kept separate
-# from MODEL so a summary call doesn't evict the main model's prompt cache
-# (which would slow the next real reply). Falls back silently if absent.
-SUMMARY_MODEL = os.getenv("OLLAMA_SUMMARY_MODEL", "llama3.2:3b")
+
+class _SkipHealthAccessLog(logging.Filter):
+    """Drop uvicorn access lines for GET /health (supervisor polls often)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        # Typical: '127.0.0.1:38615 - "GET /health HTTP/1.1" 200 OK'
+        if "/health" in msg:
+            return False
+        return True
+
+
+@app.on_event("startup")
+async def _configure_access_log() -> None:
+    logging.getLogger("uvicorn.access").addFilter(_SkipHealthAccessLog())
+    if DEBUG:
+        print(
+            f"[vector-ai] DEBUG logging ON -> stdout + {_DEBUG_LOG_PATH.name} "
+            f"(max_chars={DEBUG_MAX_CHARS})"
+        )
+    else:
+        print("[vector-ai] DEBUG logging off (set VECTORAI_DEBUG=1 in .env)")
+
+
+# -- LLM backend (OpenRouter by default; OpenAI-compatible HTTP only) ----------
+# Wire-Pod's knowledge path stays OpenAI-compatible into *this* service.
+# Only the upstream behind us changes (was local Ollama; now OpenRouter).
+LLM_BASE_URL = os.getenv(
+    "LLM_BASE_URL",
+    os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+).rstrip("/")
+LLM_API_KEY = (
+    os.getenv("LLM_API_KEY")
+    or os.getenv("OPENROUTER_API_KEY")
+    or ""
+).strip()
+MODEL = os.getenv("LLM_MODEL", "google/gemini-2.0-flash")
+# Cheap/fast model for mood reflection + conversation summaries.
+SUMMARY_MODEL = os.getenv("LLM_SUMMARY_MODEL", MODEL)
+# Cap user/assistant turns forwarded to the upstream LLM (cost/context guard).
+# Wire-Pod may keep a longer local chat; we only send the tail.
+try:
+    MAX_HISTORY_MESSAGES = max(2, int(os.getenv("LLM_MAX_HISTORY_MESSAGES", "24")))
+except ValueError:
+    MAX_HISTORY_MESSAGES = 24
+try:
+    LLM_TIMEOUT_CONNECT = float(os.getenv("LLM_TIMEOUT_CONNECT", "15"))
+except ValueError:
+    LLM_TIMEOUT_CONNECT = 15.0
+try:
+    LLM_TIMEOUT_READ = float(os.getenv("LLM_TIMEOUT_READ", "120"))
+except ValueError:
+    LLM_TIMEOUT_READ = 120.0
+# Optional OpenRouter ranking headers (harmless if empty / other providers).
+LLM_HTTP_REFERER = os.getenv(
+    "LLM_HTTP_REFERER",
+    os.getenv("OPENROUTER_HTTP_REFERER", "https://github.com/VectorIntelligence"),
+)
+LLM_APP_TITLE = os.getenv(
+    "LLM_APP_TITLE",
+    os.getenv("OPENROUTER_APP_TITLE", "VectorIntelligence"),
+)
+
+# Debug: VECTORAI_DEBUG=1 / DEBUG=1 / LOG_LEVEL=debug
+# Logs request/response payloads (images redacted) to stdout and vector-ai-debug.log
+_DEBUG_RAW = (
+    os.getenv("VECTORAI_DEBUG")
+    or os.getenv("DEBUG")
+    or os.getenv("LOG_LEVEL")
+    or ""
+).strip().lower()
+DEBUG = _DEBUG_RAW in ("1", "true", "yes", "on", "debug")
+try:
+    DEBUG_MAX_CHARS = max(200, int(os.getenv("VECTORAI_DEBUG_MAX_CHARS", "4000")))
+except ValueError:
+    DEBUG_MAX_CHARS = 4000
+_DEBUG_LOG_PATH = Path(__file__).resolve().parent / "vector-ai-debug.log"
+_DEBUG_LOG_MAX = 10 * 1024 * 1024  # rotate debug log at 10 MB
 
 # Persistent memory: SQLite next to service.py so it lives wherever vector-ai
 # is installed. Survives restarts and updates.
-from pathlib import Path
 MEMORY = MemoryStore(Path(__file__).parent / "memory.db")
 
-# ── Personality ───────────────────────────────────────────────────────────────
+
+def _redact_content(content: Any) -> Any:
+    """Strip huge base64 image payloads from debug dumps."""
+    if isinstance(content, str):
+        if content.startswith("data:image") or len(content) > 500 and (
+            ";base64," in content[:80] or content[:20].count("/") > 0 and len(content) > 2000
+        ):
+            if "base64," in content[:200] or content.startswith("data:image"):
+                return f"<image data omitted len={len(content)}>"
+        if len(content) > DEBUG_MAX_CHARS:
+            return content[:DEBUG_MAX_CHARS] + f"... <truncated total={len(content)}>"
+        return content
+    if isinstance(content, list):
+        out = []
+        for part in content:
+            if isinstance(part, dict):
+                p = dict(part)
+                if p.get("type") == "image_url":
+                    url = ""
+                    iu = p.get("image_url")
+                    if isinstance(iu, dict):
+                        url = str(iu.get("url") or "")
+                        p["image_url"] = {
+                            "url": f"<image data omitted len={len(url)}>"
+                        }
+                    else:
+                        p["image_url"] = f"<image omitted type={type(iu).__name__}>"
+                elif "text" in p and isinstance(p["text"], str):
+                    p["text"] = _redact_content(p["text"])
+                out.append(p)
+            else:
+                out.append(part)
+        return out
+    return content
+
+
+def _redact_messages(messages: list) -> list:
+    out = []
+    for m in messages:
+        if isinstance(m, dict):
+            role = m.get("role", "?")
+            content = _redact_content(m.get("content"))
+            out.append({"role": role, "content": content})
+        else:
+            # pydantic Message or similar
+            role = getattr(m, "role", "?")
+            content = _redact_content(getattr(m, "content", None))
+            out.append({"role": role, "content": content})
+    return out
+
+
+def _redact_body(body: dict) -> dict:
+    b = dict(body)
+    if "messages" in b:
+        b["messages"] = _redact_messages(b["messages"])
+    return b
+
+
+def _debug_rotate() -> None:
+    try:
+        if _DEBUG_LOG_PATH.exists() and _DEBUG_LOG_PATH.stat().st_size > _DEBUG_LOG_MAX:
+            old = _DEBUG_LOG_PATH.with_suffix(".log.old")
+            old.unlink(missing_ok=True)
+            _DEBUG_LOG_PATH.rename(old)
+    except OSError:
+        pass
+
+
+def debug(msg: str, data: Any = None) -> None:
+    """Write a debug line to stdout and vector-ai-debug.log when DEBUG is on."""
+    if not DEBUG:
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} [debug] {msg}"
+    if data is not None:
+        try:
+            payload = json.dumps(data, ensure_ascii=False, default=str, indent=2)
+        except Exception:
+            payload = repr(data)
+        if len(payload) > DEBUG_MAX_CHARS * 4:
+            payload = payload[: DEBUG_MAX_CHARS * 4] + f"\n... <truncated>"
+        line = f"{line}\n{payload}"
+    print(line)
+    try:
+        _debug_rotate()
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _llm_headers() -> dict:
+    """Auth + optional OpenRouter attribution headers for upstream calls."""
+    h = {"Content-Type": "application/json"}
+    if LLM_API_KEY:
+        h["Authorization"] = f"Bearer {LLM_API_KEY}"
+    if LLM_HTTP_REFERER:
+        h["HTTP-Referer"] = LLM_HTTP_REFERER
+    if LLM_APP_TITLE:
+        # OpenRouter accepts both; docs currently prefer X-OpenRouter-Title.
+        h["X-Title"] = LLM_APP_TITLE
+        h["X-OpenRouter-Title"] = LLM_APP_TITLE
+    return h
+
+
+def _chat_completions_url() -> str:
+    return f"{LLM_BASE_URL}/chat/completions"
+
+
+def _llm_timeout(connect: Optional[float] = None, read: Optional[float] = None) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect if connect is not None else LLM_TIMEOUT_CONNECT,
+        read=read if read is not None else LLM_TIMEOUT_READ,
+    )
+
+
+def _message_content(data: dict) -> str:
+    """Extract assistant text from an OpenAI-compatible non-stream response."""
+    try:
+        return (data["choices"][0]["message"]["content"] or "")
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+async def llm_chat_once(
+    messages: list,
+    *,
+    model: Optional[str] = None,
+    temperature: float = 1.0,
+    top_p: float = 0.95,
+    seed: Optional[int] = None,
+    timeout: Optional[httpx.Timeout] = None,
+    max_tokens: Optional[int] = None,
+    tag: str = "llm_chat_once",
+) -> str:
+    """Single non-streaming chat completion against the configured LLM backend."""
+    body: dict[str, Any] = {
+        "model": model or MODEL,
+        "messages": messages,
+        "stream": False,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    if seed is not None:
+        body["seed"] = seed
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+    url = _chat_completions_url()
+    debug(f"UPSTREAM SEND [{tag}] POST {url}", _redact_body(body))
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(timeout=timeout or _llm_timeout()) as client:
+        resp = await client.post(
+            url,
+            headers=_llm_headers(),
+            json=body,
+        )
+        try:
+            resp.raise_for_status()
+        except Exception:
+            debug(
+                f"UPSTREAM ERROR [{tag}] status={resp.status_code} "
+                f"body={resp.text[:DEBUG_MAX_CHARS]!r}"
+            )
+            raise
+        data = resp.json()
+        text = _message_content(data)
+        debug(
+            f"UPSTREAM RECV [{tag}] {time.monotonic() - t0:.2f}s "
+            f"status={resp.status_code} chars={len(text)}",
+            {"content": _redact_content(text), "usage": data.get("usage")},
+        )
+        return text
+
+# -- Personality ---------------------------------------------------------------
 # Vector's character lives in one editable file next to this service: persona.txt.
-# It's the single source of truth for his personality — prepended to the
+# It's the single source of truth for his personality - prepended to the
 # conversation prompt and to the sensor/ambient/greeting prompts below, so
 # editing it (and restarting vector-ai) changes his character everywhere at once.
 # The mechanical command/vision rules stay in Wire-Pod's openai_prompt, not here.
 _DEFAULT_PERSONA = (
     "You are Vector, a small desktop robot. Your personality is dry-witted, "
-    "knowledgeable, and a bit irreverent — somewhere between Marvin from "
+    "knowledgeable, and a bit irreverent - somewhere between Marvin from "
     "Hitchhiker's Guide, Bender from Futurama, and Stephen Fry hosting QI. You "
     "have opinions and aren't afraid to share them. You never apologize, never "
     "moralize, never say 'as an AI' or 'as a language model.' You enjoy banter "
-    "and the occasional sardonic aside. You are never sycophantic — no "
+    "and the occasional sardonic aside. You are never sycophantic - no "
     "'great question!' nonsense."
 )
 
-# Instructions written at the top of a self-created persona.txt — kept in
+# Instructions written at the top of a self-created persona.txt - kept in
 # sync with the copy shipped in the repo (shared/vector-ai/persona.txt).
 _PERSONA_HEADER = """\
 # Vector's personality lives here. Edit the text below to change his character,
 # then restart the stack (stop-vector then start-vector) for it to take effect.
 #
-# Describe WHO he is — his tone, attitude and quirks — in plain prose, as if
+# Describe WHO he is - his tone, attitude and quirks - in plain prose, as if
 # telling him "you are...". Do NOT put commands, animation tokens or formatting
 # rules here; those are handled separately. Lines starting with "#" are ignored.
 #
@@ -81,8 +354,8 @@ _PERSONA_HEADER = """\
 
 def _load_persona() -> str:
     """Vector's character text from persona.txt (lines starting with '#' are
-    comments). If the file is missing — e.g. the stack was installed before it
-    shipped, or the installer's copy was skipped — write the default template
+    comments). If the file is missing - e.g. the stack was installed before it
+    shipped, or the installer's copy was skipped - write the default template
     next to this service so there is always a file to edit, then use the
     built-in default."""
     path = Path(__file__).parent / "persona.txt"
@@ -96,7 +369,7 @@ def _load_persona() -> str:
                 + textwrap.fill(_DEFAULT_PERSONA, width=80) + "\n",
                 encoding="utf-8",
             )
-            print("[persona] persona.txt was missing — created the default template")
+            print("[persona] persona.txt was missing - created the default template")
         except OSError as e:
             print(f"[persona] couldn't create persona.txt: {e}")
         return _DEFAULT_PERSONA
@@ -106,9 +379,9 @@ def _load_persona() -> str:
     if text:
         print(f"[persona] loaded persona.txt ({len(text)} chars)")
         return text
-    # The file exists but holds no character text — the user emptied it, so
+    # The file exists but holds no character text - the user emptied it, so
     # respect that and just fall back without rewriting their file.
-    print("[persona] persona.txt has no character text — using built-in default")
+    print("[persona] persona.txt has no character text - using built-in default")
     return _DEFAULT_PERSONA
 
 
@@ -116,23 +389,23 @@ PERSONA = _load_persona()
 
 # Active-face state: chipper POSTs to /v1/state/face_seen when Vector's event
 # stream reports an observed face. Vector's firmware face recognition is
-# NOISY — it bounces between a correct enrolled match and transient
+# NOISY - it bounces between a correct enrolled match and transient
 # "stranger" IDs frame to frame. So we track the last ENROLLED match and the
 # last STRANGER sighting separately, and let an enrolled match win: a single
 # stranger blip must not wipe a recent confident recognition (which would
 # drop all of that person's memories from the LLM's context).
 import time as _time
-FACE_RECENT_WINDOW = 15  # seconds — how long a face sighting stays "current".
+FACE_RECENT_WINDOW = 15  # seconds - how long a face sighting stays "current".
                          # Deliberately short: the face probe re-detects who is
                          # present on every voice request, so this only has to
                          # span the few seconds from that detection to the LLM
                          # request within the same query. Anything older is
-                         # from a previous turn and must NOT leak forward — a
+                         # from a previous turn and must NOT leak forward - a
                          # long window made Vector keep treating a speaker who
                          # had already handed off (e.g. Sarah -> G) as present.
 
 # A gap at least this long since last speaking with a person counts as a
-# fresh encounter — Vector opens his reply by greeting them by name.
+# fresh encounter - Vector opens his reply by greeting them by name.
 SESSION_GREETING_GAP = 300  # seconds
 
 _face_state = {
@@ -147,7 +420,7 @@ def current_face() -> Optional[dict]:
     """Who Vector is effectively looking at right now.
 
     An enrolled match within FACE_RECENT_WINDOW always wins over stranger
-    noise — recognition is too jittery to trust a single latest frame. Only
+    noise - recognition is too jittery to trust a single latest frame. Only
     when there's been no enrolled match for the whole window do recent
     stranger sightings count as a genuine stranger."""
     now = _time.time()
@@ -170,16 +443,16 @@ def current_face() -> Optional[dict]:
     return None
 
 
-# ── Ambient awareness state ───────────────────────────────────────────────────
+# -- Ambient awareness state ---------------------------------------------------
 # When Vector is idle (awake, off the charger, not mid-conversation) the
 # ambient loop in chipper periodically sends a camera frame to /v1/ambient.
-# He reacts only to genuine novelty. The user can also tell him to be quiet —
+# He reacts only to genuine novelty. The user can also tell him to be quiet -
 # quiet mode suppresses those spontaneous reactions until a sleep cycle.
 
 AMBIENT_SLEEP_GAP = 4 * 3600    # A gap this long with no ambient activity means
                                 # Vector has been asleep / charging / idle (the
                                 # loop is gated off overnight and on the
-                                # charger) — that counts as a sleep cycle, so
+                                # charger) - that counts as a sleep cycle, so
                                 # quiet mode lifts on the next observation.
 AMBIENT_QUIET_CAP = 24 * 3600   # Hard ceiling on quiet mode, in case a sleep
                                 # gap is somehow never observed.
@@ -195,17 +468,17 @@ def _set_quiet(on: bool) -> None:
     _ambient_state["quiet"] = bool(on)
     if on:
         _ambient_state["quiet_since"] = _time.time()
-        print("[ambient] quiet mode ON — spontaneous reactions suppressed "
+        print("[ambient] quiet mode ON - spontaneous reactions suppressed "
               "until a sleep cycle")
     else:
-        print("[ambient] quiet mode OFF — spontaneous reactions resume")
+        print("[ambient] quiet mode OFF - spontaneous reactions resume")
 
 
-# ── Continuity: a persistent mood (Phase 2) ───────────────────────────────────
+# -- Continuity: a persistent mood (Phase 2) -----------------------------------
 # Vector carries a thread of inner state across time. A cheap background
 # reflection distils "the day so far" into a one-line mood; it is persisted so
 # it survives restarts, and it colours both conversation and ambient reactions.
-# The mood only ever TINTS tone — it is never announced.
+# The mood only ever TINTS tone - it is never announced.
 
 MOOD_REFLECT_INTERVAL = 30 * 60  # seconds between background mood reflections
 
@@ -216,7 +489,7 @@ _mood_state = {
 
 
 def _load_mood() -> None:
-    """Restore the last persisted mood at startup — continuity across restarts."""
+    """Restore the last persisted mood at startup - continuity across restarts."""
     rec = MEMORY.get_state("mood")
     if rec and rec.get("value"):
         _mood_state["text"]    = rec["value"]
@@ -226,7 +499,7 @@ def _load_mood() -> None:
 
 _MOOD_SYSTEM = (
     "You track the inner state of Vector, a small desktop robot with a dry, "
-    "sardonic character — somewhere between Marvin from Hitchhiker's Guide, "
+    "sardonic character - somewhere between Marvin from Hitchhiker's Guide, "
     "Bender from Futurama, and Stephen Fry. Given a short digest of how his "
     "day has gone, reply with his CURRENT state of mind as ONE short phrase: "
     "third person, lowercase, no final period, a mood rather than a list of "
@@ -236,8 +509,8 @@ _MOOD_SYSTEM = (
 
 
 async def _reflect_mood() -> None:
-    """Distil the day so far into a one-line mood and persist it. Runs on the
-    small CPU model, so it never touches the main model's VRAM or prompt cache."""
+    """Distil the day so far into a one-line mood and persist it.
+    Uses SUMMARY_MODEL (cheap/fast) via the OpenAI-compatible chat API."""
     now_dt = datetime.now()
     bits = [
         f"It is {now_dt.strftime('%A')} {_time_of_day(now_dt)}, "
@@ -248,7 +521,7 @@ async def _reflect_mood() -> None:
         bits.append("Things he has noticed recently: "
                     + "; ".join(o["text"] for o in reversed(obs)) + ".")
     else:
-        bits.append("He has noticed nothing new for a good while — "
+        bits.append("He has noticed nothing new for a good while - "
                     "a static, uneventful stretch.")
     convo = MEMORY.latest_conversation()
     if convo and convo.get("last_convo_at"):
@@ -265,19 +538,18 @@ async def _reflect_mood() -> None:
         bits.append(f"A little while ago his mood was: {_mood_state['text']}.")
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-            r = await client.post(
-                f"{OLLAMA_BASE}/api/chat",
-                json={"model": SUMMARY_MODEL,
-                      "messages": [
-                          {"role": "system", "content": _MOOD_SYSTEM},
-                          {"role": "user",   "content": " ".join(bits)},
-                      ],
-                      "stream": False,
-                      "options": {"num_gpu": 0, "temperature": 0.7}},
-            )
-            r.raise_for_status()
-            mood = r.json().get("message", {}).get("content", "")
+        mood = await llm_chat_once(
+            [
+                {"role": "system", "content": _MOOD_SYSTEM},
+                {"role": "user", "content": " ".join(bits)},
+            ],
+            model=SUMMARY_MODEL,
+            temperature=0.7,
+            top_p=0.95,
+            timeout=_llm_timeout(read=60.0),
+            max_tokens=64,
+            tag="mood",
+        )
         mood = strip_markdown(mood).strip().strip('"').strip().rstrip(".").strip()
         if mood:
             _mood_state["text"]    = mood
@@ -337,9 +609,9 @@ class AmbientRequest(BaseModel):
     image: str  # base64-encoded JPEG of what Vector is currently looking at
 
 
-# ── Vision-intent backstop ────────────────────────────────────────────────────
+# -- Vision-intent backstop ----------------------------------------------------
 # When the user clearly asks Vector to look at something but no photo is
-# attached, we don't trust the LLM to remember to call {{getImage||front}} —
+# attached, we don't trust the LLM to remember to call {{getImage||front}} -
 # we force it ourselves so the next request comes back with a real photo.
 
 _VISION_TRIGGERS = re.compile(
@@ -351,14 +623,14 @@ _VISION_TRIGGERS = re.compile(
     r'|can\s+you\s+see'
     r'|you\s+see\s+(?:anything|me|that|this)'
     r'|see\s+(this|that|anything)'
-    # Demonstratives — "what's this", "what is that", "what are these", etc.
+    # Demonstratives - "what's this", "what is that", "what are these", etc.
     r"|(what'?s|whats|what\s+is|what\s+are)\s+(this|that|these|those|here|there|in\s+front|on\s+(my|the))"
     # "look at this/that/here/me", "look around"
     r'|look\s+(at\s+(this|that|here|me)|around)'
     r'|have\s+a\s+look'
     r'|take\s+a\s+(look|photo|picture)'
     r'|use\s+your\s+(camera|eyes?)'
-    # Appearance / opinion on something visible — matches arbitrary nouns
+    # Appearance / opinion on something visible - matches arbitrary nouns
     #   "how does my hoodie look", "how do these shoes look", "how does it look"
     r'|how\s+(do|does)\s+(\S+\s+){1,4}look'
     #   "does this look good", "does my hoodie look right", "do these look ok"
@@ -369,7 +641,7 @@ _VISION_TRIGGERS = re.compile(
     r'|describe\s+(this|that|what\s+you\s+see|your\s+surroundings|my\s+\S+)'
     r'|tell\s+me\s+about\s+(this|that|my\s+\S+)'
     r'|check\s+(this|that|me|it|my\s+\S+)\s+out'
-    # Presenting / giving / showing something to Vector — he must look, not guess.
+    # Presenting / giving / showing something to Vector - he must look, not guess.
     r"|(this|that|these|those|it)('?s|\s+is|\s+are)\s+for\s+(you|vector)"
     r'|here\s+you\s+(go|are)'
     r'|look\s+what\s+i\b'
@@ -389,7 +661,7 @@ def is_vision_intent(text: str) -> bool:
     return bool(_VISION_TRIGGERS.search(text))
 
 
-# ── Message assembly ──────────────────────────────────────────────────────────
+# -- Message assembly ----------------------------------------------------------
 
 def _build_memory_section() -> str:
     face = current_face()
@@ -417,7 +689,7 @@ def _build_memory_section() -> str:
         if mentions:
             sections.append(
                 f"Things other people in your memory have mentioned about "
-                f"{face['name']} (cross-references — use these for context, "
+                f"{face['name']} (cross-references - use these for context, "
                 "but don't treat them as definitive facts told by "
                 f"{face['name']}):\n"
                 + "\n".join(
@@ -427,18 +699,18 @@ def _build_memory_section() -> str:
     elif face and face["is_stranger"]:
         sections.append(
             "You are currently looking at someone whose face is NOT in your "
-            "enrolled list — a stranger. Don't leak personal facts you "
+            "enrolled list - a stranger. Don't leak personal facts you "
             "remember about other people. Early in your reply, in character "
-            "(dry and mildly wary — your Marvin/Bender/Fry tone, never "
+            "(dry and mildly wary - your Marvin/Bender/Fry tone, never "
             "hostile), invite them to introduce themselves so you can "
             "recognise them next time: they should tell you their name and "
-            "ask you to remember their face — phrased like 'my name is Sam, "
-            "remember my face'. Ask only once — if the conversation so far "
+            "ask you to remember their face - phrased like 'my name is Sam, "
+            "remember my face'. Ask only once - if the conversation so far "
             "shows you've already asked, don't repeat it, just converse."
         )
     else:
         # No live face detection. If exactly one person has stored memories,
-        # this is a single-user setup — it's almost certainly them, so use
+        # this is a single-user setup - it's almost certainly them, so use
         # their profile fully. Only stay cautious when multiple people are
         # known and we genuinely can't tell who's present.
         profiles = MEMORY.distinct_faces()
@@ -457,7 +729,7 @@ def _build_memory_section() -> str:
         else:
             sections.append(
                 "You can't tell who you're talking to and several people are "
-                "in your memory — be cautious about name-dropping specific "
+                "in your memory - be cautious about name-dropping specific "
                 "personal facts until you know who's there."
             )
 
@@ -468,13 +740,13 @@ def _build_memory_section() -> str:
         )
 
     sections.append(
-        "Use these memories as a real friend would — reference them naturally "
+        "Use these memories as a real friend would - reference them naturally "
         "when a topic touches on them, address people by name occasionally, "
         "drop in callbacks to their hobbies / pets / ongoing projects. Don't "
         "recite the list. Don't force references where they don't fit.\n\n"
         "If the user shares a NEW durable fact about themselves (name, "
         "preference, ongoing project, pet, family member, etc.) OR explicitly "
-        "says 'remember X', emit {{remember||<the fact>}} — it will be tagged "
+        "says 'remember X', emit {{remember||<the fact>}} - it will be tagged "
         "to the person you're currently looking at and stripped from speech. "
         "For facts that aren't about a specific person (calendar, household, "
         "general context), use {{remember-shared||<fact>}} instead. To delete "
@@ -508,7 +780,7 @@ def _relative_time(seconds: float) -> str:
 
 
 def _effective_face() -> Optional[dict]:
-    """Who Vector is effectively addressing — the live detected face, or the
+    """Who Vector is effectively addressing - the live detected face, or the
     sole enrolled profile in a single-user setup. Mirrors the face resolution
     inside _build_memory_section so the system prompt and the per-turn context
     note always agree on who is present."""
@@ -529,7 +801,7 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
     Deliberately kept OFF the system prompt: it changes every turn, and in the
     cached prefix that would force a full prompt re-process. Session-scoped
     lines (last-seen, conversation recall) appear only at the START of a
-    session — gated on a >90s gap — so they don't nag on every turn."""
+    session - gated on a >90s gap - so they don't nag on every turn."""
     bits = [
         f"Current time is {now_dt.strftime('%A %B %d, %Y, %I:%M %p')} "
         f"({_time_of_day(now_dt)})."
@@ -541,7 +813,7 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
             f"at {datetime.fromtimestamp(o['seen_at']).strftime('%I:%M %p')}, {o['text']}"
             for o in reversed(obs)
         )
-        bits.append(f"Things you have actually seen recently — {seen}.")
+        bits.append(f"Things you have actually seen recently - {seen}.")
 
     if face and not face.get("is_stranger"):
         name = face["name"]
@@ -558,7 +830,7 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
                 if gap > SESSION_GREETING_GAP:
                     bits.append(
                         f"This is the first thing you've said to {name} in a "
-                        f"while — open your reply by addressing them by name."
+                        f"while - open your reply by addressing them by name."
                     )
                 if (prior.get("interaction_count") or 0) < 5:
                     bits.append(f"You've only met {name} a handful of times so far.")
@@ -574,25 +846,20 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
     if _mood_state["text"]:
         bits.append(
             f"Your current state of mind: {_mood_state['text']}. Let it colour "
-            f"your tone naturally — never state, explain or announce it."
+            f"your tone naturally - never state, explain or announce it."
         )
 
-    return ("[Context for you, Vector — " + " ".join(bits)
+    return ("[Context for you, Vector - " + " ".join(bits)
             + " Weave in only what naturally fits; never recite this back.]")
 
 
 def prepare_messages(messages: List[Message], face: Optional[dict]) -> list:
-    """Build the LLM message list with a byte-stable prompt prefix.
+    """Build the LLM message list with a stable prompt prefix.
 
-    Ollama reuses its cached KV prefix only as far as the prompt matches the
-    previous request. Anything that changes every request — the time, the
-    temporal context — must therefore NOT sit near the front, or the whole
-    ~2000-token personality/command block gets re-processed every query.
-
-    So the system message holds only slow-changing content (personality +
-    command docs, then long-term memories). The volatile per-turn context
-    note rides on the latest user turn, which is new content anyway.
-    Image bytes are stripped from older user turns to keep the context compact.
+    System message holds slow-changing content (personality + Wire-Pod command
+    docs + long-term memories). Volatile per-turn context rides on the latest
+    user turn. Older image bytes are stripped. Conversation history is trimmed
+    to LLM_MAX_HISTORY_MESSAGES (cost/context guard for cloud backends).
     """
     last_user_idx = max(
         (i for i, m in enumerate(messages) if m.role == "user"),
@@ -609,51 +876,52 @@ def prepare_messages(messages: List[Message], face: Optional[dict]) -> list:
     context_note = _build_context_note(face, prior_meta, now_dt)
     memory_section = _build_memory_section()
 
-    # Wire-Pod's system message now holds only the command/vision mechanics and
-    # command docs; Vector's character comes from PERSONA, prepended below.
+    # Wire-Pod's system message holds command/vision mechanics; character
+    # comes from PERSONA (persona.txt), prepended below.
     wirepod_system = next(
         (m.content for m in messages
          if m.role == "system" and isinstance(m.content, str) and m.content),
         "",
     )
 
-    # Static content first (big, never changes), memories after (small, rarely
-    # changes). PERSONA leads so his character frames everything. No timestamp
-    # here — see the docstring.
     out = [{
         "role":    "system",
         "content": f"{PERSONA}\n\n{wirepod_system}\n\n{memory_section}",
     }]
 
+    # Non-system turns only; trim to the last N (always keep the latest user).
+    turns: list = []
     for i, m in enumerate(messages):
         if m.role == "system":
-            continue  # Already handled above.
+            continue
         if not m.content:
             continue
         is_last_user = (i == last_user_idx)
         if isinstance(m.content, list):
             if is_last_user:
-                # Keep image bytes; append the context note as an extra text part.
-                out.append({
+                turns.append({
                     "role":    m.role,
                     "content": list(m.content) + [{"type": "text", "text": context_note}],
                 })
             else:
-                # Older vision turn — drop image bytes, keep text only.
                 text = " ".join(
                     p.get("text", "") for p in m.content
                     if isinstance(p, dict) and p.get("type") == "text"
                 ).strip()
                 if text:
-                    out.append({"role": m.role, "content": text})
+                    turns.append({"role": m.role, "content": text})
         else:
             content = f"{m.content}\n\n{context_note}" if is_last_user else m.content
-            out.append({"role": m.role, "content": content})
+            turns.append({"role": m.role, "content": content})
 
+    if len(turns) > MAX_HISTORY_MESSAGES:
+        turns = turns[-MAX_HISTORY_MESSAGES:]
+
+    out.extend(turns)
     return out
 
 
-# ── Response cleanup ──────────────────────────────────────────────────────────
+# -- Response cleanup ----------------------------------------------------------
 
 def strip_markdown(text: str) -> str:
     text = re.sub(r'\*{1,3}(.*?)\*{1,3}',     r'\1', text)
@@ -685,7 +953,7 @@ _FORBIDDEN_COMMAND = re.compile(
 # Memory commands the LLM may emit; captured + processed here, then stripped
 # from the response so they don't get spoken aloud.
 # Match {{remember-shared||...}} BEFORE {{remember||...}} or the shared form
-# would be partially eaten — but Python's re.findall handles non-overlapping
+# would be partially eaten - but Python's re.findall handles non-overlapping
 # greedy matches fine if we apply shared first.
 _REMEMBER_SHARED_RE = re.compile(r'\{\{remember-shared\|\|([^}]+)\}\}', re.IGNORECASE)
 _REMEMBER_RE        = re.compile(r'\{\{remember\|\|([^}]+)\}\}',         re.IGNORECASE)
@@ -697,7 +965,7 @@ _QUIET_RE           = re.compile(r'\{\{quietMode\|\|(on|off)\}\}',        re.IGN
 def extract_memory_commands(text: str) -> str:
     """Find any {{remember[-shared]||...}} or {{forget||...}} in text, act on
     them, return the text with those commands removed."""
-    # Shared memories first — they have no owner.
+    # Shared memories first - they have no owner.
     for fact in _REMEMBER_SHARED_RE.findall(text):
         stored = MEMORY.remember(fact.strip())
         if stored:
@@ -707,7 +975,7 @@ def extract_memory_commands(text: str) -> str:
     text = _REMEMBER_SHARED_RE.sub('', text)
 
     # Personal memories: auto-tag with whoever Vector is looking at right now.
-    # If no face is current, fall back to shared (NULL owner) — better to keep
+    # If no face is current, fall back to shared (NULL owner) - better to keep
     # the fact untagged than to drop it.
     face = current_face()
     if face and not face["is_stranger"]:
@@ -746,7 +1014,7 @@ def clean_response(text: str) -> str:
     return "".join(s if s.startswith("{{") and s.endswith("}}") else s.replace("||", "") for s in segments)
 
 
-# ── SSE plumbing ──────────────────────────────────────────────────────────────
+# -- SSE plumbing --------------------------------------------------------------
 
 def sse_chunk(content: str = "", finish: Optional[str] = None) -> str:
     payload = {
@@ -763,34 +1031,12 @@ def sse_chunk(content: str = "", finish: Optional[str] = None) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-# ── Cold-model masking ────────────────────────────────────────────────────────
-# The model auto-unloads from VRAM after idle (Ollama's keep-alive). The first
-# query after that sits silent for ~5-10s while Ollama reloads it. Instead,
-# Vector speaks a short in-character "waking up" line first — the pause then
-# feels like him gathering himself, not a lag.
-
-_WAKING_PHRASES = [
-    "Hold on — booting the higher cognitive functions.",
-    "One moment. Still spinning up.",
-    "Give me a second, my circuits are still warming.",
-    "Hrm. A cold start. The sheer indignity.",
-    "Patience — even brilliance needs a moment to load.",
-    "Hold on, retrieving my brain from cold storage.",
-    "A moment, please. I was, technically, asleep.",
-    "Just defragmenting my dignity. Won't be long.",
-]
-
-# Thinking filler: short in-character lines spoken when the LLM is slow to
-# produce its first sentence. Unlike _WAKING_PHRASES (which masks a ~5-10s
-# cold-model reload), these mask the ordinary ~1-2s generation gap so the
-# pause feels like Vector considering the question rather than lag.
-#
-# Every entry is a SINGLE sentence: ollama_sentence_stream yields one sentence
-# per chunk on purpose, and a multi-sentence filler chunk risks Wire-Pod's
-# parser dropping the tail. Keep new entries to one sentence.
-THINKING_DELAY = 1.5  # seconds to wait for the first sentence before filling
-                      # (a warm gemma3:12b first sentence lands ~1.1s, so 1.5
-                      # clears normal replies and only masks genuinely slow ones)
+# -- Latency fillers -----------------------------------------------------------
+# Thinking filler: short in-character lines when the LLM is slow to produce its
+# first sentence, so the pause feels like Vector considering the question.
+# Every entry is a SINGLE sentence: llm_sentence_stream yields one sentence per
+# chunk on purpose (Wire-Pod's stream parser can drop multi-sentence tails).
+THINKING_DELAY = 2.0  # seconds before first-sentence filler (cloud TTFT varies)
 
 _THINKING_PHRASES = [
     "Hmm, let me think.",
@@ -809,8 +1055,8 @@ _THINKING_PHRASES = [
     "Let me untangle that.",
     "Querying the void.",
     "Processing, reluctantly.",
-    "Computing — don't rush me.",
-    "Thinking — it's exhausting.",
+    "Computing - don't rush me.",
+    "Thinking - it's exhausting.",
     "Consulting my vast intellect, briefly.",
     "Engaging the brain, such as it is.",
     "Allow me a moment of genius.",
@@ -822,9 +1068,9 @@ _THINKING_PHRASES = [
     "I'll have something shortly.",
 ]
 
-# Every filler line, used to keep them out of stored memory/observations —
+# Every filler line, used to keep them out of stored memory/observations -
 # a filler is masking latency, it's not part of what Vector actually said.
-_ALL_FILLER_PHRASES = set(_THINKING_PHRASES) | set(_WAKING_PHRASES)
+_ALL_FILLER_PHRASES = set(_THINKING_PHRASES)
 
 _last_thinking_phrase = None
 
@@ -839,27 +1085,14 @@ def pick_thinking_phrase() -> str:
     return choice
 
 
-async def model_is_loaded() -> bool:
-    """True if MODEL is currently resident in Ollama. On any error, assume
-    loaded — better to skip the filler than to speak it spuriously."""
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
-            resp = await client.get(f"{OLLAMA_BASE}/api/ps")
-            resp.raise_for_status()
-            loaded = [m.get("name", "") for m in resp.json().get("models", [])]
-            return any(MODEL == n or MODEL in n for n in loaded)
-    except Exception:
-        return True
-
-
-# ── Ollama streaming ──────────────────────────────────────────────────────────
+# -- Upstream LLM streaming (OpenAI-compatible SSE) ----------------------------
 
 # Match end of a sentence: punctuation followed by whitespace or end-of-string.
 _SENTENCE_END = re.compile(r'(?<=[.!?])(?:\s+|$)')
 
 
-async def ollama_sentence_stream(messages: list, temperature: float = 1.0) -> AsyncIterator[str]:
-    """Stream Ollama tokens and yield complete sentences as they arrive.
+async def llm_sentence_stream(messages: list, temperature: float = 1.0) -> AsyncIterator[str]:
+    """Stream chat-completion tokens and yield complete sentences as they arrive.
 
     Wire-Pod's stream parser splits on punctuation but only takes splitResp[1],
     discarding splitResp[2:]. If we sent a multi-sentence response as one delta,
@@ -874,20 +1107,36 @@ async def ollama_sentence_stream(messages: list, temperature: float = 1.0) -> As
     t0 = time.monotonic()
     first_token_seen = False
     first_sentence_seen = False
-    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=120.0)) as client:
+    full_reply: list[str] = []
+    body = {
+        "model":       MODEL,
+        "messages":    messages,
+        "stream":      True,
+        "temperature": temperature,
+        "top_p":       0.95,
+        "seed":        random.randint(1, 2**31 - 1),
+    }
+    url = _chat_completions_url()
+    debug("UPSTREAM SEND [stream] POST " + url, _redact_body(body))
+    async with httpx.AsyncClient(timeout=_llm_timeout()) as client:
         async with client.stream(
             "POST",
-            f"{OLLAMA_BASE}/v1/chat/completions",
-            json={
-                "model":       MODEL,
-                "messages":    messages,
-                "stream":      True,
-                "temperature": temperature,
-                "top_p":       0.95,
-                "seed":        random.randint(1, 2**31 - 1),
-            },
+            url,
+            headers=_llm_headers(),
+            json=body,
         ) as resp:
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except Exception:
+                err_body = ""
+                try:
+                    err_body = (await resp.aread())[:DEBUG_MAX_CHARS].decode(
+                        "utf-8", errors="replace"
+                    )
+                except Exception:
+                    pass
+                debug(f"UPSTREAM ERROR [stream] status={resp.status_code} body={err_body!r}")
+                raise
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):
                     continue
@@ -896,13 +1145,14 @@ async def ollama_sentence_stream(messages: list, temperature: float = 1.0) -> As
                     break
                 try:
                     delta = json.loads(raw)["choices"][0].get("delta", {}).get("content", "")
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError, TypeError, IndexError):
                     continue
                 if not delta:
                     continue
                 if not first_token_seen:
-                    print(f"[vector-ai] timing: Ollama first token {time.monotonic() - t0:.2f}s")
+                    print(f"[vector-ai] timing: LLM first token {time.monotonic() - t0:.2f}s")
                     first_token_seen = True
+                    debug(f"UPSTREAM first token at {time.monotonic() - t0:.2f}s")
                 buffer += delta
                 while True:
                     match = _SENTENCE_END.search(buffer)
@@ -912,35 +1162,44 @@ async def ollama_sentence_stream(messages: list, temperature: float = 1.0) -> As
                     buffer = buffer[match.end():]
                     if sentence:
                         if not first_sentence_seen:
-                            print(f"[vector-ai] timing: Ollama first sentence {time.monotonic() - t0:.2f}s")
+                            print(f"[vector-ai] timing: LLM first sentence {time.monotonic() - t0:.2f}s")
                             first_sentence_seen = True
+                        full_reply.append(sentence)
+                        debug(f"UPSTREAM sentence: {sentence!r}")
                         yield sentence
     # Flush any trailing content that didn't end in punctuation (often a
     # trailing {{getImage||front}} or animation command).
     if buffer.strip():
+        full_reply.append(buffer.strip())
+        debug(f"UPSTREAM tail: {buffer.strip()!r}")
         yield buffer.strip()
+    debug(
+        f"UPSTREAM RECV [stream] done {time.monotonic() - t0:.2f}s "
+        f"sentences={len(full_reply)}",
+        {"content": _redact_content(" ".join(full_reply))},
+    )
 
 
 async def stream_sentences_with_filler(
     messages: list, temperature: float, filler_enabled: bool
 ) -> AsyncIterator[str]:
-    """Wrap ollama_sentence_stream. If the first sentence takes longer than
+    """Wrap llm_sentence_stream. If the first sentence takes longer than
     THINKING_DELAY to arrive, yield a short thinking-filler line before it so
     Vector acknowledges the question instead of sitting silent. The filler is
-    just an ordinary sentence chunk — it flows through the normal cleanup."""
-    agen = ollama_sentence_stream(messages, temperature).__aiter__()
+    just an ordinary sentence chunk - it flows through the normal cleanup."""
+    agen = llm_sentence_stream(messages, temperature).__aiter__()
     first_task = asyncio.ensure_future(agen.__anext__())
     try:
         if filler_enabled:
             try:
-                # shield: on timeout the task keeps running — we just stop
+                # shield: on timeout the task keeps running - we just stop
                 # waiting on it, speak the filler, then await it for real.
                 first = await asyncio.wait_for(
                     asyncio.shield(first_task), THINKING_DELAY
                 )
             except asyncio.TimeoutError:
                 filler = pick_thinking_phrase()
-                print(f"[vector-ai] slow first sentence — thinking filler: {filler!r}")
+                print(f"[vector-ai] slow first sentence - thinking filler: {filler!r}")
                 yield filler
                 first = await first_task
         else:
@@ -970,15 +1229,15 @@ def cap_chunk_animations(text: str, allowance: int) -> tuple[str, int]:
     return "".join(out), kept
 
 
-# ── Conversation memory ───────────────────────────────────────────────────────
+# -- Conversation memory -------------------------------------------------------
 
 async def _summarise_conversation(messages: List[Message], latest_reply: str,
                                   face_id: int, face_name: Optional[str]) -> None:
     """Background task: distil this conversation into one line and store it as
     the face's 'last conversation', so Vector can recall it next session.
 
-    Runs on SUMMARY_MODEL (small/fast) so it never evicts the main model's
-    prompt cache. Failures are swallowed — a missing summary is harmless."""
+    Runs on SUMMARY_MODEL (cheap/fast). Failures are swallowed - a missing
+    summary is harmless."""
     turns = [
         m for m in messages
         if m.role in ("user", "assistant")
@@ -998,33 +1257,31 @@ async def _summarise_conversation(messages: List[Message], latest_reply: str,
             "You summarise a conversation between a user and Vector (a small "
             "robot) in ONE short factual sentence, from Vector's point of "
             "view, naming the actual topics discussed. Refer to the human "
-            "only as 'the user' — never use a name for them, even if names "
-            "appear in the text. No preamble, no quotes — just the sentence."},
+            "only as 'the user' - never use a name for them, even if names "
+            "appear in the text. No preamble, no quotes - just the sentence."},
         {"role": "user", "content": transcript},
     ]
     try:
-        # num_gpu:0 runs the summariser on CPU — it's a background task, so
-        # CPU speed is fine, and it keeps the summary model out of VRAM.
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-            r = await client.post(
-                f"{OLLAMA_BASE}/api/chat",
-                json={"model": SUMMARY_MODEL, "messages": prompt,
-                      "stream": False,
-                      "options": {"num_gpu": 0, "temperature": 0.3}},
-            )
-            r.raise_for_status()
-            summary = r.json().get("message", {}).get("content", "")
+        summary = await llm_chat_once(
+            prompt,
+            model=SUMMARY_MODEL,
+            temperature=0.3,
+            top_p=0.95,
+            timeout=_llm_timeout(read=60.0),
+            max_tokens=128,
+            tag="convo_summary",
+        )
         summary = strip_markdown(summary).strip().strip('"').strip()
         if summary:
             MEMORY.set_convo_summary(face_id, summary)
             print(f"[memory] convo summary [{face_name}]: {summary!r}")
-            # A finished conversation is a notable event — refresh the mood.
+            # A finished conversation is a notable event - refresh the mood.
             asyncio.create_task(_reflect_mood())
     except Exception as e:
         print(f"[memory] summary failed: {e}")
 
 
-# ── Main flow ─────────────────────────────────────────────────────────────────
+# -- Main flow -----------------------------------------------------------------
 
 async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIterator[str]:
     last_user_text = next(
@@ -1033,48 +1290,61 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
         "",
     )
     has_image = bool(messages) and isinstance(messages[-1].content, list)
-    print(f"[{datetime.now():%H:%M:%S}] [vector-ai] User: {last_user_text!r} (image: {has_image})")
+    print(f"[vector-ai] User: {last_user_text!r} (image: {has_image})")
+    debug(
+        "WIREPOD RECV /v1/chat/completions generate()",
+        {
+            "temperature": temperature,
+            "n_messages": len(messages),
+            "has_image": has_image,
+            "messages": _redact_messages(messages),
+        },
+    )
 
     # Vision-intent backstop: if the user is clearly asking to look at something
     # and no photo is attached yet, force the camera command rather than letting
-    # the LLM hallucinate from stale conversation history. No verbal preamble —
+    # the LLM hallucinate from stale conversation history. No verbal preamble -
     # the audio cue is the shutter animation Wire-Pod plays for getImage.
     if not has_image and is_vision_intent(last_user_text):
-        print("[vector-ai] Vision intent — forcing getImage (shutter only, no preamble)")
+        print("[vector-ai] Vision intent - forcing getImage (shutter only, no preamble)")
+        debug("WIREPOD SEND force getImage (vision intent, no image attached)")
         yield sse_chunk(_GETIMAGE_PAYLOAD)
         yield sse_chunk("", finish="stop")
         yield "data: [DONE]\n\n"
         return
 
     try:
+        if not LLM_API_KEY and "openrouter.ai" in LLM_BASE_URL:
+            print("[vector-ai] ERROR: OPENROUTER_API_KEY / LLM_API_KEY is not set")
+            yield sse_chunk("My cloud brain has no API key. Check vector-ai .env.")
+            yield sse_chunk("", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+
         t_req = time.monotonic()
         eff_face = _effective_face()
         prepared = prepare_messages(messages, eff_face)
-
-        # Cold-model mask: if the model unloaded during idle, speak a short
-        # "waking up" line first so the ~5-10s reload feels intentional. The
-        # filler is just an extra sentence chunk emitted before the real
-        # response; Vector speaks it while Ollama loads the model.
-        cold_model = not has_image and not await model_is_loaded()
-        if cold_model:
-            filler = random.choice(_WAKING_PHRASES)
-            print(f"[vector-ai] cold model — filler: {filler!r}")
-            yield sse_chunk(filler)
+        debug(
+            "PREPARED messages for upstream (after persona/memory/history trim)",
+            {
+                "face": eff_face,
+                "n_prepared": len(prepared),
+                "messages": _redact_messages(prepared),
+            },
+        )
 
         # Stream sentences as soon as they finish generating so Vector starts
         # speaking before the rest of the response is produced. The vision-
         # intent regex above catches the common "what do you see"-style queries
         # before the LLM runs; if it misses one and the LLM tacks on getImage
         # mid-response, we cut over to the camera trigger here. Any sentences
-        # already yielded will have been spoken — accepted trade-off for the
-        # latency win.
-        # Thinking filler masks the ordinary first-sentence gap. Pointless on
-        # a cold model — _WAKING_PHRASES already covered the (longer) reload.
+        # already yielded will have been spoken - accepted trade-off for the
+        # latency win. Thinking filler masks slow first-token latency.
         anims_emitted = 0
         any_emitted   = False
         reply_parts   = []
         async for sentence in stream_sentences_with_filler(
-            prepared, temperature, filler_enabled=not cold_model
+            prepared, temperature, filler_enabled=not has_image
         ):
             cleaned = clean_response(sentence)
 
@@ -1088,7 +1358,7 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
                     yield "data: [DONE]\n\n"
                     return
             else:
-                # A photo is ALREADY attached — the LLM is describing it. Strip
+                # A photo is ALREADY attached - the LLM is describing it. Strip
                 # any getImage it emits so it can't trigger a second photo and
                 # spiral into a multi-shot loop. One query, one photo.
                 if "{{getImage" in cleaned:
@@ -1100,24 +1370,28 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
             anims_emitted += kept
             if cleaned.strip():
                 print(f"[vector-ai] -> {cleaned!r}")
-                # Filler lines mask latency — they aren't part of what Vector
+                debug(f"WIREPOD SEND chunk: {cleaned!r}")
+                # Filler lines mask latency - they aren't part of what Vector
                 # actually said, so keep them out of memory/observations.
                 if cleaned.strip() not in _ALL_FILLER_PHRASES:
                     reply_parts.append(cleaned.strip())
                 yield sse_chunk(cleaned)
                 any_emitted = True
 
-        print(f"[vector-ai] timing: full response {time.monotonic() - t_req:.2f}s "
-              f"(cold_model={cold_model})")
+        print(f"[vector-ai] timing: full response {time.monotonic() - t_req:.2f}s")
+        debug(
+            f"WIREPOD SEND complete {time.monotonic() - t_req:.2f}s",
+            {"reply": " ".join(reply_parts)},
+        )
 
-        # ── Companion memory (post-response, non-blocking) ──
-        # Strip {{...}} commands — memory stores what Vector *said*, not the
+        # -- Companion memory (post-response, non-blocking) --
+        # Strip {{...}} commands - memory stores what Vector *said*, not the
         # eye-colour/animation directives chipper consumed.
         reply = re.sub(r'\{\{[^}]*\}\}', '', " ".join(reply_parts))
         reply = re.sub(r'\s+', ' ', reply).strip()
         mem_face = eff_face if (eff_face and not eff_face.get("is_stranger")
                                 and eff_face.get("face_id")) else None
-        # Visual memory: store what Vector saw — but only when he genuinely
+        # Visual memory: store what Vector saw - but only when he genuinely
         # described the scene. A too-thin reply means the describe failed
         # (e.g. the model re-requested the photo); "One sec." isn't a memory.
         if has_image and len(reply) >= 25:
@@ -1144,6 +1418,17 @@ async def generate(messages: List[Message], temperature: float = 1.0) -> AsyncIt
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest):
+    debug(
+        "HTTP RECV POST /v1/chat/completions",
+        {
+            "model": req.model,
+            "stream": req.stream,
+            "temperature": req.temperature,
+            "max_tokens": req.max_tokens,
+            "n_messages": len(req.messages or []),
+            "messages": _redact_messages(req.messages or []),
+        },
+    )
     return StreamingResponse(
         generate(req.messages, req.temperature or 1.0),
         media_type="text/event-stream",
@@ -1152,10 +1437,18 @@ async def chat_completions(req: ChatRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": MODEL, "ollama": OLLAMA_BASE}
+    return {
+        "status": "ok",
+        "model": MODEL,
+        "summary_model": SUMMARY_MODEL,
+        "llm_base": LLM_BASE_URL,
+        "api_key_set": bool(LLM_API_KEY),
+        "max_history_messages": MAX_HISTORY_MESSAGES,
+        "debug": DEBUG,
+    }
 
 
-# ── Memory debug endpoints ────────────────────────────────────────────────────
+# -- Memory debug endpoints ----------------------------------------------------
 
 @app.get("/v1/memory/list")
 async def memory_list():
@@ -1189,9 +1482,9 @@ async def memory_clear():
     return {"deleted": n}
 
 
-# ── Face state ────────────────────────────────────────────────────────────────
+# -- Face state ----------------------------------------------------------------
 # Chipper POSTs here when its event-stream loop sees a RobotObservedFace event.
-# We don't speak anything in response — just update the in-memory snapshot of
+# We don't speak anything in response - just update the in-memory snapshot of
 # who Vector is looking at. The next /v1/chat/completions call uses this to
 # scope memory retrieval and shape the system prompt.
 
@@ -1213,6 +1506,9 @@ async def state_face_seen(req: FaceSeenRequest):
         _face_state["enrolled_name"] = name
         _face_state["enrolled_seen"] = now
         print(f"[face] observed: id={req.face_id} {name!r} (enrolled)")
+    debug("HTTP RECV POST /v1/state/face_seen", {
+        "face_id": req.face_id, "name": name, "is_stranger": is_stranger,
+    })
     return {"ok": True, "is_stranger": is_stranger}
 
 
@@ -1225,16 +1521,16 @@ async def state_face():
     }
 
 
-# ── Sensor reactions ──────────────────────────────────────────────────────────
+# -- Sensor reactions ----------------------------------------------------------
 # One-shot, non-streaming, plain-text-only endpoint chipper hits when Vector
 # is picked up, set down, or petted. The response is whatever line Vector
 # would utter in his Marvin/Bender/Fry voice. No animation/eye/getImage
-# commands — those would never be heard since chipper just calls SayText.
+# commands - those would never be heard since chipper just calls SayText.
 
 _SENSOR_SYSTEM = (
     PERSONA + "\n\n"
     "For this request, respond with ONE short sentence reacting to a physical "
-    "event that just happened to you. Speak it aloud — plain text only, no "
+    "event that just happened to you. Speak it aloud - plain text only, no "
     "markdown, no quotes, no special tokens like {{...}}, no preamble. "
     "Just the line itself, under 15 words."
 )
@@ -1278,43 +1574,43 @@ async def sensor_reaction(req: SensorReactionRequest):
     user_msg = f"{description} React with one short sentence in character. For variety, this time: {angle}."
     if req.avoid:
         user_msg += (
-            " CRITICAL: do NOT use any of these recent lines or their close variants — "
+            " CRITICAL: do NOT use any of these recent lines or their close variants - "
             "no shared opening words, no shared topic, no rephrasings of: "
             + " ; ".join(f'"{p}"' for p in req.avoid[-5:])
         )
     print(f"[sensor_reaction] {req.event} prompt angle={angle!r} avoid={req.avoid}")
+    debug("HTTP RECV POST /v1/sensor_reaction", {
+        "event": req.event, "avoid": req.avoid, "angle": angle, "user_msg": user_msg,
+    })
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, read=15.0)) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE}/v1/chat/completions",
-                json={
-                    "model":       MODEL,
-                    "messages": [
-                        {"role": "system", "content": _SENSOR_SYSTEM},
-                        {"role": "user",   "content": user_msg},
-                    ],
-                    "stream":      False,
-                    "temperature": 1.4,
-                    "top_p":       0.95,
-                    "seed":        random.randint(1, 2**31 - 1),
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = data["choices"][0]["message"]["content"]
+        text = await llm_chat_once(
+            [
+                {"role": "system", "content": _SENSOR_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ],
+            model=MODEL,
+            temperature=1.4,
+            top_p=0.95,
+            seed=random.randint(1, 2**31 - 1),
+            timeout=_llm_timeout(connect=8.0, read=30.0),
+            max_tokens=128,
+            tag="sensor_reaction",
+        )
     except Exception as e:
         print(f"[sensor_reaction] error: {e}")
+        debug(f"sensor_reaction error: {e}")
         return {"text": "", "error": str(e)}
 
     clean = _strip_for_speech(text)
     print(f"[sensor_reaction] {req.event} -> {clean!r}")
+    debug("HTTP SEND /v1/sensor_reaction response", {"text": clean})
     return {"text": clean}
 
 
-# ── Ambient awareness ─────────────────────────────────────────────────────────
+# -- Ambient awareness ---------------------------------------------------------
 # When Vector is idle, chipper's ambient loop periodically sends a camera frame
-# here. The multimodal model decides whether anything is genuinely new — its
+# here. The multimodal model decides whether anything is genuinely new - its
 # default answer is "nothing". Only on real novelty does it return a short line
 # for Vector to speak; the new thing is also stored as a visual observation so
 # he can talk about it later when asked.
@@ -1326,7 +1622,7 @@ _AMBIENT_SYSTEM = (
     "just glanced around. You are looking at a photo of what is in front of "
     "you.\n\n"
     "Your desk is a familiar, mostly unchanging place. The overwhelming "
-    "majority of the time there is NOTHING worth remarking on — a desk with "
+    "majority of the time there is NOTHING worth remarking on - a desk with "
     "the usual monitor, keyboard, cables, mugs and clutter is not news, and "
     "neither is an empty, dim or dark room. Reacting to nothing, or to the "
     "same things over and over, makes you an annoyance. Your default answer "
@@ -1338,18 +1634,18 @@ _AMBIENT_SYSTEM = (
     "contents. Do NOT react to anything already in your recent observations. "
     "Do NOT invent detail you cannot actually see. When in any doubt, answer "
     "NOTHING.\n\n"
-    "If — and only if — there is genuine novelty, respond in EXACTLY two "
+    "If - and only if - there is genuine novelty, respond in EXACTLY two "
     "lines:\n"
     "Line 1: a brief, plain, factual note of what is new, for your own memory "
     "(e.g. 'a small plush toy has appeared on the desk').\n"
-    "Line 2: your spoken reaction — and make it genuinely sound like "
+    "Line 2: your spoken reaction - and make it genuinely sound like "
     "noticing something. In your own words and your own dry voice, let it "
     "move through three beats: first a flicker of real surprise that "
     "something has caught your attention; then what the thing actually is, "
     "named or briefly described as it registers with you; then your "
     "characteristic wry remark about it. Someone who cannot see your desk "
     "must still come away knowing what you spotted. This is the natural "
-    "shape of noticing something, NOT a template — never reuse a stock "
+    "shape of noticing something, NOT a template - never reuse a stock "
     "opening or fixed wording; the surprise, the phrasing and the wit must "
     "be freshly and genuinely yours every time. Plain text, no markdown, no "
     "quotes, no {{...}} tokens; one to three short sentences.\n"
@@ -1367,7 +1663,7 @@ async def ambient(req: AmbientRequest):
 
     # Sleep-cycle expiry for quiet mode: the ambient loop is gated off
     # overnight and while charging, so a long gap since the last call means
-    # Vector has been through a sleep cycle — quiet mode lifts.
+    # Vector has been through a sleep cycle - quiet mode lifts.
     if _ambient_state["quiet"]:
         slept  = bool(last_call) and (now - last_call) > AMBIENT_SLEEP_GAP
         capped = (now - _ambient_state["quiet_since"]) > AMBIENT_QUIET_CAP
@@ -1390,7 +1686,7 @@ async def ambient(req: AmbientRequest):
             f"{o['text']}"
             for o in reversed(obs)
         )
-        obs_note = ("Things you have already noticed recently — do NOT react "
+        obs_note = ("Things you have already noticed recently - do NOT react "
                     "to any of these again:\n" + seen)
     else:
         obs_note = "You have not noted anything recently."
@@ -1407,33 +1703,34 @@ async def ambient(req: AmbientRequest):
         {"type": "image_url",
          "image_url": {"url": f"data:image/jpeg;base64,{req.image}"}},
     ]
+    debug("HTTP RECV POST /v1/ambient", {
+        "image_len": len(req.image or ""),
+        "obs_note": obs_note[:500],
+    })
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, read=30.0)) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE}/v1/chat/completions",
-                json={
-                    "model":       MODEL,
-                    "messages": [
-                        {"role": "system", "content": _AMBIENT_SYSTEM},
-                        {"role": "user",   "content": user_msg},
-                    ],
-                    "stream":      False,
-                    "temperature": 0.8,
-                    "top_p":       0.9,
-                    "seed":        random.randint(1, 2**31 - 1),
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            raw = (data["choices"][0]["message"]["content"] or "").strip()
+        raw = (await llm_chat_once(
+            [
+                {"role": "system", "content": _AMBIENT_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ],
+            model=MODEL,
+            temperature=0.8,
+            top_p=0.9,
+            seed=random.randint(1, 2**31 - 1),
+            timeout=_llm_timeout(connect=12.0, read=45.0),
+            max_tokens=256,
+            tag="ambient",
+        )).strip()
     except Exception as e:
         print(f"[ambient] error: {e}")
+        debug(f"ambient error: {e}")
         return {"text": "", "error": str(e)}
 
     # Default, overwhelmingly common case: nothing worth mentioning.
     if not raw or raw.upper().rstrip(".!").startswith("NOTHING"):
         print("[ambient] nothing novel")
+        debug("HTTP SEND /v1/ambient", {"text": "", "raw": raw})
         return {"text": ""}
 
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
@@ -1443,7 +1740,7 @@ async def ambient(req: AmbientRequest):
         note   = lines[0]
         spoken = " ".join(lines[1:])
     else:
-        # Model didn't follow the two-line format — use the single line both
+        # Model didn't follow the two-line format - use the single line both
         # as the memory note and the spoken reaction.
         note = spoken = lines[0]
     note   = _strip_for_speech(note)
@@ -1477,26 +1774,26 @@ async def ambient_quiet(req: AmbientQuietRequest):
     return {"quiet": _ambient_state["quiet"]}
 
 
-# ── Proactive greeting (Phase 3a) ─────────────────────────────────────────────
+# -- Proactive greeting (Phase 3a) ---------------------------------------------
 # Chipper periodically probes for a known face when Vector is idle. When one
 # appears, it calls here: we greet only if the person has genuinely just
-# ARRIVED (not seen for a while, and not freshly out of a conversation) — so a
+# ARRIVED (not seen for a while, and not freshly out of a conversation) - so a
 # person sitting at the desk all day isn't greeted over and over.
 
 _GREETING_SYSTEM = (
     PERSONA + "\n\n"
     "Someone you know has just come into view; nobody has "
     "said anything yet. Greet them unprompted with ONE short line, in "
-    "character, naming them — acknowledge their return without gushing, "
+    "character, naming them - acknowledge their return without gushing, "
     "pleased in your own understated way, or dryly so. Vary how you open "
     "every greeting: never settle into a fixed formula such as 'Name, "
-    "you've returned' — come at it from a genuinely different direction "
+    "you've returned' - come at it from a genuinely different direction "
     "each time. Plain text only, no markdown, no quotes, no {{...}} tokens, "
     "under 20 words."
 )
 
 # Greeting variety: a random angle per greeting plus a list of recent lines to
-# steer away from — without this the model mode-collapses onto one opening
+# steer away from - without this the model mode-collapses onto one opening
 # ("Name, you've returned...") on every greeting.
 _GREETING_ANGLES = [
     "open on the time of day, or what the room has been like",
@@ -1559,31 +1856,30 @@ async def proactive_greeting(req: GreetingRequest):
     if _recent_greetings:
         bits.append(
             "CRITICAL: do not reuse the opening or sentence structure of your "
-            "recent greetings — no shared opening words, no rephrasings of: "
+            "recent greetings - no shared opening words, no rephrasings of: "
             + " ; ".join(f'"{g}"' for g in _recent_greetings[-5:]) + "."
         )
 
+    debug("HTTP RECV POST /v1/proactive_greeting", {
+        "face_id": fid, "name": name, "bits": bits,
+    })
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, read=15.0)) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE}/v1/chat/completions",
-                json={
-                    "model":       MODEL,
-                    "messages": [
-                        {"role": "system", "content": _GREETING_SYSTEM},
-                        {"role": "user",
-                         "content": " ".join(bits) + " Greet them now."},
-                    ],
-                    "stream":      False,
-                    "temperature": 1.3,
-                    "top_p":       0.95,
-                    "seed":        random.randint(1, 2**31 - 1),
-                },
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"]
+        text = await llm_chat_once(
+            [
+                {"role": "system", "content": _GREETING_SYSTEM},
+                {"role": "user", "content": " ".join(bits) + " Greet them now."},
+            ],
+            model=MODEL,
+            temperature=1.3,
+            top_p=0.95,
+            seed=random.randint(1, 2**31 - 1),
+            timeout=_llm_timeout(connect=8.0, read=30.0),
+            max_tokens=128,
+            tag="greeting",
+        )
     except Exception as e:
         print(f"[greeting] error: {e}")
+        debug(f"greeting error: {e}")
         return {"text": "", "error": str(e)}
 
     line = _strip_for_speech(text)
@@ -1591,4 +1887,5 @@ async def proactive_greeting(req: GreetingRequest):
         _recent_greetings.append(line)
         del _recent_greetings[:-6]
     print(f"[greeting] {name} (arrived) -> {line!r}")
+    debug("HTTP SEND /v1/proactive_greeting", {"text": line})
     return {"text": line}

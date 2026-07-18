@@ -5,14 +5,14 @@ The fforchino vector-go-sdk opens a gRPC connection to the robot on every
 vector.New() but never closes it. Wire-Pod's kgsim.go calls vector.New()
 once per voice query (and once per speak-goroutine), so each query leaks a
 connection. The robot's on-board SDK has a small connection budget; once it
-fills up Vector stops responding and shows the wifi-exclamation icon — the
+fills up Vector stops responding and shows the wifi-exclamation icon - the
 classic "drops after a question or two" failure.
 
 This patch adds `defer robot.Close()` at the two leak sites in kgsim.go and
 gives the opening BatteryState probe a 5s timeout, so a wedged robot fails
 fast instead of hanging on context.Background() forever.
 
-Requires the SDK Close() method — see add-sdk-close.py, which must run first.
+Requires the SDK Close() method - see add-sdk-close.py, which must run first.
 
 Idempotent. Modifies chipper/pkg/wirepod/ttr/kgsim.go.
 """
@@ -36,7 +36,7 @@ REPLACE_BAT = (
     "\t\tif err != nil {\n"
     "\t\t\treturn err.Error(), err\n"
     "\t\t}\n"
-    "\t\t// Release the gRPC connection when this request finishes — otherwise\n"
+    "\t\t// Release the gRPC connection when this request finishes - otherwise\n"
     "\t\t// every voice query leaks a connection and the robot's SDK wedges.\n"
     "\t\tdefer robot.Close()\n"
     "\t}\n"

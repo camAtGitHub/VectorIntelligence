@@ -3,11 +3,11 @@
 
 When someone enrolls a face with "Hey Vector, my name is Sarah, remember my
 face", Wire-Pod's intent_names_username handler splits on "my name is" and
-takes *everything* after it — enrolling the face as the literal name
+takes *everything* after it - enrolling the face as the literal name
 "sarah, remember my face." instead of "Sarah".
 
 This patch trims the parsed name at the first comma and at any trailing
-"remember my face"-type phrase, then strips stray punctuation — so the
+"remember my face"-type phrase, then strips stray punctuation - so the
 enrolled name is just "Sarah". Applies to both name-handler blocks.
 
 Idempotent. Modifies chipper/pkg/wirepod/ttr/intentparam.go.
@@ -54,7 +54,7 @@ def patch(path: Path) -> bool:
     if ANCHOR not in src:
         print(f"[name-extraction] anchor not found in {path}", file=sys.stderr)
         sys.exit(1)
-    # Both intent_names_username handlers carry the same block — fix both.
+    # Both intent_names_username handlers carry the same block - fix both.
     src = src.replace(ANCHOR, REPLACEMENT)
     path.write_text(src, encoding="utf-8", newline="\n")
     print(f"[name-extraction] {path.name} patched.")

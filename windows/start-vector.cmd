@@ -1,7 +1,7 @@
 @echo off
 title Vector - Start
-REM Self-contained — starts the VectorPod-Supervisor scheduled task.
-REM The supervisor brings up Ollama, Wire-Pod and vector-ai, advertises
+REM Self-contained - starts the VectorPod-Supervisor scheduled task.
+REM The supervisor brings up Wire-Pod and vector-ai (OpenRouter), advertises
 REM mDNS, and auto-recovers from drops/sleep/IP changes. No admin needed.
 
 echo Starting Vector...
@@ -13,7 +13,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [+] Supervisor started.
-echo     Bringing up Ollama, Wire-Pod and vector-ai - give it ~20 seconds.
+echo     Bringing up Wire-Pod and vector-ai - give it ~20 seconds.
 echo     Then say "Hey Vector" to chat.
 echo.
 echo     Stop with stop-vector.cmd when done (frees VRAM).

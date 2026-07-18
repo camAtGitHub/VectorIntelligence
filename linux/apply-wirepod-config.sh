@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# apply-wirepod-config.sh — Apply AI settings to Wire-Pod after initial setup.
+# apply-wirepod-config.sh - Apply AI settings to Wire-Pod after initial setup.
 # Run this AFTER completing Wire-Pod's web UI setup (http://<pi-ip>:<web port, default 8080>).
 # It merges our AI config into Wire-Pod's apiConfig.json without wiping
 # the SSL/enrollment fields that the setup UI wrote.
@@ -55,9 +55,9 @@ print("Config merged OK (vector-ai endpoint :%s)." % ai_port)
 PYEOF
 
 # Restart the stack so chipper re-reads apiConfig.json. The supervisor owns
-# chipper (and vector-ai / Ollama), so bouncing its service is how the new
-# config takes effect — same fix as the Windows side's defunct-task bug (#3).
+# chipper (and vector-ai), so bouncing its service is how the new
+# config takes effect - same fix as the Windows side's defunct-task bug (#3).
 info "Restarting the supervisor..."
 sudo systemctl restart vector-supervisor.service
 sleep 2
-sudo systemctl is-active vector-supervisor.service && info "Supervisor is running — give it ~15s to bring chipper back up." || warn "Supervisor failed to start — check: journalctl -u vector-supervisor -n 30"
+sudo systemctl is-active vector-supervisor.service && info "Supervisor is running - give it ~15s to bring chipper back up." || warn "Supervisor failed to start - check: journalctl -u vector-supervisor -n 30"

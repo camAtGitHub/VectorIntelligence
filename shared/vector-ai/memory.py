@@ -26,7 +26,7 @@ class Memory(NamedTuple):
 
 
 # Visual observations are only ever recalled within the last few hours, so
-# anything older is dead weight — pruned on each write to keep the table
+# anything older is dead weight - pruned on each write to keep the table
 # bounded. (The captured images themselves are never stored at all.)
 _OBSERVATION_RETENTION = 7 * 24 * 3600  # seconds
 
@@ -82,7 +82,7 @@ class MemoryStore:
             """)
             # Visual memory: a short description each time Vector actually
             # takes a photo. Not deduplicated (the same scene at two times is
-            # two valid observations) — hence its own table, not `memories`.
+            # two valid observations) - hence its own table, not `memories`.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS observations (
                     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,7 +91,7 @@ class MemoryStore:
                     text    TEXT NOT NULL
                 )
             """)
-            # Generic key/value state — currently holds Vector's persistent
+            # Generic key/value state - currently holds Vector's persistent
             # mood (Phase 2 continuity) so his disposition survives restarts.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS state (
@@ -175,7 +175,7 @@ class MemoryStore:
         limit: int = 50,
     ) -> List[Memory]:
         """Return memories from OTHER profiles (or shared) that mention `name`
-        as a whole word — used to surface cross-references like 'Sarah is G's
+        as a whole word - used to surface cross-references like 'Sarah is G's
         wife' when Vector is looking at Sarah, even though that fact is tagged
         to G's profile."""
         name = name.strip()
@@ -199,7 +199,7 @@ class MemoryStore:
                     "ORDER BY id DESC LIMIT ?",
                     (f"%{name}%", exclude_face_id, limit * 4),
                 ).fetchall()
-        # Word-boundary filter — drops 'Sarahville' / partial matches.
+        # Word-boundary filter - drops 'Sarahville' / partial matches.
         out = [
             Memory(r["id"], r["created_at"], r["face_id"], r["face_name"], r["text"])
             for r in rows if pattern.search(r["text"])
@@ -218,7 +218,7 @@ class MemoryStore:
     def distinct_faces(self) -> List[tuple]:
         """Returns [(face_id, face_name), ...] for every face that has at
         least one memory. Used to identify the primary user when no face is
-        being actively detected — a single enrolled profile means a
+        being actively detected - a single enrolled profile means a
         single-user setup, so 'no face seen' can safely default to them."""
         with self._lock, self._conn() as c:
             rows = c.execute(
@@ -227,14 +227,14 @@ class MemoryStore:
             ).fetchall()
         return [(r["face_id"], r["face_name"]) for r in rows]
 
-    # ── Per-face interaction metadata ─────────────────────────────────────────
+    # -- Per-face interaction metadata -----------------------------------------
 
     def touch_face(self, face_id: int, face_name: Optional[str]) -> Optional[dict]:
         """Record that Vector is interacting with this face right now.
 
         Returns the face's metadata as it was BEFORE this call (prior
         last_seen, interaction_count, last conversation summary) so the caller
-        can build temporal context — or None if this is the first ever
+        can build temporal context - or None if this is the first ever
         interaction with this face."""
         if face_id is None or face_id <= 0:
             return None
@@ -288,12 +288,12 @@ class MemoryStore:
                 "WHERE face_id = ?", (summary, now, face_id),
             )
 
-    # ── Visual memory ─────────────────────────────────────────────────────────
+    # -- Visual memory ---------------------------------------------------------
 
     def remember_observation(self, text: str, face_id: Optional[int] = None) -> None:
         """Store something Vector saw (a photo description). Each write also
         prunes observations older than _OBSERVATION_RETENTION, so the table
-        stays bounded — they are never recalled past a few hours anyway."""
+        stays bounded - they are never recalled past a few hours anyway."""
         text = (text or "").strip()
         if not text:
             return
@@ -309,7 +309,7 @@ class MemoryStore:
             )
 
     def list_observations(self, limit: int = 5, max_age_seconds: int = 21600) -> List[dict]:
-        """Recent things Vector saw — defaults to the last 6 hours."""
+        """Recent things Vector saw - defaults to the last 6 hours."""
         cutoff = datetime.now().timestamp() - max_age_seconds
         with self._lock, self._conn() as c:
             rows = c.execute(
@@ -318,7 +318,7 @@ class MemoryStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    # ── Persistent state (key/value) ──────────────────────────────────────────
+    # -- Persistent state (key/value) ------------------------------------------
 
     def get_state(self, key: str) -> Optional[dict]:
         with self._lock, self._conn() as c:
@@ -338,7 +338,7 @@ class MemoryStore:
             )
 
     def latest_conversation(self) -> Optional[dict]:
-        """The most recent conversation across all faces — feeds mood
+        """The most recent conversation across all faces - feeds mood
         reflection (how long since Vector last spoke with someone, about what)."""
         with self._lock, self._conn() as c:
             row = c.execute(

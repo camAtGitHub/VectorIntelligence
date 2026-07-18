@@ -2,7 +2,7 @@
 """Add a Close() method to the fforchino vector-go-sdk.
 
 The upstream SDK opens a gRPC connection to the robot in vector.New() but
-never exposes a way to close it — *.Vector has no Close(). Every connection
+never exposes a way to close it - *.Vector has no Close(). Every connection
 therefore leaks until the robot's small SDK connection budget fills and it
 stops responding (the "drops after a question or two" failure).
 
@@ -33,7 +33,7 @@ REPLACE_STRUCT = (
     "\tConn vectorpb.ExternalInterfaceClient\n"
     "\tCfg  options\n"
     "\t// grpcConn is the underlying gRPC connection. Kept so callers can\n"
-    "\t// release it via Close() — without this every vector.New() leaks a\n"
+    "\t// release it via Close() - without this every vector.New() leaks a\n"
     "\t// connection to the robot (the robot's SDK has a small connection\n"
     "\t// budget and wedges once it fills up).\n"
     "\tgrpcConn *grpc.ClientConn\n"

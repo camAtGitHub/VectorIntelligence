@@ -28,7 +28,7 @@ def patch_cmds(path: Path) -> bool:
         return False
 
     # Add the package-level variable after the imports block.
-    # NOTE: stick to ASCII — Python's default file encoding on Windows is
+    # NOTE: stick to ASCII - Python's default file encoding on Windows is
     # cp1252, and any non-ASCII char gets mangled into invalid UTF-8 when
     # Go reads the file.
     var_block = (

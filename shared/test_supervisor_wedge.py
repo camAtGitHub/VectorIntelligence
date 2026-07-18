@@ -21,9 +21,9 @@ WEDGE_LINES = [
 ]
 # Lines that must NEVER count as strikes.
 BENIGN_LINES = [
-    # vector-ai HTTP timeout — local service slow, nothing to do with the robot
+    # vector-ai HTTP timeout - local service slow, nothing to do with the robot
     '[sensor] vector-ai call failed: Post "http://127.0.0.1:8000/v1/sensor_reaction": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
-    # ordinary stream reset — happens on robot sleep/reboot transitions
+    # ordinary stream reset - happens on robot sleep/reboot transitions
     '[sensor] recv error for 0050668d: rpc error: code = Unavailable desc = error reading from server: read tcp 1.2.3.4:63788->5.6.7.8:443: wsarecv: An existing connection was forcibly closed by the remote host.',
     'Bot 0050668d Transcribed text: what is 2+2?',
     '[ambient] starting ambient loop for 0050668d @ 1.2.3.4:443',

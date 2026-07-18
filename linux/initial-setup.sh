@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# initial-setup.sh — Drive Wire-Pod's first-run wizard via REST.
+# initial-setup.sh - Drive Wire-Pod's first-run wizard via REST.
 # Runs ONCE after install.sh + wire-pod first start.
 # Idempotent.
 
@@ -39,7 +39,7 @@ if echo "$resp" | grep -q "downloading"; then
     done
 fi
 
-# Escape pod mode (not IP mode) — matches what wpsetup.keriganc.com expects
+# Escape pod mode (not IP mode) - matches what wpsetup.keriganc.com expects
 # for the Activate step. Vector gets handed `escapepod.local:443` as the
 # server endpoint and resolves it via mDNS (avahi-daemon on Linux handles
 # this natively from the system hostname).
@@ -66,4 +66,4 @@ fi
 
 echo ""
 echo -e "${GREEN}Initial setup complete.${NC}"
-echo "Next: factory-reset Vector and pair via http://$(hostname -I | awk '{print $1}'):${WEB_PORT} → Bot Setup tab."
+echo "Next: factory-reset Vector and pair via http://$(hostname -I | awk '{print $1}'):${WEB_PORT} -> Bot Setup tab."

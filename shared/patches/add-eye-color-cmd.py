@@ -33,7 +33,7 @@ def patch(path: Path) -> bool:
     # 2. Add command entry to ValidLLMCommands (insert after newVoiceRequest).
     newcmd = '''\t{
 \t\tCommand:         "eyeColor",
-\t\tDescription:     "Shift your eye colour to match your mood. Use when your response has a distinct emotional tone (sardonic, amused, mischievous, thoughtful, etc.) — roughly half your responses should set a colour. Place this command at the START of your response.",
+\t\tDescription:     "Shift your eye colour to match your mood. Use when your response has a distinct emotional tone (sardonic, amused, mischievous, thoughtful, etc.) - roughly half your responses should set a colour. Place this command at the START of your response.",
 \t\tParamChoices:    "teal, orange, yellow, lime, blue, purple, green",
 \t\tAction:          ActionSetEyeColor,
 \t\tSupportedModels: []string{"all"},
@@ -46,7 +46,7 @@ def patch(path: Path) -> bool:
     if anchor not in src:
         print(f"[eye-color] anchor for command list not found", file=sys.stderr)
         sys.exit(1)
-    # Insert AFTER the newVoiceRequest block — find its closing `},` and place ours after.
+    # Insert AFTER the newVoiceRequest block - find its closing `},` and place ours after.
     # Locate the entire newVoiceRequest entry.
     cmd_block_re = re.compile(
         r'(\t\{\n\t\tCommand:\s*"newVoiceRequest",.*?\n\t\},\n)',
@@ -83,7 +83,7 @@ func colourNameToPreset(name string) int {
 }
 
 // DoSetEyeColor sets Vector's eye colour to the named preset via the HTTPS
-// settings endpoint. This is the same path Wire-Pod's web UI uses — the gRPC
+// settings endpoint. This is the same path Wire-Pod's web UI uses - the gRPC
 // UpdateSettings only exposes the preset field, but firmware ignores it if
 // custom eye colour is enabled, so we must disable that here too.
 func DoSetEyeColor(name string, robot *vector.Vector) error {

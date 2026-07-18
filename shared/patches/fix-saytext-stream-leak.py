@@ -3,7 +3,7 @@
 
 Upstream sayText (chipper/pkg/wirepod/ttr/bcontrol.go) opens a
 BehaviorControl stream with context.Background() and never cancels it.
-Sending ControlRelease ends the control reservation but NOT the stream —
+Sending ControlRelease ends the control reservation but NOT the stream -
 the robot's vic-gateway keeps it open until the underlying gRPC connection
 closes. Callers on short-lived connections get away with that; the sensor
 reaction loop (add-sensor-reactions.py) calls sayText on a connection that
@@ -11,17 +11,17 @@ stays up for days, so every pickup/putdown/pet reaction permanently leaks
 one server-side stream on the robot. Enough of them and vic-gateway stops
 serving new requests: TCP still connects, new RPCs hang to deadline, Vector
 shows the wifi-exclamation icon (issue #8's "works for a few commands then
-dies" — and its background twin, wedging with no interaction at all).
+dies" - and its background twin, wedging with no interaction at all).
 
 Two further upstream bugs in the same function go with it:
   - the inner goroutine busy-waits on `select { default: continue }`,
     burning a CPU core for the whole utterance;
   - the outer goroutine ends with `for range start` on a channel nobody
-    closes, so it blocks forever — one leaked goroutine per call, and on
+    closes, so it blocks forever - one leaked goroutine per call, and on
     the no-grant path the leak happens before the robot even speaks.
 
 The replacement does the acquire-speak-release cycle synchronously in one
-goroutine under a 30s context that is cancelled on exit — the cancel is
+goroutine under a 30s context that is cancelled on exit - the cancel is
 what actually tears the stream down robot-side. No channels, no spin.
 
 Idempotent. Modifies chipper/pkg/wirepod/ttr/bcontrol.go.
@@ -129,7 +129,7 @@ REPLACE_FUNC = (
     "\tgo func() {\n"
     "\t\t// One bounded, cancelled context for the whole acquire-speak-release\n"
     "\t\t// cycle. The cancel is what actually ends the BehaviorControl stream\n"
-    "\t\t// on the robot — ControlRelease alone leaves it open, and on a\n"
+    "\t\t// on the robot - ControlRelease alone leaves it open, and on a\n"
     "\t\t// long-lived connection (the sensor-reaction loop) those leaked\n"
     "\t\t// streams accumulate until vic-gateway stops serving new requests:\n"
     "\t\t// TCP still up, new RPCs hang, Vector shows the wifi icon.\n"
