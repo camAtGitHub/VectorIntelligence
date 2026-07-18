@@ -69,7 +69,8 @@ late = WEDGE_WINDOW + 10.0
 d.feed(WEDGE_LINES[2], now=late, link_up=True)
 check("stale strikes age out: no bounce", not d.should_bounce(late))
 
-# 5. Cooldown prevents thrashing
+# 5. Cooldown prevents thrashing; restart-noise lines during cooldown must
+# not landmine a bounce the moment cooldown expires (no new evidence).
 d = WedgeDetector()
 t = 5000.0
 for i in range(WEDGE_STRIKES):
@@ -78,9 +79,13 @@ check("first wedge: bounce", d.should_bounce(t))
 for i in range(WEDGE_STRIKES):
     d.feed(WEDGE_LINES[0], now=t + 60, link_up=True)
 check("re-wedge inside cooldown: no bounce", not d.should_bounce(t + 60))
+check("restart noise ignored during cooldown", len(d.strikes) == 0)
 t2 = t + WEDGE_COOLDOWN + 60
+# Critical regression: time alone + stale/cooldown-era strikes must not bounce.
+check("no landmine bounce after cooldown without new strikes",
+      not d.should_bounce(t2))
 for i in range(WEDGE_STRIKES):
-    d.feed(WEDGE_LINES[0], now=t2, link_up=True)
-check("re-wedge after cooldown: bounce", d.should_bounce(t2))
+    d.feed(WEDGE_LINES[0], now=t2 + i, link_up=True)
+check("re-wedge after cooldown with fresh strikes: bounce", d.should_bounce(t2 + WEDGE_STRIKES))
 
 print(f"\nAll {passed} checks passed.")

@@ -69,9 +69,30 @@ var sensorCooldowns sync.Map // key: "<esn>:<event>", value: time.Time
 // robot_state stream in runSensorReactionLoop.
 var onChargerFlag atomic.Bool
 
+// calmPowerFlag tracks ROBOT_STATUS_CALM_POWER_MODE (sleep / low-power).
+// In calm mode Vector's vision stack is powered down; camera RPCs hang until
+// the client deadline, which is the main source of ambient DeadlineExceeded
+// noise. Updated live from the robot_state stream.
+var calmPowerFlag atomic.Bool
+
+// lastRobotStateUnix is the unix time of the most recent robot_state event.
+// Ambient only trusts calmPowerFlag when this is fresh - a dead sensor stream
+// must not permanently suppress glances.
+var lastRobotStateUnix atomic.Int64
+
 // IsOnCharger reports whether Vector is currently on his charging pod.
 func IsOnCharger() bool {
 \treturn onChargerFlag.Load()
+}
+
+// IsCalmPowerMode reports whether Vector is currently in calm/sleep power
+// mode according to a recent robot_state sample. False when unknown/stale.
+func IsCalmPowerMode() bool {
+\tlast := lastRobotStateUnix.Load()
+\tif last == 0 || time.Now().Unix()-last > 15 {
+\t\treturn false
+\t}
+\treturn calmPowerFlag.Load()
 }
 
 var pickupPhrases = []string{
@@ -300,6 +321,8 @@ func runSensorReactionLoop(esn, guid, target string) {
 \t\t\t\tcontinue
 \t\t\t}
 \t\t\tonChargerFlag.Store((rs.Status & uint32(vectorpb.RobotStatus_ROBOT_STATUS_IS_ON_CHARGER)) != 0)
+\t\t\tcalmPowerFlag.Store((rs.Status & uint32(vectorpb.RobotStatus_ROBOT_STATUS_CALM_POWER_MODE)) != 0)
+\t\t\tlastRobotStateUnix.Store(time.Now().Unix())
 \t\t\tpickedUp := (rs.Status & uint32(vectorpb.RobotStatus_ROBOT_STATUS_IS_PICKED_UP)) != 0
 \t\t\ttouched := rs.TouchData != nil && rs.TouchData.GetIsBeingTouched()
 \t\t\tif !initialized {

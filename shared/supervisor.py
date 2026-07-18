@@ -129,7 +129,9 @@ if EXTERNAL_CHIPPER:
 WEDGE_PATTERN  = re.compile(r"rpc error.*(DeadlineExceeded|i/o timeout)")
 WEDGE_STRIKES  = 3        # robot-RPC hangs within the window before we act
 WEDGE_WINDOW   = 45 * 60  # seconds; spans the chipper loops' failure backoff
-WEDGE_COOLDOWN = 30 * 60  # min seconds between wedge bounces (no thrashing)
+WEDGE_COOLDOWN = 30 * 60  # min seconds between wedge bounces; also the
+                          # post-bounce window where log strikes are ignored
+                          # so restart reconnect noise cannot re-arm a bounce
 
 EXE = ".exe" if IS_WINDOWS else ""
 
@@ -663,29 +665,44 @@ class WedgeDetector:
     """Decides when chipper needs a bounce to clear a wedged robot gateway.
 
     Pure logic - the log tailing and the bounce itself live on Supervisor -
-    so the strike/window/cooldown behaviour is unit-testable on its own."""
+    so the strike/window/cooldown behaviour is unit-testable on its own.
+
+    After a bounce we ignore new log lines until WEDGE_COOLDOWN expires.
+    Without that, chipper's own post-restart reconnect failures (a few
+    DeadlineExceeded / i/o timeout lines are normal) refill the strike
+    deque during the cooldown; the first health tick after cooldown then
+    re-bounces with *no* new evidence - an endless thrash every
+    WEDGE_COOLDOWN seconds (issue: periodic "SDK wedge suspected")."""
 
     def __init__(self):
         self.strikes = collections.deque()   # times of recent robot-RPC hangs
         self.last_bounce = None              # None = never bounced
 
+    def _in_cooldown(self, now: float) -> bool:
+        return (self.last_bounce is not None
+                and now - self.last_bounce <= WEDGE_COOLDOWN)
+
     def feed(self, line: str, now: float, link_up: bool):
         # Strikes only count while Vector is TCP-reachable: hangs with the
         # link UP are the wedge signature; with the link DOWN they're just a
         # WiFi drop, which the existing link-recovery path already handles.
+        # Also ignore lines while cooling down after a bounce - otherwise
+        # restart noise becomes a landmine that re-fires when cooldown ends.
+        if self._in_cooldown(now):
+            return
         if link_up and WEDGE_PATTERN.search(line):
             self.strikes.append(now)
 
     def should_bounce(self, now: float) -> bool:
         while self.strikes and now - self.strikes[0] > WEDGE_WINDOW:
             self.strikes.popleft()
-        if (len(self.strikes) >= WEDGE_STRIKES
-                and (self.last_bounce is None
-                     or now - self.last_bounce > WEDGE_COOLDOWN)):
-            self.strikes.clear()
-            self.last_bounce = now
-            return True
-        return False
+        if len(self.strikes) < WEDGE_STRIKES:
+            return False
+        if self._in_cooldown(now):
+            return False
+        self.strikes.clear()
+        self.last_bounce = now
+        return True
 
 
 # -- The supervisor ------------------------------------------------------------

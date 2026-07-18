@@ -194,7 +194,17 @@ func askVectorAIAmbient(jpeg []byte) string {
 // ambientObserveOnce takes one silent photo, asks vector-ai whether anything
 // is new, and speaks the reaction if there is one. Returns false when the
 // robot couldn't be reached or photographed, so the caller can back off.
+// Returns true (no backoff) when we deliberately skip - e.g. Vector is in
+// calm/sleep power mode where camera RPCs hang to deadline.
 func ambientObserveOnce(esn, guid, target string) bool {
+\t// Calm/sleep: vision stack is powered down. EnableImageStreaming and
+\t// CaptureSingleImage both hang until the client context dies, which used
+\t// to flood chipper.log with DeadlineExceeded. Sensor loop tracks this
+\t// bit live; only trust it when robot_state is fresh.
+\tif IsCalmPowerMode() {
+\t\treturn true
+\t}
+
 \trobot, err := vector.New(vector.WithSerialNo(esn), vector.WithToken(guid), vector.WithTarget(target))
 \tif err != nil {
 \t\tfmt.Printf("[ambient] connect failed for %s: %v\\n", esn, err)
@@ -203,22 +213,28 @@ func ambientObserveOnce(esn, guid, target string) bool {
 \t// Release the gRPC connection when done - otherwise every cycle leaks one.
 \tdefer robot.Close()
 
-\t// Vector keeps his camera feed off when idle or docked, so a cold
-\t// CaptureSingleImage just hangs until it times out. Enable the feed
-\t// first, let the camera spin up, capture, then turn the feed back off.
-\tctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-\tdefer cancel()
-\tif _, err := robot.Conn.EnableImageStreaming(ctx, &vectorpb.EnableImageStreamingRequest{Enable: true}); err != nil {
-\t\tfmt.Printf("[ambient] enable camera feed failed for %s: %v\\n", esn, err)
+\t// Fail-fast health check. vector.New does not dial; the first RPC is when
+\t// we discover a wedged gateway (TCP up, gRPC hangs). A short BatteryState
+\t// probe fails in ~3s instead of burning a 30s camera timeout.
+\tpingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+\t_, pingErr := robot.Conn.BatteryState(pingCtx, &vectorpb.BatteryStateRequest{})
+\tpingCancel()
+\tif pingErr != nil {
+\t\tfmt.Printf("[ambient] robot unreachable for %s: %v\\n", esn, pingErr)
 \t\treturn false
 \t}
-\ttime.Sleep(1500 * time.Millisecond) // let the camera spin up
+
+\t// CaptureSingleImage on Vector's gateway already: enables streaming,
+\t// waits for one full JPEG, then disables. The old path pre-enabled,
+\t// slept 1.5s, then captured under the SAME 25s context - a slow enable
+\t// left capture with almost no budget, so we logged both
+\t// "enable camera feed failed" and "image capture failed" DeadlineExceeded
+\t// for the same hang. One RPC, one dedicated budget, cold-camera-friendly.
+\tctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+\tdefer cancel()
 \timg, err := robot.Conn.CaptureSingleImage(ctx, &vectorpb.CaptureSingleImageRequest{
 \t\tEnableHighResolution: false,
 \t})
-\tdisableCtx, disableCancel := context.WithTimeout(context.Background(), 5*time.Second)
-\trobot.Conn.EnableImageStreaming(disableCtx, &vectorpb.EnableImageStreamingRequest{Enable: false})
-\tdisableCancel()
 \tif err != nil || img == nil || len(img.Data) == 0 {
 \t\tfmt.Printf("[ambient] image capture failed for %s: %v\\n", esn, err)
 \t\treturn false
