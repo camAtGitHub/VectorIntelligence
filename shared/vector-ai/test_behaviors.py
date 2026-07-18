@@ -147,9 +147,16 @@ def _wd_cfg(**kwargs) -> WorkdayConfig:
         late_check_timeout_s=900,
         reid_after_away_s=3600,
         priority=80,
+        identity_reject_cooldown_s=600,
     )
     base.update(kwargs)
     return WorkdayConfig(**base)
+
+
+def _apply_speak(r) -> None:
+    """Simulate arbiter allow: run deferred speech-gated commit."""
+    if r.on_speak_allowed is not None:
+        r.on_speak_allowed()
 
 
 def _ctx(
@@ -243,14 +250,17 @@ def test_late_check_and_yes() -> None:
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "w.db")
         b = WorkDayBehavior(_wd_cfg(), store)
-        # Force no_show first
         store.save_workday(WorkdayRecord(date="2026-07-18", mode=WorkdayMode.NO_SHOW))
         face = FaceIdentity(1, "Cam", False)
         now = 1_800_000_000.0
         r = b.plan(_ctx(b, True, face, 13, 0, now))
         rec = store.load_workday("2026-07-18")
-        check("late_check mode", rec.mode == WorkdayMode.LATE_CHECK)
+        # Speech-gated: mode stays no_show until commit
+        check("pending late_check before commit", rec.mode == WorkdayMode.NO_SHOW)
         check("late question", "afternoon" in r.speak.lower() or "morning" in r.speak.lower())
+        _apply_speak(r)
+        rec = store.load_workday("2026-07-18")
+        check("late_check mode after commit", rec.mode == WorkdayMode.LATE_CHECK)
         b.on_afternoon_yes("2026-07-18", now=now)
         rec = store.load_workday("2026-07-18")
         check("late_working", rec.mode == WorkdayMode.LATE_WORKING)
@@ -301,6 +311,7 @@ def test_away_29m_no_speak_30m_speaks() -> None:
         r2 = b.plan(_ctx(b, False, None, 11, 1, now2, identity_fresh=False))
         check("30m away speak", len(r2.speak) > 0)
         check("away reason", r2.debug.get("reason") == "away_scold")
+        _apply_speak(r2)
         # Second tick same absence: no re-speak
         r3 = b.plan(_ctx(b, False, None, 11, 5, now2 + 300, identity_fresh=False))
         check("away speak once", r3.speak == "")
@@ -393,6 +404,8 @@ def test_runtime_need_identity_and_priority() -> None:
         rt.ingest_tick_payload(now=later, occupied=True)
         result = rt.tick(later)
         check("quiet blocks runtime speak", result.speak == "")
+        rec = store.load_workday("2026-07-18")
+        check("quiet does not advance last_poke", rec.last_poke_at == now)
 
 
 def test_runtime_disabled_workday_not_registered() -> None:
@@ -491,11 +504,186 @@ def test_clock_tick_no_show() -> None:
         wcfg = _wd_cfg()
         rcfg = RuntimeConfig(behaviors_enabled=("workday",))
         rt = BehaviorRuntime(rcfg, wcfg, store)
-        # 10:31 without any presence tick content
         t = datetime(2026, 7, 18, 10, 31, tzinfo=ZoneInfo("UTC")).timestamp()
         rt.clock_tick(t)
         rec = store.load_workday("2026-07-18")
         check("clock no_show", rec.mode == WorkdayMode.NO_SHOW)
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: late re-ask, mode guards, face_id<=0, config, pause, voice
+# ---------------------------------------------------------------------------
+
+def test_late_no_and_timeout_no_reask() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        b = WorkDayBehavior(_wd_cfg(late_check_timeout_s=100), store)
+        face = FaceIdentity(1, "Cam", False)
+        now = 1_800_000_000.0
+        store.save_workday(WorkdayRecord(date="2026-07-18", mode=WorkdayMode.NO_SHOW))
+        r = b.plan(_ctx(b, True, face, 13, 0, now))
+        _apply_speak(r)
+        check("entered late_check", store.load_workday("2026-07-18").mode == WorkdayMode.LATE_CHECK)
+
+        # User says no
+        b.on_afternoon_no("2026-07-18")
+        rec = store.load_workday("2026-07-18")
+        check("after no -> no_show", rec.mode == WorkdayMode.NO_SHOW)
+        check("late_check_done", rec.late_check_done is True)
+
+        # Occupied again with face — must not re-ask
+        r2 = b.plan(_ctx(b, True, face, 14, 0, now + 3600))
+        check("no re-ask after no", r2.speak == "")
+        check("still no_show after no", store.load_workday("2026-07-18").mode == WorkdayMode.NO_SHOW)
+
+        # Timeout path
+        store.save_workday(WorkdayRecord(
+            date="2026-07-18",
+            mode=WorkdayMode.LATE_CHECK,
+            late_check_asked_at=now,
+            late_check_done=False,
+            primary_face_id=1,
+        ))
+        r3 = b.plan(_ctx(b, True, face, 14, 0, now + 200))
+        rec = store.load_workday("2026-07-18")
+        check("timeout -> no_show", rec.mode == WorkdayMode.NO_SHOW)
+        check("timeout sets late_check_done", rec.late_check_done is True)
+        r4 = b.plan(_ctx(b, True, face, 15, 0, now + 4000))
+        check("no re-ask after timeout", r4.speak == "")
+
+
+def test_on_afternoon_no_mode_guard() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        b = WorkDayBehavior(_wd_cfg(), store)
+        store.save_workday(WorkdayRecord(
+            date="2026-07-18",
+            mode=WorkdayMode.WORKING,
+            primary_face_id=1,
+            started_at=1000.0,
+            arm_source="morning",
+        ))
+        b.on_afternoon_no("2026-07-18")
+        rec = store.load_workday("2026-07-18")
+        check("no does not tear down working", rec.mode == WorkdayMode.WORKING)
+
+
+def test_pause_resume_and_expiry() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        b = WorkDayBehavior(_wd_cfg(poke_interval_s=60), store)
+        start = 1_800_000_000.0
+        store.save_workday(WorkdayRecord(
+            date="2026-07-18",
+            mode=WorkdayMode.WORKING,
+            primary_face_id=1,
+            started_at=start,
+            last_poke_at=start,
+            arm_source="morning",
+        ))
+        b.on_pause("2026-07-18", until_ts=start + 1000)
+        r = b.plan(_ctx(b, True, None, 12, 0, start + 100, identity_fresh=False))
+        check("paused blocks", r.speak == "")
+        b.on_resume("2026-07-18")
+        rec = store.load_workday("2026-07-18")
+        check("resume -> working", rec.mode == WorkdayMode.WORKING)
+        # Expiry path
+        b.on_pause("2026-07-18", until_ts=start + 500)
+        r2 = b.plan(_ctx(b, True, None, 12, 0, start + 600, identity_fresh=False))
+        rec = store.load_workday("2026-07-18")
+        check("pause expiry -> working", rec.mode == WorkdayMode.WORKING)
+
+
+def test_arbiter_voice_suppress() -> None:
+    arb = SpeechArbiter(min_gap_s=90, suppress_after_voice_s=120)
+    req = SpeechRequest(text="hi", priority=80, behavior_id="workday")
+    ok, why = arb.allow(req, now=1000.0, quiet=False, voice_recent_ts=950.0)
+    check("recent voice blocks", ok is False and why == "recent_voice")
+    ok, why = arb.allow(req, now=1000.0, quiet=False, voice_recent_ts=800.0)
+    check("old voice allows", ok is True)
+
+
+def test_negative_face_id_stranger() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        wcfg = _wd_cfg()
+        rcfg = RuntimeConfig(
+            face_cache_max_age_s=120,
+            speech_min_gap_s=1,
+            speech_suppress_after_voice_s=0,
+            behaviors_enabled=("workday",),
+        )
+        rt = BehaviorRuntime(rcfg, wcfg, store)
+        local = datetime(2026, 7, 18, 9, 15, tzinfo=ZoneInfo("UTC"))
+        now = local.timestamp()
+        # Vector stranger face_id=-3
+        rt.ingest_tick_payload(
+            now=now,
+            occupied=True,
+            face={"face_id": -3, "name": "", "is_stranger": True},
+        )
+        snap = rt.presence.snapshot
+        check("negative face cached", snap.face is not None and snap.face.face_id == -3)
+        check("negative is stranger", snap.face.is_stranger is True)
+        check("identity fresh for stranger", rt.presence.identity_fresh(now) is True)
+        result = rt.tick(now)
+        rec = store.load_workday("2026-07-18")
+        check("stranger does not arm", rec.mode == WorkdayMode.WAITING_MORNING)
+        check("stranger no need_id spam", result.need_identity is False)
+
+
+def test_bad_config_does_not_crash() -> None:
+    cfg = load_workday_config({
+        "WORKDAY_ENABLED": "1",
+        "WORKDAY_START_BEGIN": "not-a-time",
+        "WORKDAY_END": "25:99",
+        "WORKDAY_POKE_INTERVAL_S": "nope",
+        "WORKDAY_TZ": "Not/AZone",
+    })
+    check("bad config still loads", cfg is not None)
+    check("bad HH:MM falls back start", cfg.start_begin == (9, 0))
+    check("bad HH:MM falls back end", cfg.end == (18, 0))
+    check("bad int falls back poke", cfg.poke_interval_s == 5400)
+
+
+def test_malformed_work_tags_stripped() -> None:
+    text, actions = parse_work_commands("Hi {{workAfternoon|| maybe}} {{workPause||until=25:00}} x")
+    check("malformed no actions", actions == [])
+    check("malformed stripped", "{{" not in text and "workAfternoon" not in text)
+    text, actions = parse_work_commands("{{workPause||until=9:30}}")
+    check("valid short hour pause", actions == [("pause", "09:30")])
+
+
+def test_arbiter_deny_does_not_commit_poke() -> None:
+    """Runtime quiet deny must not advance last_poke_at (speech-gated commit)."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        wcfg = _wd_cfg(poke_interval_s=100)
+        rcfg = RuntimeConfig(
+            speech_min_gap_s=90,
+            speech_suppress_after_voice_s=120,
+            behaviors_enabled=("workday",),
+        )
+        start = datetime(2026, 7, 18, 11, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        store.save_workday(WorkdayRecord(
+            date="2026-07-18",
+            mode=WorkdayMode.WORKING,
+            primary_face_id=1,
+            started_at=start,
+            last_poke_at=start,
+            arm_source="morning",
+        ))
+        rt = BehaviorRuntime(
+            rcfg, wcfg, store,
+            quiet_fn=lambda: True,
+            voice_ts_fn=lambda: 0.0,
+        )
+        later = start + 200
+        rt.ingest_tick_payload(now=later, occupied=True)
+        r = rt.tick(later)
+        check("denied speak empty", r.speak == "")
+        rec = store.load_workday("2026-07-18")
+        check("denied poke not committed", rec.last_poke_at == start)
 
 
 if __name__ == "__main__":
@@ -521,4 +709,12 @@ if __name__ == "__main__":
     test_runtime_disabled_workday_not_registered()
     test_simulated_workday()
     test_clock_tick_no_show()
+    test_late_no_and_timeout_no_reask()
+    test_on_afternoon_no_mode_guard()
+    test_pause_resume_and_expiry()
+    test_arbiter_voice_suppress()
+    test_negative_face_id_stranger()
+    test_bad_config_does_not_crash()
+    test_malformed_work_tags_stripped()
+    test_arbiter_deny_does_not_commit_poke()
     print("ALL PASS")

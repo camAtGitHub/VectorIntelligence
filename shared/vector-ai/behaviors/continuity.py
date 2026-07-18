@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .types import WorkdayMode
 
@@ -28,15 +28,25 @@ class WorkdayRecord:
     paused_from: str = ""
     away_scold_spoken: bool = False
     reid_pending: bool = False
+    # After late no/timeout: stay silent rest of day (no re-ask).
+    late_check_done: bool = False
+    # Cooldown after stranger/non-primary at a juncture (epoch when next probe ok).
+    identity_reject_until: float = 0.0
 
 
 class ContinuityStore:
-    """Per-date work-day record in SQLite (survives restarts)."""
+    """Per-date work-day record in SQLite (survives restarts).
+
+    Individual load/save use a lock. For multi-step FSM updates (load → mutate
+    → save) callers should use ``mutate`` or hold ``fsm_lock``.
+    """
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # Cross-request FSM critical section (clock vs tick vs chat commands).
+        self.fsm_lock = threading.Lock()
         self._init_schema()
 
     def _conn(self) -> sqlite3.Connection:
@@ -64,28 +74,25 @@ class ContinuityStore:
                     notes TEXT,
                     paused_from TEXT,
                     away_scold_spoken INTEGER,
-                    reid_pending INTEGER
+                    reid_pending INTEGER,
+                    late_check_done INTEGER,
+                    identity_reject_until REAL
                 )
                 """
             )
-            # Defensive migrations for older tables
             cols = {r["name"] for r in c.execute("PRAGMA table_info(workday_days)").fetchall()}
             for col, decl in (
                 ("primary_face_name", "TEXT"),
                 ("paused_from", "TEXT"),
                 ("away_scold_spoken", "INTEGER"),
                 ("reid_pending", "INTEGER"),
+                ("late_check_done", "INTEGER"),
+                ("identity_reject_until", "REAL"),
             ):
                 if col not in cols:
                     c.execute(f"ALTER TABLE workday_days ADD COLUMN {col} {decl}")
 
-    def load_workday(self, date: str) -> WorkdayRecord:
-        with self._lock, self._conn() as c:
-            row = c.execute(
-                "SELECT * FROM workday_days WHERE date = ?", (date,)
-            ).fetchone()
-        if not row:
-            return WorkdayRecord(date=date, mode=WorkdayMode.WAITING_MORNING)
+    def _row_to_record(self, date: str, row: sqlite3.Row) -> WorkdayRecord:
         try:
             mode = WorkdayMode(row["mode"] or WorkdayMode.WAITING_MORNING.value)
         except ValueError:
@@ -107,7 +114,18 @@ class ContinuityStore:
             paused_from=row["paused_from"] or "",
             away_scold_spoken=bool(row["away_scold_spoken"] or 0),
             reid_pending=bool(row["reid_pending"] or 0),
+            late_check_done=bool(row["late_check_done"] or 0),
+            identity_reject_until=float(row["identity_reject_until"] or 0.0),
         )
+
+    def load_workday(self, date: str) -> WorkdayRecord:
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM workday_days WHERE date = ?", (date,)
+            ).fetchone()
+        if not row:
+            return WorkdayRecord(date=date, mode=WorkdayMode.WAITING_MORNING)
+        return self._row_to_record(date, row)
 
     def save_workday(self, rec: WorkdayRecord) -> None:
         with self._lock, self._conn() as c:
@@ -117,8 +135,9 @@ class ContinuityStore:
                     date, mode, primary_face_id, primary_face_name, started_at,
                     arm_source, last_poke_at, absence_started_at, absence_count,
                     total_away_s, late_check_asked_at, pause_until, notes,
-                    paused_from, away_scold_spoken, reid_pending
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    paused_from, away_scold_spoken, reid_pending,
+                    late_check_done, identity_reject_until
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(date) DO UPDATE SET
                     mode=excluded.mode,
                     primary_face_id=excluded.primary_face_id,
@@ -134,7 +153,9 @@ class ContinuityStore:
                     notes=excluded.notes,
                     paused_from=excluded.paused_from,
                     away_scold_spoken=excluded.away_scold_spoken,
-                    reid_pending=excluded.reid_pending
+                    reid_pending=excluded.reid_pending,
+                    late_check_done=excluded.late_check_done,
+                    identity_reject_until=excluded.identity_reject_until
                 """,
                 (
                     rec.date,
@@ -153,8 +174,20 @@ class ContinuityStore:
                     rec.paused_from,
                     1 if rec.away_scold_spoken else 0,
                     1 if rec.reid_pending else 0,
+                    1 if rec.late_check_done else 0,
+                    rec.identity_reject_until,
                 ),
             )
+
+    def mutate(self, date: str, fn: Callable[[WorkdayRecord], Optional[WorkdayRecord]]) -> WorkdayRecord:
+        """Atomic load → mutate → save under fsm_lock + db lock path."""
+        with self.fsm_lock:
+            rec = self.load_workday(date)
+            out = fn(rec)
+            if out is not None:
+                self.save_workday(out)
+                return out
+            return rec
 
     def day_strip(self, date: str) -> str:
         """One short English line for chat injection."""
@@ -165,6 +198,8 @@ class ContinuityStore:
         if mode == WorkdayMode.WAITING_MORNING:
             return "Work day: still waiting for morning desk arrival."
         if mode == WorkdayMode.NO_SHOW:
+            if rec.late_check_done:
+                return "Work day: no morning start; afternoon work declined or timed out."
             return "Work day: no morning start detected; quiet until afternoon arm."
         if mode == WorkdayMode.LATE_CHECK:
             return "Work day: asked if user is working this afternoon (awaiting answer)."
@@ -172,7 +207,7 @@ class ContinuityStore:
             return "Work day: paused (user took a break from accountability)."
         bits = []
         if mode == WorkdayMode.WORKING:
-            bits.append("working" + (f" since morning" if rec.arm_source == "morning" else ""))
+            bits.append("working" + (" since morning" if rec.arm_source == "morning" else ""))
         elif mode == WorkdayMode.LATE_WORKING:
             bits.append("late-armed afternoon work")
         else:

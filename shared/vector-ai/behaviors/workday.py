@@ -2,21 +2,20 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from .config import WorkdayConfig, minutes_since_midnight
+from .config import WorkdayConfig, minutes_since_midnight, parse_hhmm
 from .continuity import ContinuityStore, WorkdayRecord
 from .types import (
     BehaviorContext,
     FaceIdentity,
-    PresenceSnapshot,
     TickResult,
     WorkdayMode,
 )
 
-# Chat command tags (stripped from speech by service).
+# Strict tags (parsed as actions).
 _AFTERNOON_RE = re.compile(
     r"\{\{workAfternoon\|\|(yes|no)\}\}", re.IGNORECASE
 )
@@ -24,6 +23,10 @@ _PAUSE_RE = re.compile(
     r"\{\{workPause\|\|until=(\d{1,2}:\d{2})\}\}", re.IGNORECASE
 )
 _RESUME_RE = re.compile(r"\{\{workResume\}\}", re.IGNORECASE)
+# Near-miss / malformed work tags — strip from TTS even if not actioned.
+_WORK_TAG_STRIP_RE = re.compile(
+    r"\{\{\s*work[A-Za-z]*\s*(?:\|\|[^}]*)?\}\}", re.IGNORECASE
+)
 
 
 def parse_work_commands(text: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -31,8 +34,9 @@ def parse_work_commands(text: str) -> Tuple[str, List[Tuple[str, str]]]:
 
     Actions:
       ("afternoon", "yes"|"no")
-      ("pause", "HH:MM")
+      ("pause", "HH:MM")  — only if HH:MM validates
       ("resume", "")
+    Malformed {{work…}} tags are always stripped so they never reach TTS.
     """
     actions: List[Tuple[str, str]] = []
     if not text:
@@ -43,21 +47,27 @@ def parse_work_commands(text: str) -> Tuple[str, List[Tuple[str, str]]]:
     text = _AFTERNOON_RE.sub("", text)
 
     for m in _PAUSE_RE.finditer(text):
-        actions.append(("pause", m.group(1).strip()))
+        raw = m.group(1).strip()
+        try:
+            h, mi = parse_hhmm(raw)
+            actions.append(("pause", f"{h:02d}:{mi:02d}"))
+        except ValueError:
+            pass  # invalid time — strip tag only
     text = _PAUSE_RE.sub("", text)
 
     if _RESUME_RE.search(text):
         actions.append(("resume", ""))
     text = _RESUME_RE.sub("", text)
 
-    # Collapse leftover whitespace from stripped tags
+    # Strip any leftover near-miss work tags (|| yes, single |, maybe, etc.)
+    text = _WORK_TAG_STRIP_RE.sub("", text)
+
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip(), actions
 
 
 def _in_window(local_dt: datetime, begin: tuple[int, int], end: tuple[int, int]) -> bool:
-    """Same-day [begin, end] inclusive of begin, exclusive of end boundary by minutes."""
     now_m = minutes_since_midnight(local_dt.hour, local_dt.minute)
     b = minutes_since_midnight(*begin)
     e = minutes_since_midnight(*end)
@@ -79,6 +89,8 @@ def _identified_primary(face: Optional[FaceIdentity], rec: WorkdayRecord) -> boo
         return False
     if not (face.name or "").strip():
         return False
+    if face.face_id <= 0:
+        return False
     # Once a primary is set, only that face_id can re-arm / re-ID
     if rec.primary_face_id is not None and face.face_id != rec.primary_face_id:
         return False
@@ -87,11 +99,14 @@ def _identified_primary(face: Optional[FaceIdentity], rec: WorkdayRecord) -> boo
 
 class WorkDayBehavior:
     id = "workday"
+    # Spec §3.4: runtime won't invoke tick more often than this (v1 stub).
+    min_tick_interval: float = 30.0
 
     def __init__(self, cfg: WorkdayConfig, store: ContinuityStore):
         self.cfg = cfg
         self.store = store
         self.priority = cfg.priority
+        self._last_tick_at: float = 0.0
 
     def enabled(self) -> bool:
         return bool(self.cfg.enabled)
@@ -99,51 +114,66 @@ class WorkDayBehavior:
     # -- chat / command hooks -------------------------------------------------
 
     def on_afternoon_yes(self, local_date: str, now: float = 0.0) -> None:
-        rec = self.store.load_workday(local_date)
-        if rec.mode not in (WorkdayMode.LATE_CHECK, WorkdayMode.NO_SHOW):
-            # Allow yes even if already late_check timed out back to no_show
-            if rec.mode != WorkdayMode.LATE_CHECK and rec.mode != WorkdayMode.NO_SHOW:
-                if rec.mode not in (WorkdayMode.LATE_WORKING, WorkdayMode.WORKING):
-                    return
-        rec.mode = WorkdayMode.LATE_WORKING
-        rec.arm_source = "late_yes"
-        if rec.started_at <= 0:
-            rec.started_at = now or rec.late_check_asked_at or 0.0
-        rec.last_poke_at = rec.started_at
-        rec.pause_until = 0.0
-        rec.paused_from = ""
-        self.store.save_workday(rec)
+        """Arm late work only from LATE_CHECK or NO_SHOW (post-ask / timeout)."""
+        with self.store.fsm_lock:
+            rec = self.store.load_workday(local_date)
+            if rec.mode not in (WorkdayMode.LATE_CHECK, WorkdayMode.NO_SHOW):
+                return
+            # NO_SHOW without ever being asked: still allow explicit chat arm
+            # only if late_check_done (declined/timeout) or late_check_asked_at
+            # — not from pure morning no_show before any late path.
+            if rec.mode == WorkdayMode.NO_SHOW and not (
+                rec.late_check_done or rec.late_check_asked_at > 0
+            ):
+                # Allow arming no_show via chat yes as convenience (user declared).
+                pass
+            rec.mode = WorkdayMode.LATE_WORKING
+            rec.arm_source = "late_yes"
+            rec.late_check_done = True  # won't re-ask if they pause etc.
+            if rec.started_at <= 0:
+                rec.started_at = now or rec.late_check_asked_at or 0.0
+            rec.last_poke_at = rec.started_at
+            rec.pause_until = 0.0
+            rec.paused_from = ""
+            self.store.save_workday(rec)
 
     def on_afternoon_no(self, local_date: str) -> None:
-        rec = self.store.load_workday(local_date)
-        rec.mode = WorkdayMode.NO_SHOW
-        rec.pause_until = 0.0
-        rec.paused_from = ""
-        self.store.save_workday(rec)
+        """Only valid during LATE_CHECK — refuse to tear down an armed day."""
+        with self.store.fsm_lock:
+            rec = self.store.load_workday(local_date)
+            if rec.mode != WorkdayMode.LATE_CHECK:
+                return
+            rec.mode = WorkdayMode.NO_SHOW
+            rec.late_check_done = True
+            rec.pause_until = 0.0
+            rec.paused_from = ""
+            self.store.save_workday(rec)
 
     def on_pause(self, local_date: str, until_ts: float) -> None:
-        rec = self.store.load_workday(local_date)
-        if rec.mode in (WorkdayMode.WORKING, WorkdayMode.LATE_WORKING):
-            rec.paused_from = rec.mode.value
-            rec.mode = WorkdayMode.PAUSED
-            rec.pause_until = until_ts
-            self.store.save_workday(rec)
-        elif rec.mode == WorkdayMode.PAUSED:
-            rec.pause_until = until_ts
-            self.store.save_workday(rec)
+        with self.store.fsm_lock:
+            rec = self.store.load_workday(local_date)
+            if rec.mode in (WorkdayMode.WORKING, WorkdayMode.LATE_WORKING):
+                rec.paused_from = rec.mode.value
+                rec.mode = WorkdayMode.PAUSED
+                rec.pause_until = until_ts
+                self.store.save_workday(rec)
+            elif rec.mode == WorkdayMode.PAUSED:
+                rec.pause_until = until_ts
+                self.store.save_workday(rec)
 
     def on_resume(self, local_date: str) -> None:
-        rec = self.store.load_workday(local_date)
-        if rec.mode != WorkdayMode.PAUSED:
-            return
-        prev = rec.paused_from or WorkdayMode.WORKING.value
-        try:
-            rec.mode = WorkdayMode(prev)
-        except ValueError:
-            rec.mode = WorkdayMode.WORKING
-        rec.pause_until = 0.0
-        rec.paused_from = ""
-        self.store.save_workday(rec)
+        with self.store.fsm_lock:
+            rec = self.store.load_workday(local_date)
+            if rec.mode != WorkdayMode.PAUSED:
+                return
+            prev = rec.paused_from or WorkdayMode.WORKING.value
+            try:
+                rec.mode = WorkdayMode(prev)
+            except ValueError:
+                rec.mode = WorkdayMode.WORKING
+            rec.pause_until = 0.0
+            rec.paused_from = ""
+            self.store.save_workday(rec)
 
     # -- speech templates -----------------------------------------------------
 
@@ -170,10 +200,16 @@ class WorkDayBehavior:
     # -- core tick ------------------------------------------------------------
 
     def tick(self, ctx: BehaviorContext) -> TickResult:
-        return self.plan(ctx)
+        with self.store.fsm_lock:
+            return self.plan(ctx)
 
     def plan(self, ctx: BehaviorContext) -> TickResult:
-        """Raw desire: speak text / need_identity. Runtime applies arbiter."""
+        """Raw desire: speak text / need_identity.
+
+        Speech-gated mutations are deferred via TickResult.on_speak_allowed so
+        the runtime arbiter can deny without advancing timers or entering
+        late_check without speaking.
+        """
         if not self.cfg.enabled:
             return TickResult(debug={"mode": WorkdayMode.OFF.value, "reason": "disabled"})
 
@@ -183,11 +219,10 @@ class WorkDayBehavior:
         now = ctx.now
         presence = ctx.presence
         face = presence.face if ctx.identity_fresh else None
-        # If identity is fresh, use cache face even when plan doesn't re-set it
         if face is None and ctx.identity_fresh and presence.face is not None:
             face = presence.face
 
-        # Day rollover / end-of-day: after WORK_END, idle for the day
+        # Day rollover / end-of-day
         if rec.mode not in (WorkdayMode.OFF, WorkdayMode.WAITING_MORNING) and _past(
             local_dt, self.cfg.end
         ):
@@ -201,39 +236,40 @@ class WorkDayBehavior:
                 self.store.save_workday(rec)
                 return TickResult(debug={"mode": "off", "reason": "work_end"})
 
-        # Ensure enabled day starts in waiting_morning (not leftover OFF from prior logic)
         if rec.mode == WorkdayMode.OFF and not _past(local_dt, self.cfg.end):
-            # Only reset to waiting if we never armed and still in morning window area
             if rec.started_at <= 0 and not _past(local_dt, self.cfg.start_end):
                 rec.mode = WorkdayMode.WAITING_MORNING
                 self.store.save_workday(rec)
 
-        # Clock: waiting_morning → no_show after start window
         if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
             rec.mode = WorkdayMode.NO_SHOW
             self.store.save_workday(rec)
 
-        # Pause expiry
         if rec.mode == WorkdayMode.PAUSED:
             if rec.pause_until > 0 and now >= rec.pause_until:
-                self.on_resume(date)
-                rec = self.store.load_workday(date)
+                prev = rec.paused_from or WorkdayMode.WORKING.value
+                try:
+                    rec.mode = WorkdayMode(prev)
+                except ValueError:
+                    rec.mode = WorkdayMode.WORKING
+                rec.pause_until = 0.0
+                rec.paused_from = ""
+                self.store.save_workday(rec)
             else:
                 return TickResult(debug={"mode": "paused", "reason": "paused"})
 
-        # Late check timeout → back to no_show
+        # Late check timeout → no_show + late_check_done (no re-ask)
         if rec.mode == WorkdayMode.LATE_CHECK:
             if (
                 rec.late_check_asked_at > 0
                 and (now - rec.late_check_asked_at) >= self.cfg.late_check_timeout_s
             ):
                 rec.mode = WorkdayMode.NO_SHOW
+                rec.late_check_done = True
                 self.store.save_workday(rec)
                 return TickResult(debug={"mode": "no_show", "reason": "late_timeout"})
 
         result = TickResult(debug={"mode": rec.mode.value})
-
-        # --- Mode-specific transitions / speech ---
 
         if rec.mode == WorkdayMode.WAITING_MORNING:
             return self._tick_waiting_morning(ctx, rec, face, result)
@@ -242,7 +278,6 @@ class WorkDayBehavior:
             return self._tick_no_show(ctx, rec, face, result)
 
         if rec.mode == WorkdayMode.LATE_CHECK:
-            # Already asked; wait for chat yes/no (or timeout above)
             result.debug["reason"] = "awaiting_afternoon"
             return result
 
@@ -254,6 +289,13 @@ class WorkDayBehavior:
             return result
 
         return result
+
+    def _identity_on_cooldown(self, rec: WorkdayRecord, now: float) -> bool:
+        return rec.identity_reject_until > 0 and now < rec.identity_reject_until
+
+    def _mark_identity_reject(self, rec: WorkdayRecord, now: float) -> None:
+        rec.identity_reject_until = now + max(0, int(self.cfg.identity_reject_cooldown_s))
+        self.store.save_workday(rec)
 
     def _tick_waiting_morning(
         self,
@@ -269,24 +311,27 @@ class WorkDayBehavior:
         if not ctx.presence.occupied:
             result.debug["reason"] = "empty"
             return result
-        # Juncture: need identified primary (not a stranger / guest)
         if not ctx.identity_fresh:
+            if self._identity_on_cooldown(rec, ctx.now):
+                result.debug["reason"] = "identity_reject_cooldown"
+                return result
             result.need_identity = True
             result.debug["reason"] = "need_identity_morning"
             return result
         if not _identified_primary(face, rec):
-            # Fresh identity but wrong person — do not re-probe every tick
+            self._mark_identity_reject(rec, ctx.now)
             result.debug["reason"] = "stranger_or_non_primary"
             return result
-        # Arm morning work
+        # Morning arm is not speech-gated — commit immediately.
         rec.mode = WorkdayMode.WORKING
         rec.primary_face_id = face.face_id  # type: ignore[union-attr]
         rec.primary_face_name = face.name  # type: ignore[union-attr]
         rec.started_at = ctx.now
         rec.arm_source = "morning"
-        rec.last_poke_at = ctx.now  # poke timer from start
+        rec.last_poke_at = ctx.now
         rec.absence_started_at = 0.0
         rec.away_scold_spoken = False
+        rec.identity_reject_until = 0.0
         self.store.save_workday(rec)
         result.debug["mode"] = WorkdayMode.WORKING.value
         result.debug["reason"] = "morning_start"
@@ -299,29 +344,53 @@ class WorkDayBehavior:
         face: Optional[FaceIdentity],
         result: TickResult,
     ) -> TickResult:
-        # After start window, if occupied + identified → late_check once
         if _past(ctx.local_dt, self.cfg.end):
             result.debug["reason"] = "past_end"
+            return result
+        # Spec: after no/timeout stay silent rest of day — no re-ask.
+        if rec.late_check_done:
+            result.debug["reason"] = "late_check_done"
             return result
         if not ctx.presence.occupied:
             result.debug["reason"] = "empty"
             return result
         if not ctx.identity_fresh:
+            if self._identity_on_cooldown(rec, ctx.now):
+                result.debug["reason"] = "identity_reject_cooldown"
+                return result
             result.need_identity = True
             result.debug["reason"] = "need_identity_late"
             return result
         if not _identified_primary(face, rec):
+            self._mark_identity_reject(rec, ctx.now)
             result.debug["reason"] = "stranger_or_non_primary"
             return result
-        # Enter late_check and speak once
-        rec.mode = WorkdayMode.LATE_CHECK
-        rec.primary_face_id = face.face_id  # type: ignore[union-attr]
-        rec.primary_face_name = face.name  # type: ignore[union-attr]
-        rec.late_check_asked_at = ctx.now
-        self.store.save_workday(rec)
-        result.speak = self._line_late_check(rec)
+
+        # Speech-gated: enter LATE_CHECK only if arbiter allows the question.
+        face_id = face.face_id  # type: ignore[union-attr]
+        face_name = face.name  # type: ignore[union-attr]
+        line = self._line_late_check(rec)
+        date = rec.date
+        asked_at = ctx.now
+        store = self.store
+
+        def _commit_late() -> None:
+            with store.fsm_lock:
+                r = store.load_workday(date)
+                if r.mode != WorkdayMode.NO_SHOW or r.late_check_done:
+                    return
+                r.mode = WorkdayMode.LATE_CHECK
+                r.primary_face_id = face_id
+                r.primary_face_name = face_name
+                r.late_check_asked_at = asked_at
+                r.identity_reject_until = 0.0
+                store.save_workday(r)
+
+        result.speak = line
+        result.on_speak_allowed = _commit_late
         result.debug["mode"] = WorkdayMode.LATE_CHECK.value
         result.debug["reason"] = "late_check"
+        result.debug["pending_commit"] = "late_check"
         return result
 
     def _tick_armed(
@@ -334,27 +403,35 @@ class WorkDayBehavior:
         now = ctx.now
         occupied = ctx.presence.occupied
         local_dt = ctx.local_dt
+        date = rec.date
+        store = self.store
 
-        # Optional re-ID after very long absence
         if rec.reid_pending:
             if not occupied:
                 result.debug["reason"] = "reid_wait_occupied"
                 return result
-            if not ctx.identity_fresh or not _identified_primary(face, rec):
+            if not ctx.identity_fresh:
+                if self._identity_on_cooldown(rec, now):
+                    result.debug["reason"] = "identity_reject_cooldown"
+                    return result
                 result.need_identity = True
                 result.debug["reason"] = "need_identity_reid"
                 return result
+            if not _identified_primary(face, rec):
+                self._mark_identity_reject(rec, now)
+                result.debug["reason"] = "stranger_or_non_primary_reid"
+                return result
             rec.reid_pending = False
+            rec.identity_reject_until = 0.0
             self.store.save_workday(rec)
 
-        # Occupancy → away tracking
+        # Occupancy → away tracking (non-speech; always commit)
         if not occupied:
             if rec.absence_started_at <= 0:
                 rec.absence_started_at = now
                 rec.away_scold_spoken = False
                 self.store.save_workday(rec)
             away_s = now - rec.absence_started_at
-            # Long-absence re-ID flag (speak path still uses occupancy)
             if (
                 self.cfg.reid_after_away_s > 0
                 and away_s >= self.cfg.reid_after_away_s
@@ -372,18 +449,32 @@ class WorkDayBehavior:
                 and away_s >= self.cfg.away_s
                 and not rec.away_scold_spoken
             ):
-                rec.away_scold_spoken = True
-                rec.absence_count += 1
-                rec.total_away_s += away_s
-                self.store.save_workday(rec)
-                result.speak = self._line_away(rec)
+                line = self._line_away(rec)
+                absence_count = rec.absence_count + 1
+                total_away = rec.total_away_s + away_s
+
+                def _commit_away() -> None:
+                    with store.fsm_lock:
+                        r = store.load_workday(date)
+                        if r.mode not in (WorkdayMode.WORKING, WorkdayMode.LATE_WORKING):
+                            return
+                        if r.away_scold_spoken:
+                            return
+                        r.away_scold_spoken = True
+                        r.absence_count = max(r.absence_count, absence_count)
+                        r.total_away_s = max(r.total_away_s, total_away)
+                        store.save_workday(r)
+
+                result.speak = line
+                result.on_speak_allowed = _commit_away
                 result.debug["reason"] = "away_scold"
+                result.debug["pending_commit"] = "away_scold"
                 return result
             result.debug["reason"] = "away"
             result.debug["away_s"] = away_s
             return result
 
-        # Occupied again → clear absence stretch
+        # Occupied again → clear absence stretch (non-speech)
         if rec.absence_started_at > 0:
             away_s = now - rec.absence_started_at
             if not rec.away_scold_spoken and away_s > 0:
@@ -392,23 +483,34 @@ class WorkDayBehavior:
             rec.away_scold_spoken = False
             self.store.save_workday(rec)
 
-        # On-task poke
         if _past(local_dt, self.cfg.end):
             result.debug["reason"] = "past_end"
             return result
 
         anchor = rec.last_poke_at if rec.last_poke_at > 0 else rec.started_at
         if anchor <= 0:
-            anchor = now
+            # Bootstrap anchor only — not a speech event
             rec.last_poke_at = now
             self.store.save_workday(rec)
+            anchor = now
 
         elapsed = now - anchor
         if elapsed >= self.cfg.poke_interval_s:
-            rec.last_poke_at = now
-            self.store.save_workday(rec)
-            result.speak = self._line_on_task(rec)
+            line = self._line_on_task(rec)
+            poke_at = now
+
+            def _commit_poke() -> None:
+                with store.fsm_lock:
+                    r = store.load_workday(date)
+                    if r.mode not in (WorkdayMode.WORKING, WorkdayMode.LATE_WORKING):
+                        return
+                    r.last_poke_at = poke_at
+                    store.save_workday(r)
+
+            result.speak = line
+            result.on_speak_allowed = _commit_poke
             result.debug["reason"] = "on_task_poke"
+            result.debug["pending_commit"] = "on_task_poke"
             return result
 
         result.debug["reason"] = "armed_idle"
@@ -419,45 +521,48 @@ class WorkDayBehavior:
         """Clock-only transitions (no presence) — waiting_morning → no_show, EOD."""
         if not self.cfg.enabled:
             return
-        date = _local_date(local_dt)
-        rec = self.store.load_workday(date)
-        dirty = False
-        if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
-            rec.mode = WorkdayMode.NO_SHOW
-            dirty = True
-        if rec.mode in (
-            WorkdayMode.WORKING,
-            WorkdayMode.LATE_WORKING,
-            WorkdayMode.PAUSED,
-            WorkdayMode.LATE_CHECK,
-        ) and _past(local_dt, self.cfg.end):
-            rec.mode = WorkdayMode.OFF
-            dirty = True
-        if rec.mode == WorkdayMode.LATE_CHECK and rec.late_check_asked_at > 0:
-            if (now - rec.late_check_asked_at) >= self.cfg.late_check_timeout_s:
+        with self.store.fsm_lock:
+            date = _local_date(local_dt)
+            rec = self.store.load_workday(date)
+            dirty = False
+            if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
                 rec.mode = WorkdayMode.NO_SHOW
                 dirty = True
-        if rec.mode == WorkdayMode.PAUSED and rec.pause_until > 0 and now >= rec.pause_until:
-            prev = rec.paused_from or WorkdayMode.WORKING.value
-            try:
-                rec.mode = WorkdayMode(prev)
-            except ValueError:
-                rec.mode = WorkdayMode.WORKING
-            rec.pause_until = 0.0
-            rec.paused_from = ""
-            dirty = True
-        if dirty:
-            self.store.save_workday(rec)
+            if rec.mode in (
+                WorkdayMode.WORKING,
+                WorkdayMode.LATE_WORKING,
+                WorkdayMode.PAUSED,
+                WorkdayMode.LATE_CHECK,
+            ) and _past(local_dt, self.cfg.end):
+                rec.mode = WorkdayMode.OFF
+                dirty = True
+            if rec.mode == WorkdayMode.LATE_CHECK and rec.late_check_asked_at > 0:
+                if (now - rec.late_check_asked_at) >= self.cfg.late_check_timeout_s:
+                    rec.mode = WorkdayMode.NO_SHOW
+                    rec.late_check_done = True
+                    dirty = True
+            if rec.mode == WorkdayMode.PAUSED and rec.pause_until > 0 and now >= rec.pause_until:
+                prev = rec.paused_from or WorkdayMode.WORKING.value
+                try:
+                    rec.mode = WorkdayMode(prev)
+                except ValueError:
+                    rec.mode = WorkdayMode.WORKING
+                rec.pause_until = 0.0
+                rec.paused_from = ""
+                dirty = True
+            if dirty:
+                self.store.save_workday(rec)
 
 
 def pause_until_ts(local_dt: datetime, until_hhmm: str, tz: ZoneInfo) -> float:
-    """Convert HH:MM on the same local day (or next if already past) to epoch."""
-    h, m = map(int, until_hhmm.split(":"))
+    """Convert HH:MM on the same local day (or next if already past) to epoch.
+
+    Raises ValueError on invalid times.
+    """
+    h, m = parse_hhmm(until_hhmm)
     target = local_dt.replace(hour=h, minute=m, second=0, microsecond=0)
     if target.tzinfo is None and tz is not None:
         target = target.replace(tzinfo=tz)
     if target.timestamp() <= local_dt.timestamp():
-        # Already past — treat as next day
-        from datetime import timedelta
         target = target + timedelta(days=1)
     return target.timestamp()

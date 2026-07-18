@@ -1086,7 +1086,11 @@ def _apply_work_commands(text: str) -> str:
                     BEHAVIOR_RUNTIME.workday.on_afternoon_no(date_s)
                     print(f"[workday] afternoon NO for {date_s}")
             elif kind == "pause":
-                until = pause_until_ts(local_dt, arg, _workday_cfg.tz)
+                try:
+                    until = pause_until_ts(local_dt, arg, _workday_cfg.tz)
+                except ValueError as e:
+                    print(f"[workday] ignore bad pause time {arg!r}: {e}")
+                    continue
                 BEHAVIOR_RUNTIME.workday.on_pause(date_s, until_ts=until)
                 print(f"[workday] pause until {arg} ({until})")
             elif kind == "resume":
@@ -1872,9 +1876,16 @@ async def ambient_quiet(req: AmbientQuietRequest):
 
 # -- Multi-behavior presence tick (Work Day Mode + future FSMs) ----------------
 
+class FaceIn(BaseModel):
+    """Bounded face payload from chipper (local POST only)."""
+    face_id: int = 0
+    name: str = ""
+    is_stranger: bool = False
+
+
 class BehaviorTickRequest(BaseModel):
     occupied: bool = False
-    face: Optional[dict] = None  # {face_id, name, is_stranger}
+    face: Optional[FaceIn] = None
     on_charger: bool = False
     voice_recent: bool = False
 
@@ -1887,10 +1898,17 @@ async def behaviors_tick(req: BehaviorTickRequest):
     short face probe before the next tick (need_identity).
     """
     now = time.time()
+    face_dict = None
+    if req.face is not None:
+        face_dict = {
+            "face_id": int(req.face.face_id),
+            "name": (req.face.name or "")[:64],
+            "is_stranger": bool(req.face.is_stranger),
+        }
     BEHAVIOR_RUNTIME.ingest_tick_payload(
         now=now,
         occupied=bool(req.occupied),
-        face=req.face,
+        face=face_dict,
         on_charger=bool(req.on_charger),
         voice_recent=bool(req.voice_recent),
     )

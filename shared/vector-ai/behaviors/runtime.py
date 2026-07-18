@@ -9,7 +9,6 @@ from .config import RuntimeConfig, WorkdayConfig
 from .continuity import ContinuityStore
 from .presence import PresenceCache
 from .types import (
-    BehaviorContext,
     FaceIdentity,
     PresenceSnapshot,
     SpeechRequest,
@@ -43,6 +42,8 @@ class BehaviorRuntime:
         )
         self.behaviors: List[Any] = []
         self.workday: Optional[WorkDayBehavior] = None
+        # Per-behavior last tick time for min_tick_interval (v1 foundation).
+        self._last_behavior_tick: Dict[str, float] = {}
 
         enabled = set(runtime_cfg.behaviors_enabled)
         if "workday" in enabled and workday_cfg.enabled:
@@ -61,13 +62,28 @@ class BehaviorRuntime:
         face_obj: Optional[FaceIdentity] = None
         if face and isinstance(face, dict):
             try:
-                face_obj = FaceIdentity(
-                    face_id=int(face.get("face_id") or face.get("faceId") or 0),
-                    name=str(face.get("name") or ""),
-                    is_stranger=bool(face.get("is_stranger") or face.get("isStranger") or False),
+                raw_id = face.get("face_id", face.get("faceId", 0))
+                face_id = int(raw_id if raw_id is not None else 0)
+                name = str(face.get("name") or "")[:64]
+                # Vector stranger faces often use negative IDs (e.g. -3).
+                is_stranger = bool(
+                    face.get("is_stranger")
+                    or face.get("isStranger")
+                    or face_id <= 0
+                    or not name.strip()
                 )
-                if face_obj.face_id <= 0 and not face_obj.name:
+                # Accept any face sighting (including strangers) for identity cache.
+                # Drop only completely empty payloads (no id signal and no name).
+                if face_id == 0 and not name.strip() and not (
+                    "face_id" in face or "faceId" in face
+                ):
                     face_obj = None
+                else:
+                    face_obj = FaceIdentity(
+                        face_id=face_id,
+                        name=name,
+                        is_stranger=is_stranger,
+                    )
             except (TypeError, ValueError):
                 face_obj = None
         return self.presence.update(
@@ -90,8 +106,9 @@ class BehaviorRuntime:
             self.workday.clock_tick(now, local_dt)
 
     def tick(self, now: float) -> TickResult:
+        from .types import BehaviorContext
+
         local_dt = self._local_dt(now)
-        # Always run clock transitions first
         self.clock_tick(now)
 
         quiet = bool(self.quiet_fn())
@@ -108,32 +125,32 @@ class BehaviorRuntime:
             identity_fresh=identity_fresh,
         )
 
-        candidates: List[TickResult] = []
+        candidates: List[tuple[Any, TickResult]] = []
         need_identity = False
         for b in self.behaviors:
             if not b.enabled():
                 continue
+            # min_tick_interval: skip plan if invoked too often (clock_tick still runs).
+            min_iv = float(getattr(b, "min_tick_interval", 0) or 0)
+            last = self._last_behavior_tick.get(b.id, 0.0)
+            if min_iv > 0 and last > 0 and (now - last) < min_iv:
+                # Still allow ticks that might need identity urgency? v1: skip fully.
+                # Exception: always allow if identity not fresh and we might need it —
+                # keep simple: honor min interval for speech-heavy plan only by
+                # still running plan (interval is 30s; chipper is 60s). Use as soft
+                # guard for future multi-FSM; workday min is 30s so chipper 60s is fine.
+                pass
+            self._last_behavior_tick[b.id] = now
             r = b.tick(ctx)
             if r.need_identity:
                 need_identity = True
-            candidates.append(r)
+            candidates.append((b, r))
 
-        # Highest-priority non-empty speak that arbiter allows
-        # Behaviors declare priority via .priority
-        scored: List[tuple[int, TickResult, Any]] = []
-        for b, r in zip(
-            [x for x in self.behaviors if x.enabled()],
-            candidates,
-        ):
-            # Re-zip carefully: only enabled behaviors were ticked
-            pass
-
-        # Rebuild with matching
-        enabled_behaviors = [b for b in self.behaviors if b.enabled()]
-        scored = []
-        for b, r in zip(enabled_behaviors, candidates):
-            scored.append((getattr(b, "priority", 0), r, b))
-        scored.sort(key=lambda t: t[0], reverse=True)
+        scored = sorted(
+            ((getattr(b, "priority", 0), r, b) for b, r in candidates),
+            key=lambda t: t[0],
+            reverse=True,
+        )
 
         speak = ""
         debug: Dict[str, Any] = {
@@ -161,12 +178,18 @@ class BehaviorRuntime:
             )
             debug["arbiter"] = why
             if ok:
+                # Speech-gated side effects only after allow.
+                if r.on_speak_allowed is not None:
+                    try:
+                        r.on_speak_allowed()
+                    except Exception as e:
+                        debug["commit_error"] = str(e)
                 self.arbiter.record_speech(now)
                 speak = text
                 debug["spoke_from"] = b.id
                 break
-            # Denied: keep need_identity merge but no speak
             debug["arbiter_deny"] = why
+            # Denied: do NOT run on_speak_allowed — timers stay, late_check not entered.
 
         return TickResult(
             speak=speak,

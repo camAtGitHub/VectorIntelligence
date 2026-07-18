@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 
 class WorkdayMode(str, Enum):
@@ -48,6 +48,9 @@ class TickResult:
     speak: str = ""
     need_identity: bool = False
     debug: dict[str, Any] = field(default_factory=dict)
+    # Applied only after speech arbiter allows the speak line (speech-gated
+    # side effects: last_poke_at, away scold counters, late_check entry).
+    on_speak_allowed: Optional[Callable[[], None]] = None
 
 
 @dataclass

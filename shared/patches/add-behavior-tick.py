@@ -47,14 +47,20 @@ import (
 // Ambient / greeting / sensor loops are unchanged and continue in parallel.
 
 const (
-	behaviorTickInterval     = 60 * time.Second
-	behaviorOccupancySticky  = 15 * time.Minute
-	behaviorSparseProbeEvery = 5 * time.Minute
+	behaviorTickInterval = 60 * time.Second
+	// Short sticky after a positive face sighting. Empty probes clear occupancy
+	// immediately so away scolds track WORKDAY_AWAY_S (~30m), not sticky+away.
+	// (A 15m sticky made effective away ~45m.)
+	behaviorOccupancySticky  = 2 * time.Minute
+	// Sparse occupancy glance when we think we might still be occupied or need
+	// to confirm empty (not a named-ID stream every tick).
+	behaviorSparseProbeEvery = 2 * time.Minute
 	behaviorFaceProbeWindow  = 4 * time.Second
 )
 
 // lastSeenAnyFace is the unix time any face event was observed (greeting,
 // sensor face notify, or a behavior probe). Used as a cheap occupancy proxy.
+// Zero means "unknown / empty" after a failed probe clears it.
 var lastSeenAnyFace atomic.Int64
 
 // lastBehaviorNeedIdentity is sticky: after a need_identity response we probe
@@ -69,6 +75,11 @@ var lastSparseOccupancyProbe atomic.Int64
 // Safe to call from greeting / sensor paths; behavior tick also updates it.
 func NoteAnyFaceSeen() {
 	lastSeenAnyFace.Store(time.Now().Unix())
+}
+
+// NoteDeskEmpty clears sticky occupancy after a probe saw no face.
+func NoteDeskEmpty() {
+	lastSeenAnyFace.Store(0)
 }
 
 // StartBehaviorTickLoop launches the presence tick loop per enrolled robot.
@@ -196,26 +207,32 @@ func behaviorTickOnce(esn, guid, target string) bool {
 	needID := lastBehaviorNeedIdentity.Load()
 	var facePayload map[string]interface{}
 
-	// Sparse occupancy probe: every 5m if sticky occupancy expired, glance
-	// for any face — not a named-ID requirement.
+	// Probe when identity is needed, or periodically to confirm occupied/empty.
+	// Empty probe clears sticky occupancy so away timers match real desk leave.
 	nowUnix := time.Now().Unix()
 	sparseDue := nowUnix-lastSparseOccupancyProbe.Load() >= int64(behaviorSparseProbeEvery/time.Second)
-	if needID || (sparseDue && !behaviorOccupiedNow()) {
+	probed := false
+	if needID || sparseDue {
 		lastSparseOccupancyProbe.Store(nowUnix)
+		probed = true
 		fid, fname, saw := behaviorProbeAnyFace(robot)
-		if saw && fid > 0 && fname != "" {
-			facePayload = map[string]interface{}{
-				"face_id":     fid,
-				"name":        fname,
-				"is_stranger": false,
+		if saw {
+			if fname != "" && fid > 0 {
+				facePayload = map[string]interface{}{
+					"face_id":     fid,
+					"name":        fname,
+					"is_stranger": false,
+				}
+			} else {
+				// Stranger / unnamed (Vector often uses negative face_id).
+				facePayload = map[string]interface{}{
+					"face_id":     fid,
+					"name":        fname,
+					"is_stranger": true,
+				}
 			}
-		} else if saw && needID {
-			// Saw something but no enrolled name
-			facePayload = map[string]interface{}{
-				"face_id":     fid,
-				"name":        "",
-				"is_stranger": true,
-			}
+		} else {
+			NoteDeskEmpty()
 		}
 		if needID {
 			lastBehaviorNeedIdentity.Store(false)
@@ -223,6 +240,7 @@ func behaviorTickOnce(esn, guid, target string) bool {
 	}
 
 	occupied := behaviorOccupiedNow()
+	_ = probed
 	onCharger := IsOnCharger()
 	voiceRecent := recentlyConversed()
 
@@ -241,8 +259,9 @@ func behaviorTickOnce(esn, guid, target string) bool {
 		return true
 	}
 	fmt.Printf("[behavior-tick] speak: %q\n", line)
-	// Mark activity so ambient/greeting stay clear after we talk.
+	// Keep ambient/greeting clear of our proactive line.
 	MarkVoiceActivity()
+	lastAmbientReaction.Store(time.Now().Unix())
 	ambientReact(robot, line, false)
 	return true
 }
