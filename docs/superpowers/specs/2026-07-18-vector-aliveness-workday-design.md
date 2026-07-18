@@ -52,7 +52,7 @@ If the user cannot **hear or feel** a difference in a normal work day, the chang
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │ chipper (thin)                                               │
-│  - PresenceTick: face / empty (reuse short face probe)       │
+│  - PresenceTick: cheap occupancy (+ rare ID at junctures)    │
 │  - Optional: serve latest camera frame when asked            │
 │  - Speak line when runtime returns non-empty text            │
 │  - MarkVoiceActivity (existing)                              │
@@ -105,10 +105,18 @@ on_presence(snapshot)      # optional push path
 
 Expensive signals are **shared**, not owned by one FSM.
 
+Two layers of presence (do not collapse them):
+
+| Layer | Meaning | Cost | How often |
+|--------|---------|------|-----------|
+| **Occupancy** (`occupied`) | Someone/something is at the desk zone — “not empty” | Cheap (motion, person blob, last tick occupancy, or light scene check) | Every presence tick |
+| **Identity** (`face_id`, `name`, `is_stranger`) | *Which* enrolled person | Expensive face stream / enroll match | **Only at key junctures** (see §4.5) |
+
 | Field | Source | Freshness policy |
 |--------|--------|------------------|
-| `face_id`, `name`, `is_stranger` | face probe / face_seen | use if age ≤ `FACE_CACHE_MAX_AGE` (default 30s) |
-| `at_desk` | enrolled face in view **or** explicit policy (v1: known face) | derived |
+| `occupied` | Cheap desk occupancy (v1: any person-like presence, recent voice from user path, or “scene not empty” if used) | every tick; age ≤ tick interval |
+| `face_id`, `name`, `is_stranger` | face probe / face_seen | use if age ≤ `FACE_CACHE_MAX_AGE` (default **120s** after a juncture probe — not re-probed every tick) |
+| `at_desk` | **Occupancy-based** while work day is already armed; identity only required at junctures | derived — see §4.5 |
 | `image_jpeg` / base64 | last ambient or workday capture | use if age ≤ `IMAGE_CACHE_MAX_AGE` (default 45s) |
 | `on_charger` | if available from chipper | best-effort |
 | `last_voice_activity` | existing MarkVoiceActivity path | absolute ts |
@@ -116,9 +124,10 @@ Expensive signals are **shared**, not owned by one FSM.
 **Rules:**
 
 - If behavior A needs a photo and cache image is newer than max age, **do not** open another capture.
-- If face was probed 25s ago, Work Day uses that for “at desk” instead of a new stream.
-- Cache miss → runtime may request **one** capture/probe; result goes to cache for everyone.
-- Concurrent requests coalesce (single in-flight capture).
+- **Do not** run a named-face probe on every Work Day tick. Identity is requested only when a behavior declares `need_identity=true` for this tick (junctures).
+- If identity was resolved recently (within `FACE_CACHE_MAX_AGE`), reuse it without a new stream.
+- Cache miss for identity **at a juncture only** → runtime may request **one** face probe; result goes to cache for everyone.
+- Concurrent capture/probe requests coalesce (single in-flight).
 
 ### 3.3 Speech arbiter
 
@@ -184,14 +193,14 @@ Terminal daily: after `WORK_END` → treat as idle until next local midnight res
 [enabled at local day start]
     → waiting_morning
 
-waiting_morning + at_desk during [WORK_START_BEGIN, WORK_START_END]
-    → working  (record started_at)
+waiting_morning + occupied + identified primary user during [WORK_START_BEGIN, WORK_START_END]
+    → working  (record started_at, primary_face_id)   # juncture: identity required
 
 waiting_morning + clock > WORK_START_END without start
     → no_show
 
-no_show + at_desk (first time)
-    → late_check
+no_show + occupied + identified primary user (first time)
+    → late_check                                      # juncture: identity required
     → speak once: morning miss + “working this afternoon?”
 
 late_check + user yes (chat or short affirm)
@@ -227,8 +236,9 @@ config WORKDAY_ENABLED=0
 
 - Only in `working` or `late_working`.
 - During `[WORK_AWAY_WINDOW_BEGIN, WORK_END]` (default **09:30–18:00**).
-- Continuously not `at_desk` for ≥ `WORKDAY_AWAY_S` (default **30 minutes**).
-- Speak once per absence stretch; reset when `at_desk` again.
+- Continuously not **occupied** for ≥ `WORKDAY_AWAY_S` (default **30 minutes**).
+- Speak once per absence stretch; reset when occupied again.
+- **No identity re-check** required for away/return while already `working` / `late_working` (occupancy only).
 - Line: “Shouldn’t you be working?” class, continuity-tinted.
 
 **C. Late-arrival check**
@@ -252,12 +262,39 @@ Even when timers fire, **do not speak** if:
 - Resume: “back to work”, “resume work mode”.
 - Implementation: structured tags preferred for reliability, e.g. `{{workPause||until=14:00}}`, `{{workResume}}`, `{{workAfternoon||yes}}`, with natural-language hints in persona/system for the main user.
 
-### 4.5 “At desk” definition (v1)
+### 4.5 Occupancy vs identity (v1) — key junctures only
 
-- **At desk** = enrolled (named) face observed within face cache freshness.
-- Stranger-only does **not** count as the primary user at desk (avoids guests arming work mode).
-- Empty / no face = away.
-- Limitation: if the user faces away from Vector all morning, start may be missed → falls into no_show + late_check path (acceptable; document it).
+**Problem this solves:** Face ID every tick is firmware-heavy, flaky when the user faces the monitor, and overkill for “still at the desk.”
+
+**Split:**
+
+| Concept | Definition (v1) | Used for |
+|---------|-----------------|----------|
+| **Occupied** | Desk zone not empty: person-like presence, or continued occupancy after arming (chipper occupancy signal / “someone there”). Does **not** require a name. | 90m poke eligibility (you’re still around), away timer, return-from-away |
+| **Identified primary user** | Enrolled named face matching the household primary (or first face that armed the day) | **Only at key junctures** |
+
+**Key junctures (identity required):**
+
+1. **Morning start** — `waiting_morning` → `working` (must be the right person, not a guest).
+2. **Late arrival arm** — `no_show` → `late_check` (same).
+3. **Optional: first poke after a very long absence** (e.g. away ≥ 2× `WORKDAY_AWAY_S`) — re-confirm identity once so a guest doesn’t inherit the scold schedule. Default **on**; can disable via config.
+4. **Not junctures:** routine ticks while `working` / `late_working`, 90m on-task timer, normal away/return, end-of-day.
+
+**While armed (`working` / `late_working`):**
+
+- Treat **occupied** as “at desk” for timers and away detection.
+- Do **not** demand a fresh named-face match every tick.
+- If occupancy is lost long enough → away scold path; when occupied again → clear away (no ID).
+
+**Strangers / guests:**
+
+- Cannot trigger morning start or late_check (identity gate).
+- If work day already armed and only a stranger is seen, occupancy may still read true — acceptable risk; optional juncture #3 limits guest inheritance after long gaps.
+
+**Limitations (document for users):**
+
+- If primary user never faces Vector during the morning window, start may miss → no_show + late_check (by design).
+- Occupancy without a camera person detector may be approximate in v1 (implementation plan picks best cheap signal available from Vector/chipper without a per-tick face stream).
 
 ---
 
@@ -271,6 +308,7 @@ Persisted (SQLite), survives restarts.
 |--------|---------|
 | `date` | Local calendar date |
 | `mode` | Current mode |
+| `primary_face_id` | Who armed the day (set at juncture only) |
 | `started_at` | When work armed |
 | `arm_source` | `morning` \| `late_yes` |
 | `last_poke_at` | On-task timer |
@@ -309,7 +347,8 @@ Supervisor already maps install config into vector-ai env. All knobs are env-dri
 | `WORKDAY_POKE_INTERVAL_S` | `5400` | 90 minutes |
 | `WORKDAY_AWAY_S` | `1800` | 30 minutes |
 | `WORKDAY_LATE_CHECK_TIMEOUT_S` | `900` | 15 min wait for yes/no |
-| `FACE_CACHE_MAX_AGE_S` | `30` | Shared face snapshot |
+| `FACE_CACHE_MAX_AGE_S` | `120` | Reuse identity after a juncture probe (not every tick) |
+| `WORKDAY_REID_AFTER_AWAY_S` | `3600` | Optional re-ID after long absence (0 = never) |
 | `IMAGE_CACHE_MAX_AGE_S` | `45` | Shared photo snapshot |
 | `SPEECH_MIN_GAP_S` | `90` | Global proactive gap |
 | `SPEECH_SUPPRESS_AFTER_VOICE_S` | `120` | After conversation |
@@ -326,19 +365,23 @@ Document in README / NEXT_STEPS: holiday = set `WORKDAY_ENABLED=0` and restart v
 ```text
 POST /v1/behaviors/tick
 {
+  "occupied": true/false,           // cheap; every tick
   "face": {"face_id": 1, "name": "Cam", "is_stranger": false} | null,
-  "at_desk": true/false,   // optional; server may derive
+                                    // only when chipper just ran an ID probe
   "on_charger": false,
   "voice_recent": false
 }
 →
 {
   "speak": "Still on task, or touring the kitchen?",  // or ""
+  "need_identity": false,           // true → chipper should face-probe before next tick
   "actions": []  // future: investigate, etc.
 }
 ```
 
 Server: update PresenceSnapshot → run enabled behaviors’ `tick` → arbiter → return at most one line.
+
+If any behavior sets `need_identity`, chipper runs **one** short face probe (or reuses cache if still fresh) and includes `face` on the following tick — not on every tick.
 
 ### 7.2 Chat path
 
@@ -356,11 +399,16 @@ If no tick arrives at 10:31, vector-ai background task (or next tick) still move
 
 ## 8. Chipper changes (minimal)
 
-New small loop **or** extend greeting probe interval to also POST `/v1/behaviors/tick` with last face result (prefer **one** loop that updates shared presence and asks runtime for speech).
+New small loop that:
 
-**Avoid:** separate 90m timer in Go, separate camera loop for workday.
+1. Estimates **occupancy** cheaply each tick.
+2. POSTs `/v1/behaviors/tick`.
+3. Speaks if `speak` non-empty.
+4. Only if `need_identity` → run a short face probe and tick again with `face`.
 
-**Reuse:** face probe patterns, `sayText` / `ambientReact`, `MarkVoiceActivity`, `VECTORAI_PORT`.
+**Avoid:** separate 90m timer in Go; separate camera loop for workday; **named-face stream every tick**.
+
+**Reuse:** face probe patterns (junctures only), `sayText` / `ambientReact`, `MarkVoiceActivity`, `VECTORAI_PORT`.
 
 Idempotent patch script under `shared/patches/` (e.g. `add-behavior-tick.py`) launching `StartBehaviorTickLoop()` once from startserver.
 
@@ -373,7 +421,8 @@ Idempotent patch script under `shared/patches/` (e.g. `add-behavior-tick.py`) la
 | vector-ai down | Chipper: no speak (no static nag pool for work — avoid wrong accountability) |
 | LLM failure on line generation | Skip poke; keep timers; log; do not fallback to aggressive canned spam more than once per hour optional soft template |
 | Face false negative all morning | no_show → late_check when seen; user can arm afternoon |
-| Face false positive (someone else) | Named face only; strangers don’t start workday |
+| Face false positive (someone else) | Identity only at junctures; strangers don’t start/late-arm workday |
+| Face flaky while typing | Occupancy keeps work timers; no per-tick ID required |
 | Clock/TZ wrong | Document; use explicit `WORKDAY_TZ` |
 | Double speak ambient + work | Arbiter min-gap + priorities |
 
@@ -387,7 +436,8 @@ Idempotent patch script under `shared/patches/` (e.g. `add-behavior-tick.py`) la
 - Poke interval boundaries.
 - Away stretch: 29m no speak, 30m speak once, return resets.
 - Suppress: quiet, recent voice, min-gap, disabled.
-- Presence cache: stale image/face not reused; fresh shared.
+- Presence cache: occupancy every tick; identity only when `need_identity`; face/image reuse within max age.
+- Juncture tests: start/late_check require named primary; mid-day ticks do not.
 
 ### Integration
 
@@ -421,7 +471,7 @@ Idempotent patch script under `shared/patches/` (e.g. `add-behavior-tick.py`) la
 | Firmware | Thin tick + speak | Leave robot firmware alone as much as possible |
 | Multi-FSM | BehaviorRuntime first | Work Day is first of several; share photo/face; no clobber |
 | Default | Work Day **off** | Other users / holiday safe |
-| At desk | Named face | Best signal without OS integration |
+| At desk | Occupancy continuous; named face only at junctures | Avoid per-tick face streams; firmware-safe; still gate start/late-arm |
 | No morning start | No pokes until late yes | Sick day must stay quiet |
 | House brain | Out | Google already owns it |
 | Continuity | Seasoning + chat strip | Noticeable without extra spam stream |
@@ -446,3 +496,5 @@ Design approved in brainstorming session (2026-07-18):
 - Multi-behavior runtime with shared presence cache and speech arbitration.
 - Config, suppress D (soft + verbal pause), continuity fields.
 - Data flow, errors, tests, non-goals.
+
+**Amendment (same day):** Occupancy vs identity — named/identified face only at key junctures (morning start, late arm, optional long-absence re-ID); routine at-desk ticks use cheap occupancy only.
