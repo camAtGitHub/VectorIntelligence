@@ -178,6 +178,21 @@ Nothing auto-starts with Windows login unless you add that yourself.
 | `LLM_SUMMARY_MODEL` | Mood + conversation summary |
 | `LLM_MAX_HISTORY_MESSAGES` | Turns sent upstream (default 24) |
 
+**Work Day Mode** (optional accountability; **default off**). Needs full install with the behavior-tick chipper patch. Set in the same vector-ai `.env`, then restart vector-ai:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WORKDAY_ENABLED` | `0` | Master switch (`1` to enable) |
+| `WORKDAY_TZ` | host `TZ` / UTC | Local windows (e.g. `Australia/Sydney`) |
+| `WORKDAY_START_BEGIN` / `WORKDAY_START_END` | `09:00` / `10:30` | Morning arm window (named face) |
+| `WORKDAY_END` | `18:00` | Stop pokes for the day |
+| `WORKDAY_POKE_INTERVAL_S` | `5400` | On-task poke interval (~90m) |
+| `WORKDAY_AWAY_S` | `1800` | Away scold after empty desk (~30m) |
+| `SPEECH_MIN_GAP_S` | `90` | Global proactive speech gap |
+| `SPEECH_SUPPRESS_AFTER_VOICE_S` | `120` | Quiet after chat |
+
+Holiday / other users: leave `WORKDAY_ENABLED=0`. Design: `docs/superpowers/specs/2026-07-18-vector-aliveness-workday-design.md`.
+
 **pod.conf (created by setup):**
 
 | Key | Meaning |

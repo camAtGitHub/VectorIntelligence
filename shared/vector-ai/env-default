@@ -34,3 +34,23 @@ LLM_TIMEOUT_READ=120
 # Optional OpenRouter leaderboard attribution
 # LLM_HTTP_REFERER=https://github.com/yourname/VectorIntelligence
 # LLM_APP_TITLE=VectorIntelligence
+
+# -- Work Day Mode (accountability; default OFF) -------------------------------
+# Requires full patched chipper with behavior-tick loop (install applies
+# shared/patches/add-behavior-tick.py). Holiday / guests: leave at 0.
+# After changing, restart vector-ai (stop-vector then start-vector).
+WORKDAY_ENABLED=0
+# WORKDAY_TZ=Australia/Sydney
+# WORKDAY_START_BEGIN=09:00
+# WORKDAY_START_END=10:30
+# WORKDAY_AWAY_WINDOW_BEGIN=09:30
+# WORKDAY_END=18:00
+# WORKDAY_POKE_INTERVAL_S=5400
+# WORKDAY_AWAY_S=1800
+# WORKDAY_LATE_CHECK_TIMEOUT_S=900
+# WORKDAY_REID_AFTER_AWAY_S=3600
+# FACE_CACHE_MAX_AGE_S=120
+# IMAGE_CACHE_MAX_AGE_S=45
+# SPEECH_MIN_GAP_S=90
+# SPEECH_SUPPRESS_AFTER_VOICE_S=120
+# BEHAVIORS_ENABLED=workday
