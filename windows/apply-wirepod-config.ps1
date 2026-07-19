@@ -83,23 +83,31 @@ print('Config merged (vector-ai endpoint :' + ai_port + ').')
 if ($LASTEXITCODE -ne 0) { Write-Host "Merge failed (need write access to apiConfig?)." -ForegroundColor Red; exit 1 }
 Info "Knowledge endpoint -> vector-ai (custom provider)."
 
-# Persist both roots for next time
+# Persist managed companion keys only (upsert — leave WORKDAY/JOKE/etc. alone).
+# Never invent EXTERNAL_CHIPPER=1: full-stack installs must stay non-companion.
 $confMap = Read-PodConf
-$lines = @()
-$lines += "WEB_PORT=$(if ($confMap['WEB_PORT']) { $confMap['WEB_PORT'] } else { '8080' })"
-$lines += "AI_PORT=$(if ($confMap['AI_PORT']) { $confMap['AI_PORT'] } else { '8090' })"
-if ($confMap.ContainsKey("EXTERNAL_CHIPPER")) {
-    $lines += "EXTERNAL_CHIPPER=$($confMap['EXTERNAL_CHIPPER'])"
+$set = @{}
+if ($confMap.ContainsKey("WEB_PORT") -and $confMap['WEB_PORT']) {
+    $set['WEB_PORT'] = "$($confMap['WEB_PORT'])"
 } else {
-    $lines += "EXTERNAL_CHIPPER=1"
+    $set['WEB_PORT'] = '8080'
 }
-if ($wpInstall) { $lines += "WIREPOD_DIR=$wpInstall" }
-if ($wpData)    { $lines += "WIREPOD_DATA_DIR=$wpData" }
+if ($confMap.ContainsKey("AI_PORT") -and $confMap['AI_PORT']) {
+    $set['AI_PORT'] = "$($confMap['AI_PORT'])"
+} else {
+    $set['AI_PORT'] = '8090'
+}
+# Only re-assert EXTERNAL_CHIPPER when already present (mirror USE_LOCAL_OLLAMA).
+if ($confMap.ContainsKey("EXTERNAL_CHIPPER")) {
+    $set['EXTERNAL_CHIPPER'] = "$($confMap['EXTERNAL_CHIPPER'])"
+}
+if ($wpInstall) { $set['WIREPOD_DIR'] = "$wpInstall" }
+if ($wpData)    { $set['WIREPOD_DATA_DIR'] = "$wpData" }
 if ($confMap.ContainsKey("USE_LOCAL_OLLAMA")) {
-    $lines += "USE_LOCAL_OLLAMA=$($confMap['USE_LOCAL_OLLAMA'])"
+    $set['USE_LOCAL_OLLAMA'] = "$($confMap['USE_LOCAL_OLLAMA'])"
 }
 New-Item -ItemType Directory -Force (Split-Path (Get-PodConfPath)) | Out-Null
-$lines | Set-Content -Path (Get-PodConfPath) -Encoding UTF8
+Update-PodConf -Path (Get-PodConfPath) -Set $set
 Info "pod.conf updated."
 
 if ($SkipRestart) {

@@ -59,29 +59,38 @@ He remembers, for that local date: whether work started, late arm, absences, pau
 
 ## Where to set configuration
 
-All knobs are **environment variables** read by **vector-ai** at process start.
+Work Day knobs are **process environment variables** read by **vector-ai** at
+start. In production the supervisor loads them from **`pod.conf`** (next to
+`supervisor.py`) and injects them into the vector-ai child env.
+**`vector-ai/.env` is for OpenRouter / LLM only.**
 
-| Platform | Live config file (edit this, not only the repo template) |
-|----------|----------------------------------------------------------|
-| **Windows** | `%USERPROFILE%\vector-pod\vector-ai\.env` |
-| **Linux** | `~/vector-ai/.env` (typical full install) |
+| Platform | Live config file (edit this) |
+|----------|------------------------------|
+| **Windows** | `%USERPROFILE%\vector-pod\pod.conf` |
+| **Linux** | `~/vector-pod/pod.conf` (typical full install) |
 
 Template / defaults shipped in the repo:
 
-- `shared/vector-ai/env-default`  
-  (copied into the runtime tree at install; **runtime** `.env` is what the running service uses)
+- `shared/config/pod.conf-default` — commented Work Day / Joke / speech keys  
+- `shared/vector-ai/env-default` — OpenRouter/LLM only (points at pod.conf)
+
+Legacy: keys still present in a runtime `.env` are read if not already set in
+the process env; when both set the same key, **pod.conf wins** (supervisor
+injects first; dotenv does not override). Optional one-shot move:
+`windows/migrate-behavior-config.ps1` / `linux/migrate-behavior-config.sh`.
 
 After any change: **restart vector-ai** (e.g. stop then start Vector / companion so the supervisor reloads the brain).
 
 Optional: system or shell `TZ` is used only if `WORKDAY_TZ` is unset.
 
-There is no separate Work Day section in `pod.conf` for these timers; ports still come from install/`pod.conf` as usual (`VECTORAI_PORT` for chipper → vector-ai).
+Ports (`WEB_PORT`, `AI_PORT`) and companion paths also live in the same
+`pod.conf`; install/setup **upsert** those keys and never wipe FSM keys.
 
 ---
 
 ## All configurable variables
 
-Values are strings in `.env`. Booleans: `1` / `true` / `yes` / `on` = enabled. Times are **24h `HH:MM`** in the Work Day timezone.
+Values are strings in `pod.conf`. Booleans: `1` / `true` / `yes` / `on` = enabled. Times are **24h `HH:MM`** in the Work Day timezone.
 
 ### Master switch
 
@@ -127,10 +136,12 @@ These apply to Work Day (and the multi-behavior runtime generally):
 | `WORKDAY_PRIORITY` | `80` | Speech priority vs other future behaviors (higher wins if two want to talk). Rarely needs changing. |
 | `WORKDAY_IDENTITY_REJECT_COOLDOWN_S` | `600` | After a stranger / wrong person is seen when arming, wait this long (~**10 minutes**) before asking for face ID again (avoids probe spam). |
 
-### Example `.env` block
+### Example `pod.conf` block
 
-```env
+```conf
 # --- Work Day Mode ---
+# Dual gate: BEHAVIORS_ENABLED must list workday AND WORKDAY_ENABLED truthy.
+BEHAVIORS_ENABLED=workday
 WORKDAY_ENABLED=1
 WORKDAY_TZ=Australia/Sydney
 
@@ -149,7 +160,6 @@ WORKDAY_TZ=Australia/Sydney
 # IMAGE_CACHE_MAX_AGE_S=45
 # SPEECH_MIN_GAP_S=90
 # SPEECH_SUPPRESS_AFTER_VOICE_S=120
-# BEHAVIORS_ENABLED=workday
 ```
 
 ### Chat controls (not env vars)
@@ -193,13 +203,13 @@ From an **Admin** PowerShell in the repo (or as your install docs specify):
 
 Then:
 
-1. Ensure runtime env exists:  
-   `%USERPROFILE%\vector-pod\vector-ai\.env`  
-2. Add `WORKDAY_ENABLED=1` and `WORKDAY_TZ=...` (see above).  
+1. Edit live pod.conf:  
+   `%USERPROFILE%\vector-pod\pod.conf`  
+2. Add `WORKDAY_ENABLED=1`, `WORKDAY_TZ=...`, and ensure `BEHAVIORS_ENABLED` includes `workday` (see above).  
 3. Start the stack: `.\windows\start-vector.ps1` (or your usual supervisor start).  
-4. Pair / use as normal.
+4. Pair / use as normal. OpenRouter key still lives in `vector-ai\.env`.
 
-**Already installed earlier without this feature?** Re-run full install (or re-apply patches + rebuild chipper) so `shared/patches/add-behavior-tick.py` is applied, then restart. Env-only enable without the patch will not produce presence-driven speech.
+**Already installed earlier without this feature?** Re-run full install (or re-apply patches + rebuild chipper) so `shared/patches/add-behavior-tick.py` is applied, then restart. Config-only enable without the patch will not produce presence-driven speech.
 
 ### Linux (full install)
 
@@ -210,8 +220,8 @@ Then:
 
 Then:
 
-1. Edit `~/vector-ai/.env` (or your install’s vector-ai path).  
-2. Set `WORKDAY_ENABLED=1` and `WORKDAY_TZ=...`.  
+1. Edit `~/vector-pod/pod.conf`.  
+2. Set `WORKDAY_ENABLED=1` and `WORKDAY_TZ=...` (and `BEHAVIORS_ENABLED` includes `workday`).  
 3. `./linux/start-vector.sh` (or systemd unit if you use it).  
 
 ### Confirm it’s live
@@ -227,7 +237,9 @@ You should see Work Day enabled (and related state) when `WORKDAY_ENABLED=1`.
 
 ### Holiday / guests
 
-```env
+In `pod.conf`:
+
+```conf
 WORKDAY_ENABLED=0
 ```
 
@@ -235,14 +247,13 @@ Restart vector-ai. No rebuild required to turn off.
 
 ### Developer / unit tests (no robot)
 
-From the repo:
+From the repo root:
 
 ```bash
-cd shared/vector-ai
-python3 test_behaviors.py
+python3 -m pytest shared/vector-ai/test_behaviors.py -q
 ```
 
-Expect `ALL PASS`. This validates the brain FSM and config without a robot.
+This validates the brain FSM and config without a robot.
 
 ---
 
@@ -265,6 +276,6 @@ Expect `ALL PASS`. This validates the brain FSM and config without a robot.
 |----------|--------|
 | What is it? | Optional desk work accountability + day continuity for Vector. |
 | On by default? | **No.** |
-| Where configured? | Runtime `vector-ai/.env` (Windows `vector-pod\vector-ai\.env`, Linux `~/vector-ai/.env`). |
-| How to build? | Full Vector Intelligence install (patch + build chipper); enable env; restart. |
+| Where configured? | Runtime `pod.conf` (Windows `%USERPROFILE%\vector-pod\pod.conf`, Linux `~/vector-pod/pod.conf`). See `shared/config/pod.conf-default`. |
+| How to build? | Full Vector Intelligence install (patch + build chipper); enable in pod.conf; restart. |
 | Ambient broken? | No — Work Day is additive. |

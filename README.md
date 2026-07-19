@@ -198,9 +198,9 @@ Nothing auto-starts at login unless you add that yourself.
 | OpenRouter key / models / history | `%USERPROFILE%\vector-pod\vector-ai\.env` (Windows) or `~/vector-ai/.env` |
 | Personality | `persona.txt` next to that `.env` |
 | Knowledge endpoint (custom → :8090) | `%APPDATA%\wire-pod\apiConfig.json` or chipper’s apiConfig |
-| Ports / companion flags | `%USERPROFILE%\vector-pod\pod.conf` |
+| Ports / companion flags / FSM knobs | `%USERPROFILE%\vector-pod\pod.conf` (Linux: `~/vector-pod/pod.conf`) |
 
-**OpenRouter / LLM (`.env`):**
+**OpenRouter / LLM (`.env` only):**
 
 | Variable | Purpose |
 |----------|---------|
@@ -215,11 +215,11 @@ Any OpenAI-compatible base URL works if you point `LLM_BASE_URL` and the key
 at another provider; OpenRouter is the documented default.
 
 **Work Day Mode** (optional; default off). Full install + behavior-tick patch.
-Restart vector-ai after changes:
+Configure in **`pod.conf`** (not `.env`). Restart vector-ai after changes:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `WORKDAY_ENABLED` | `0` | Master switch (`1` to enable) |
+| `WORKDAY_ENABLED` | off | Master switch (`1` to enable; also need `workday` in `BEHAVIORS_ENABLED`) |
 | `WORKDAY_TZ` | host `TZ` / UTC | Local windows (e.g. `Australia/Sydney`) |
 | `WORKDAY_START_BEGIN` / `WORKDAY_START_END` | `09:00` / `10:30` | Morning arm window (named face) |
 | `WORKDAY_END` | `18:00` | Stop work pokes for the day |
@@ -228,10 +228,21 @@ Restart vector-ai after changes:
 | `SPEECH_MIN_GAP_S` | `90` | Global proactive speech gap |
 | `SPEECH_SUPPRESS_AFTER_VOICE_S` | `120` | Quiet after chat |
 
+Example (`pod.conf`):
+
+```conf
+BEHAVIORS_ENABLED=workday
+WORKDAY_ENABLED=1
+WORKDAY_TZ=Australia/Sydney
+```
+
+Full commented template: `shared/config/pod.conf-default`. Guide:
+[docs/FSM-workday-companion.md](docs/FSM-workday-companion.md).
+
 Chat tags the model may emit (stripped before speech):  
 `{{workAfternoon||yes|no}}`, `{{workPause||until=HH:MM}}`, `{{workResume}}`.
 
-**pod.conf (created by setup):**
+**pod.conf (created by setup; install upserts ports only — never wipes FSM keys):**
 
 | Key | Meaning |
 |-----|---------|
@@ -240,6 +251,7 @@ Chat tags the model may emit (stripped before speech):
 | `EXTERNAL_CHIPPER=1` | Companion: do not start/stop chipper |
 | `WIREPOD_DIR` | Install root (`Program Files\wire-pod`) |
 | `WIREPOD_DATA_DIR` | Live data (`%APPDATA%\wire-pod`) |
+| `WORKDAY_*` / `JOKE_*` / `BEHAVIORS_ENABLED` / `SPEECH_*` | Behavior FSMs |
 
 Voice/pairing ports **443 / 80 / 8084** stay fixed (Vector expects them).
 

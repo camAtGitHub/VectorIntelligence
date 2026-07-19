@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.pyo
+venv/
 
 # ── Runtime data — NEVER commit (contains personal data) ─────────
 # memory.db holds the user's own remembered facts; logs and botSdkInfo

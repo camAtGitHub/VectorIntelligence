@@ -48,6 +48,14 @@ done
 [[ "$WEB_PORT" =~ ^[0-9]+$ ]] || die "--web-port must be numeric (got: '$WEB_PORT')."
 [[ "$AI_PORT" =~ ^[0-9]+$ ]] || die "--ai-port must be numeric (got: '$AI_PORT')."
 
+# Preflight: safe pod.conf upsert helper (used late for ports; fail early).
+if [ ! -f "$SHARED_DIR/pod_conf_io.py" ]; then
+    die "Missing $SHARED_DIR/pod_conf_io.py (required for safe pod.conf upsert)."
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    die "python3 not found on PATH (required for pod.conf upsert and vector-ai)."
+fi
+
 # -- 1. System dependencies ----------------------------------------------------
 step "System dependencies"
 sudo apt-get update -qq
@@ -257,7 +265,9 @@ cp "$SHARED_DIR/supervisor.py"              "$HOME/vector-pod/supervisor.py"
 # vector-ai's port (AI_PORT), read by supervisor.py, the setup scripts and
 # chipper. An explicit flag wins; otherwise preserve any value already there,
 # key by key, so re-running the installer won't clobber a manual edit.
+# Upsert only managed keys — never truncate the file (preserves WORKDAY_*/JOKE_*).
 POD_CONF="$HOME/vector-pod/pod.conf"
+mkdir -p "$(dirname "$POD_CONF")"
 if ! $WEB_PORT_SET && [ -f "$POD_CONF" ]; then
     EXISTING=$(sed -n 's/^[[:space:]]*WEB_PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$POD_CONF" | head -1 || true)
     [ -n "${EXISTING:-}" ] && WEB_PORT="$EXISTING"
@@ -266,8 +276,8 @@ if ! $AI_PORT_SET && [ -f "$POD_CONF" ]; then
     EXISTING=$(sed -n 's/^[[:space:]]*AI_PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$POD_CONF" | head -1 || true)
     [ -n "${EXISTING:-}" ] && AI_PORT="$EXISTING"
 fi
-printf 'WEB_PORT=%s\nAI_PORT=%s\n' "$WEB_PORT" "$AI_PORT" > "$POD_CONF"
-info "pod.conf written (WEB_PORT=$WEB_PORT, AI_PORT=$AI_PORT)."
+python3 "$SHARED_DIR/pod_conf_io.py" upsert "$POD_CONF" "WEB_PORT=$WEB_PORT" "AI_PORT=$AI_PORT"
+info "pod.conf updated (WEB_PORT=$WEB_PORT, AI_PORT=$AI_PORT)."
 
 if [ ! -f "$VECTORAI_DIR/.env" ]; then
     cp "$SHARED_DIR/vector-ai/.env" "$VECTORAI_DIR/.env"

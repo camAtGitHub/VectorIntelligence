@@ -35,45 +35,8 @@ LLM_TIMEOUT_READ=120
 # LLM_HTTP_REFERER=https://github.com/yourname/VectorIntelligence
 # LLM_APP_TITLE=VectorIntelligence
 
-# -- Work Day Mode (accountability; default OFF) -------------------------------
-# Requires full patched chipper with behavior-tick loop (install applies
-# shared/patches/add-behavior-tick.py). Holiday / guests: leave at 0.
-# After changing, restart vector-ai (stop-vector then start-vector).
-WORKDAY_ENABLED=0
-# WORKDAY_TZ=Australia/Sydney
-# WORKDAY_START_BEGIN=09:00
-# WORKDAY_START_END=10:30
-# WORKDAY_AWAY_WINDOW_BEGIN=09:30
-# WORKDAY_END=18:00
-# WORKDAY_POKE_INTERVAL_S=5400
-# WORKDAY_AWAY_S=1800
-# WORKDAY_LATE_CHECK_TIMEOUT_S=900
-# WORKDAY_REID_AFTER_AWAY_S=3600
-# FACE_CACHE_MAX_AGE_S=120
-# IMAGE_CACHE_MAX_AGE_S=45
-# SPEECH_MIN_GAP_S=90
-# SPEECH_SUPPRESS_AFTER_VOICE_S=120
-# BEHAVIORS_ENABLED=workday
-
-# --- Joke / question when idle (default off) ---
-# Requires full patched chipper with behavior-tick loop. After changing,
-# restart vector-ai (stop-vector then start-vector).
-# BEHAVIORS_ENABLED=workday,joke_idle
-JOKE_ENABLED=0
-# JOKE_AUDIENCE=known            # known | anyone
-# JOKE_PRIORITY=15
-# JOKE_MIN_DWELL_S=1200
-# JOKE_COOLDOWN_S=9000
-# JOKE_MAX_PER_DAY=4
-# JOKE_QUESTION_RATIO=0.6
-# JOKE_IDENTITY_REJECT_COOLDOWN_S=1800
-# JOKE_TZ=Australia/Sydney
-# JOKE_REFILL_INTERVAL_S=43200
-# JOKE_QUEUE_TARGET=50
-# JOKE_QUEUE_LOW_WATERMARK=30     # refill only when queue drains to <= this
-# JOKE_MIN_SCORE=0.55
-# JOKE_NOVELTY_MIN=0.4
-# JOKE_GENERATE_MODEL=            # blank => uses LLM_MODEL; set a heavy model for better jokes
-# JOKE_CRITIC_MODEL=              # blank => uses LLM_MODEL; set a DIFFERENT model than generate
-# JOKE_CURATED_RATIO=0.5
-# JOKE_SEED_FILE=joke_seeds.txt
+# Behavior FSMs (Work Day, Joke idle, speech gap, BEHAVIORS_ENABLED, …):
+# configure in pod.conf next to supervisor (vector-pod/pod.conf), NOT here.
+# See shared/config/pod.conf-default and AGENTS.md.
+# Existing keys in this .env still work for local dev; when the supervisor
+# injects the same key from pod.conf, pod.conf wins.

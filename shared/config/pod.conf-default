@@ -1,0 +1,75 @@
+# Vector Intelligence — pod.conf example / defaults reference
+# ---------------------------------------------------------------------------
+# Live file: next to supervisor (Windows: %USERPROFILE%\vector-pod\pod.conf,
+#            Linux full install: ~/vector-pod/pod.conf).
+#
+# This file is a TEMPLATE only. Install/setup upsert managed ports/paths and
+# never overwrite your whole pod.conf. Copy keys you need into the live file.
+#
+# vector-ai/.env stays OpenRouter / LLM secrets only.
+# Behavior FSMs (Work Day, Joke idle, …) are configured HERE.
+#
+# Dual enable gates (both required for a plugin to run):
+#   1) id listed in BEHAVIORS_ENABLED
+#   2) feature flag truthy (WORKDAY_ENABLED / JOKE_ENABLED)
+# Truthy: 1 / true / yes / on
+#
+# After edits: restart vector-ai (stop-vector then start-vector / start-companion).
+
+# -- Ports / companion / stack -------------------------------------------------
+# WEB_PORT=8080
+# AI_PORT=8090
+# EXTERNAL_CHIPPER=1
+# WIREPOD_DIR=C:\Program Files\wire-pod
+# WIREPOD_DATA_DIR=%APPDATA%\wire-pod
+# USE_LOCAL_OLLAMA=0
+# VOLUME_DROP=2
+# VOLUME_HANG_MS=2500
+# VECTOR_VOLUME_MS_PER_WORD=400
+
+# -- Runtime / shared speech (multi-behavior) ----------------------------------
+# BEHAVIORS_ENABLED=workday
+# FACE_CACHE_MAX_AGE_S=120
+# IMAGE_CACHE_MAX_AGE_S=45
+# SPEECH_MIN_GAP_S=90
+# SPEECH_SUPPRESS_AFTER_VOICE_S=120
+
+# -- Work Day Mode (accountability; default OFF) -------------------------------
+# Requires full patched chipper with behavior-tick loop.
+# Holiday / guests: leave WORKDAY_ENABLED unset or 0.
+# Needs "workday" in BEHAVIORS_ENABLED AND WORKDAY_ENABLED truthy.
+# WORKDAY_ENABLED=0
+# WORKDAY_TZ=Australia/Sydney
+# WORKDAY_START_BEGIN=09:00
+# WORKDAY_START_END=10:30
+# WORKDAY_AWAY_WINDOW_BEGIN=09:30
+# WORKDAY_END=18:00
+# WORKDAY_POKE_INTERVAL_S=5400
+# WORKDAY_AWAY_S=1800
+# WORKDAY_LATE_CHECK_TIMEOUT_S=900
+# WORKDAY_REID_AFTER_AWAY_S=3600
+# WORKDAY_PRIORITY=80
+# WORKDAY_IDENTITY_REJECT_COOLDOWN_S=600
+
+# -- Joke / question when idle (default OFF) -----------------------------------
+# Requires full patched chipper with behavior-tick loop.
+# Needs "joke_idle" in BEHAVIORS_ENABLED AND JOKE_ENABLED truthy.
+# Example dual list: BEHAVIORS_ENABLED=workday,joke_idle
+# JOKE_ENABLED=0
+# JOKE_AUDIENCE=known
+# JOKE_PRIORITY=15
+# JOKE_MIN_DWELL_S=1200
+# JOKE_COOLDOWN_S=9000
+# JOKE_MAX_PER_DAY=4
+# JOKE_QUESTION_RATIO=0.6
+# JOKE_IDENTITY_REJECT_COOLDOWN_S=1800
+# JOKE_TZ=Australia/Sydney
+# JOKE_REFILL_INTERVAL_S=43200
+# JOKE_QUEUE_TARGET=50
+# JOKE_QUEUE_LOW_WATERMARK=30
+# JOKE_MIN_SCORE=0.55
+# JOKE_NOVELTY_MIN=0.4
+# JOKE_GENERATE_MODEL=
+# JOKE_CRITIC_MODEL=
+# JOKE_CURATED_RATIO=0.5
+# JOKE_SEED_FILE=joke_seeds.txt

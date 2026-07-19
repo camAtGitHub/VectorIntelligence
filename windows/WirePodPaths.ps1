@@ -18,12 +18,165 @@ function Read-PodConf {
     $map = @{}
     $p = Get-PodConfPath
     if (-not (Test-Path $p)) { return $map }
-    Get-Content $p | ForEach-Object {
-        if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
+    Get-Content $p -Encoding UTF8 | ForEach-Object {
+        $line = $_
+        if ($line.Length -gt 0 -and [int][char]$line[0] -eq 0xFEFF) {
+            $line = $line.Substring(1)
+        }
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
             $map[$Matches[1]] = $Matches[2]
         }
     }
     return $map
+}
+
+# Find any Python 3.x usable for pod_conf_io (not necessarily 3.11).
+# Covers venv, py launcher, PATH, and common install roots.
+function Find-Python3 {
+    $venvPy = Join-Path $env:USERPROFILE "vector-pod\vector-ai\venv\Scripts\python.exe"
+    $pathLike = @($venvPy, "python3", "python")
+    foreach ($c in $pathLike) {
+        if (-not $c) { continue }
+        if ($c -match '[\\/]' -and -not (Test-Path $c)) { continue }
+        if (Test-Python3Major $c) { return $c }
+    }
+    foreach ($launcher in @("py")) {
+        try {
+            $exe = & $launcher -3 -c "import sys; print(sys.executable)" 2>$null
+            if ($exe) {
+                $exe = "$exe".Trim()
+                if ((Test-Path $exe) -and (Test-Python3Major $exe)) { return $exe }
+            }
+        } catch { }
+        try {
+            $exe = & $launcher -3.11 -c "import sys; print(sys.executable)" 2>$null
+            if ($exe) {
+                $exe = "$exe".Trim()
+                if ((Test-Path $exe) -and (Test-Python3Major $exe)) { return $exe }
+            }
+        } catch { }
+    }
+    $roots = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
+        (Join-Path $env:ProgramFiles "Python311\python.exe"),
+        (Join-Path $env:ProgramFiles "Python312\python.exe"),
+        "C:\Python311\python.exe",
+        "C:\Python312\python.exe"
+    )
+    foreach ($c in $roots) {
+        if ($c -and (Test-Path $c) -and (Test-Python3Major $c)) { return $c }
+    }
+    return $null
+}
+
+function Test-Python3Major {
+    param([string]$Exe)
+    if (-not $Exe) { return $false }
+    try {
+        $ver = & $Exe -c "import sys; print(sys.version_info[0])" 2>$null
+        $n = 0
+        if ([int]::TryParse(("$ver").Trim(), [ref]$n) -and $n -ge 3) {
+            return $true
+        }
+    } catch { }
+    return $false
+}
+
+# Line-preserving upsert into pod.conf. Only keys in -Set are written/updated;
+# comments, blanks, and foreign keys (WORKDAY_*, JOKE_*, …) are never deleted.
+# Prefer shared/pod_conf_io.py when Python is available so Windows/Linux share
+# one merge implementation; pure PowerShell is the fallback.
+function Update-PodConf {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Set,
+        [string]$Path = ""
+    )
+    if (-not $Path) { $Path = Get-PodConfPath }
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force $dir | Out-Null
+    }
+
+    $ioPy = Join-Path $PSScriptRoot "..\shared\pod_conf_io.py"
+    $py = Find-Python3
+    if ($py -and (Test-Path $ioPy)) {
+        $argv = @((Resolve-Path $ioPy).Path, "upsert", $Path)
+        # Stable order for CLI args (PS 5.1 hashtable order is undefined).
+        foreach ($k in ($Set.Keys | Sort-Object)) {
+            $argv += ("{0}={1}" -f $k, $Set[$k])
+        }
+        & $py @argv
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        Write-Host "[!] pod_conf_io.py upsert failed (exit $LASTEXITCODE); falling back to PowerShell merge" -ForegroundColor Yellow
+    }
+
+    # Pure PowerShell fallback (same semantics as pod_conf_io.upsert_pod_conf_text).
+    $remaining = @{}
+    $updateKeys = @{}
+    foreach ($k in $Set.Keys) {
+        $remaining[$k] = [string]$Set[$k]
+        $updateKeys[$k] = $true
+    }
+
+    $lines = @()
+    if (Test-Path $Path) {
+        try {
+            # UTF-8 with BOM strip (Notepad-written files).
+            $bytes = [System.IO.File]::ReadAllBytes($Path)
+            $utf8 = New-Object System.Text.UTF8Encoding $false
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+                $text = $utf8.GetString($bytes, 3, $bytes.Length - 3)
+            } else {
+                $text = $utf8.GetString($bytes)
+            }
+            # Splitlines-equivalent: keep empty lines, drop final empty from trailing NL.
+            $lines = @($text -split "`r?`n", -1)
+            if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq "") {
+                $lines = $lines[0..($lines.Count - 2)]
+            }
+        } catch {
+            throw "refusing to upsert pod.conf: existing file is unreadable ($Path): $_"
+        }
+    }
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+        if ($line -match '^\s*#' -or $line -match '^\s*$') {
+            [void]$out.Add($line)
+            continue
+        }
+        if ($line -match '^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+            $indent = $Matches[1]
+            $key = $Matches[2]
+            if ($remaining.ContainsKey($key)) {
+                [void]$out.Add("${indent}${key}=$($remaining[$key])")
+                $remaining.Remove($key)
+                continue
+            }
+            if ($updateKeys.ContainsKey($key)) {
+                # Duplicate of a key we already rewrote — drop (match Python).
+                continue
+            }
+        }
+        [void]$out.Add($line)
+    }
+    foreach ($k in ($Set.Keys | Sort-Object)) {
+        if ($remaining.ContainsKey($k)) {
+            [void]$out.Add("$k=$($remaining[$k])")
+            $remaining.Remove($k)
+        }
+    }
+    # UTF-8 without BOM when possible (supervisor strips BOM anyway).
+    $content = ($out -join "`n")
+    if ($content.Length -gt 0 -and -not $content.EndsWith("`n")) {
+        $content += "`n"
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
 }
 
 function Test-WirePodInstallTree {

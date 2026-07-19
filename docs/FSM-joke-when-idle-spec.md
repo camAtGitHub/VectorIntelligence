@@ -44,7 +44,7 @@ These were assumed while writing this spec. If any is false, STOP and flag it be
 - `behaviors/config.py` — MODIFY: add `JokeConfig` + `load_joke_config`.
 - `behaviors/runtime.py` — MODIFY: register the plugin behind enable+flag.
 - `service.py` — MODIFY: start the interval refill loop on startup.
-- `env-default` — MODIFY: document `JOKE_*` vars.
+- `shared/config/pod.conf-default` — document `JOKE_*` vars (not vector-ai `.env`).
 - `test_behaviors.py` (or `test_joke_idle.py`) — tests.
 
 **Critical constraints (become ⚠️ in tasks):**
@@ -168,6 +168,12 @@ Runtime already calls `on_speak_allowed()` ONLY after `arbiter.allow()` returns 
 
 ## 6. Config surface (all `JOKE_`-prefixed)
 
+Loaded from the process environment via `load_joke_config`. **Production
+source of truth is `pod.conf`** (supervisor forwards every key into the
+vector-ai child env). Keep OpenRouter/LLM keys in `vector-ai/.env` only.
+Template: `shared/config/pod.conf-default`. Dual gate: `"joke_idle"` in
+`BEHAVIORS_ENABLED` **and** `JOKE_ENABLED` truthy (`1`/`true`/`yes`/`on`).
+
 | Env var | Default | Meaning |
 |---------|---------|---------|
 | `JOKE_ENABLED` | `0` | On/off switch (like `WORKDAY_ENABLED`). |
@@ -259,7 +265,7 @@ def load_joke_config(env) -> JokeConfig: ...
 ⚠️ CRITICAL CONSTRAINTS:
 - Never raise on bad env. Wrap int/float parses; on failure use the default.
 - Unknown/empty `JOKE_AUDIENCE` → `"known"`.
-- `enabled` is true only when `JOKE_ENABLED == "1"`.
+- `enabled` is true when `JOKE_ENABLED` is truthy (`1` / `true` / `yes` / `on`), via `_truthy` (not string equality to `"1"` only).
 
 **Must NOT do:**
 - Do not modify `WorkdayConfig` or its loader.
@@ -268,7 +274,7 @@ def load_joke_config(env) -> JokeConfig: ...
 **Acceptance Criteria:**
 - [ ] `load_joke_config({})` returns all-default config without raising.
 - [ ] `JOKE_AUDIENCE=garbage` yields `audience == "known"`.
-- [ ] `JOKE_ENABLED=1` yields `enabled is True`; anything else `False`.
+- [ ] `JOKE_ENABLED=1` (also `true`/`yes`/`on`) yields `enabled is True`; empty/other → `False`.
 - [ ] Malformed `JOKE_MIN_DWELL_S=abc` falls back to `1200`, no exception.
 
 **Edge Cases:**
@@ -686,16 +692,16 @@ if JOKE_IDLE_ID in enabled and joke_cfg is not None and joke_cfg.enabled:
 ---
 ## TASK-08: Service wiring — config load, runtime arg, refill loop, env docs
 
-**Objective:** `service.py` loads `JokeConfig`, passes it to `BehaviorRuntime`, and starts the interval-guarded refill loop on startup; `env-default` documents all `JOKE_*` vars.
+**Objective:** `service.py` loads `JokeConfig`, passes it to `BehaviorRuntime`, and starts the interval-guarded refill loop on startup; document all `JOKE_*` vars in `pod.conf` / `shared/config/pod.conf-default` (not OpenRouter `.env`).
 
 **Bootstrap Context:**
 Read in `service.py`: (a) where `BehaviorConfig`/`WorkdayConfig` is loaded and where `BEHAVIOR_RUNTIME = BehaviorRuntime(...)` is constructed (around the `WorkdayConfig` load and line ~189); (b) the existing `@app.on_event("startup")` handlers and the `_mood_loop`/`_behavior_clock_loop` pattern (lines ~98–120, ~618–626). Copy that startup-loop pattern exactly.
-Read `env-default` for the comment style used for `WORKDAY_*`.
+Read `shared/config/pod.conf-default` for the comment style used for `WORKDAY_*` / `JOKE_*`.
 (Do not read unrelated endpoints.)
 
 **Files to Create / Modify:**
 - `service.py` — MODIFY (config load + runtime arg + startup loop; ~15 lines total).
-- `env-default` — MODIFY (documentation of `JOKE_*`).
+- `shared/config/pod.conf-default` — document `JOKE_*` (LLM keys stay in env-default).
 
 **Interface Contract (BINDING):**
 - Load config near the other config loads:
@@ -726,7 +732,7 @@ Read `env-default` for the comment style used for `WORKDAY_*`.
 - Do not block startup; `asyncio.create_task` and return, exactly like `_mood_loop`.
 - Do not modify `llm_chat_once`, mood loop, or clock loop.
 
-**env-default additions (BINDING — documented, mostly commented-out with defaults shown):**
+**pod.conf / pod.conf-default additions (BINDING — documented, mostly commented-out with defaults shown):**
 ```
 # --- Joke / question when idle (default off) ---
 # BEHAVIORS_ENABLED=workday,joke_idle
@@ -754,7 +760,7 @@ JOKE_ENABLED=0
 - [ ] With `JOKE_ENABLED=0`, service starts, no refill task runs, runtime has no joke behavior.
 - [ ] With `JOKE_ENABLED=1` + `joke_idle` in `BEHAVIORS_ENABLED`, the refill task is created once and the behavior is registered.
 - [ ] Only one `ContinuityStore` instance is used.
-- [ ] `env-default` documents every `JOKE_*` var.
+- [ ] `shared/config/pod.conf-default` documents every `JOKE_*` var.
 
 **Known Risks / Likely Mistakes:**
 - Creating a second `ContinuityStore` → use the existing one.

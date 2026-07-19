@@ -47,7 +47,7 @@ You speak -> chipper STT -> POST :8090/v1/chat/completions
 | Bigger VOSK model | Yes (AppData models) | Yes |
 | Whisper STT | No (need chipper-whisper) | Yes |
 | Ambient / sensor / face-probe loops | No | Yes |
-| Work Day Mode (desk accountability) | No (needs behavior-tick patch) | Yes (default **off** in `.env`) |
+| Work Day Mode (desk accountability) | No (needs behavior-tick patch) | Yes (default **off** in `pod.conf`) |
 
 ---
 
@@ -270,15 +270,24 @@ Whisper model size: `WHISPER_MODEL=base.en` (default) or `small.en` (better, slo
 
 Desk accountability: morning arm via named face, ~90m on-task pokes, ~30m away scolds, late-arrival arm. **Default off.** Does not replace ambient/greeting/sensor.
 
-In runtime `vector-ai/.env`:
+In runtime **`pod.conf`** (not `.env` — OpenRouter keys stay in `vector-ai/.env`):
 
-```env
+| Platform | Path |
+|----------|------|
+| Windows | `%USERPROFILE%\vector-pod\pod.conf` |
+| Linux | `~/vector-pod/pod.conf` |
+
+```conf
+BEHAVIORS_ENABLED=workday
 WORKDAY_ENABLED=1
 WORKDAY_TZ=Australia/Sydney   # your local TZ
 # optional: WORKDAY_START_BEGIN=09:00 WORKDAY_START_END=10:30 WORKDAY_END=18:00
 ```
 
-Restart vector-ai. Holiday / guests: set `WORKDAY_ENABLED=0` and restart. Spec: `docs/superpowers/specs/2026-07-18-vector-aliveness-workday-design.md`.
+Restart vector-ai. Holiday / guests: set `WORKDAY_ENABLED=0` and restart.
+Template: `shared/config/pod.conf-default`. Guide: `docs/FSM-workday-companion.md`.
+If you previously set these in `.env`, run opt-in
+`windows/migrate-behavior-config.ps1` or `linux/migrate-behavior-config.sh`.
 
 ---
 

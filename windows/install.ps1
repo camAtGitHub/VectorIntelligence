@@ -524,7 +524,10 @@ Info "vector-ai ready."
 # below all read these so they never drift. An explicit flag wins; otherwise
 # we preserve whatever's already in pod.conf, key by key, so re-running the
 # installer doesn't clobber a hand-edited port.
+# Upsert only managed keys — never rewrite the whole file (preserves
+# WORKDAY_*/JOKE_*/SPEECH_* hand-edits across reinstall).
 Step "Pod config"
+. (Join-Path $ScriptDir "WirePodPaths.ps1")
 New-Item -ItemType Directory -Force $InstallRoot | Out-Null
 $PodConf = Join-Path $InstallRoot "pod.conf"
 if (Test-Path $PodConf) {
@@ -538,9 +541,10 @@ if (Test-Path $PodConf) {
         if ($m -match 'AI_PORT\s*=\s*(\d+)') { $AiPort = [int]$Matches[1] }
     }
 }
-# ASCII (no BOM) - supervisor.py reads this as UTF-8 and a BOM would break its
-# key=value line checks.
-Set-Content -Path $PodConf -Value @("WEB_PORT=$WebPort", "AI_PORT=$AiPort") -Encoding ASCII
+Update-PodConf -Path $PodConf -Set @{
+    WEB_PORT = "$WebPort"
+    AI_PORT  = "$AiPort"
+}
 Info "Web UI port: $WebPort, vector-ai port: $AiPort (pod.conf at $PodConf)."
 
 # -- 6. Firewall --------------------------------------------------------------

@@ -201,9 +201,15 @@ vector-ai still `load_dotenv()`s its `.env` for OpenRouter; python-dotenv does
 **not** override keys already in the process env, so a value set in `pod.conf`
 (and injected by the supervisor) wins over the same key in `.env`.
 
-Work Day / Joke idle may still appear in `env-default` for local dev, but
-**runtime should prefer `pod.conf`** for those knobs. Do not grow `.env` with
-stack-wide settings just because dotenv is convenient.
+Work Day / Joke idle / speech / `BEHAVIORS_ENABLED` knobs live in **`pod.conf`**
+(template: `shared/config/pod.conf-default`). `env-default` is OpenRouter/LLM only
+and points at pod.conf. Do not grow `.env` with stack-wide settings.
+
+**Install merge safety:** setup/install/apply-config scripts **upsert** only the
+keys they manage (ports, companion paths). They never rewrite `pod.conf` to a
+fixed whitelist — hand-edited `WORKDAY_*` / `JOKE_*` survive reinstall. Optional
+one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
+`linux/migrate-behavior-config.sh`.
 
 | Want | Where |
 |------|--------|
@@ -269,22 +275,31 @@ these next to the OpenRouter key.
 
 **Work Day / Joke idle** (default off; needs full install + behavior-tick).
 vector-ai loaders still take an env mapping (`load_workday_config` /
-`load_joke_config`); with supervisor forwarding, put knobs in **`pod.conf`**:
+`load_joke_config`); supervisor injects **`pod.conf`** into the child env.
+Edit the live file (not only the repo template):
+
+| Platform | Live `pod.conf` |
+|----------|-----------------|
+| **Windows** | `%USERPROFILE%\vector-pod\pod.conf` |
+| **Linux** | `~/vector-pod/pod.conf` |
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `WORKDAY_ENABLED` | `0` | Master switch |
+| `WORKDAY_ENABLED` | off | Master switch (also need `workday` in `BEHAVIORS_ENABLED`) |
 | `WORKDAY_TZ` | host / UTC | Local schedule windows |
 | `WORKDAY_START_BEGIN` / `END` / `WORKDAY_END` | 09:00 / 10:30 / 18:00 | Day windows |
 | `WORKDAY_POKE_INTERVAL_S` | `5400` | On-task poke interval |
 | `WORKDAY_AWAY_S` | `1800` | Away scold threshold |
+| `JOKE_ENABLED` | off | Joke idle master (also need `joke_idle` in `BEHAVIORS_ENABLED`) |
 | `SPEECH_MIN_GAP_S` | `90` | Global proactive speech gap |
 | `SPEECH_SUPPRESS_AFTER_VOICE_S` | `120` | Quiet after chat |
 | `BEHAVIORS_ENABLED` | `workday` | Plugin enable list |
 
-Restart vector-ai after `.env` / `persona.txt` changes. Restart chipper (or the
-full stack) after speech-volume env / `pod.conf` changes so the patched process
-re-reads `VECTOR_VOLUME_*`.
+Full key list + commented examples: `shared/config/pod.conf-default`.
+
+Restart vector-ai after `pod.conf` / `.env` / `persona.txt` changes. Restart
+chipper (or the full stack) after speech-volume / port `pod.conf` changes so
+the patched process re-reads env.
 
 ## HTTP surface (vector-ai)
 
@@ -337,8 +352,9 @@ Optional: `min_tick_interval`, `clock_tick(now, local_dt)`, chat hooks wired thi
 `TickResult` fields: `speak`, `need_identity`, `debug`, `on_speak_allowed`.
 
 When adding an FSM: one module under `behaviors/`, config loader with defaults off,
-register in `BehaviorRuntime`, document env in `env-default`, unit tests with frozen
-clocks. Full checklist: [docs/FSM-implementation.md](docs/FSM-implementation.md).
+register in `BehaviorRuntime`, document knobs in `shared/config/pod.conf-default`
+(not OpenRouter `env-default`), unit tests with frozen clocks. Full checklist:
+[docs/FSM-implementation.md](docs/FSM-implementation.md).
 
 ### Speech arbiter (shared — do not bypass)
 
@@ -517,7 +533,7 @@ needs care if multiple Vectors share one brain.
 1. Prefer intelligence in vector-ai; keep chipper thin.  
 2. Do not clobber ambient/sensors by hijacking the camera every tick.  
 3. Register new FSMs through BehaviorRuntime + arbiter.  
-4. Document env vars in `env-default` and user-facing docs if people must flip them.  
+4. Document non-LLM knobs in `pod.conf` / `shared/config/pod.conf-default` (LLM stays in `env-default`) and user-facing docs if people must flip them.
 5. Unit test without hardware.
 
 ## Docs map

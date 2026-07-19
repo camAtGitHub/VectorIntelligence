@@ -186,7 +186,7 @@ Implement:
 3. Optional `clock_tick` for pure time transitions.  
 4. Register in `BehaviorRuntime.__init__` when id ∈ `BEHAVIORS_ENABLED` and feature flag on.  
 5. Wire **minimal** surface in `service.py` only if you need HTTP extras or chat tags.  
-6. Document env vars in `env-default` + a short companion doc if user-facing.  
+6. Document knobs in `shared/config/pod.conf-default` (not OpenRouter `.env`) + a short companion doc if user-facing.
 7. Unit tests with frozen clocks (no robot).
 
 ### C. Registration pattern (today)
@@ -378,7 +378,7 @@ Add focused tests in the same style (or a dedicated `test_<fsm>.py` imported fro
 5. Speech + `on_speak_allowed`.  
 6. Identity junctures if needed.  
 7. Optional chat tags + day strip.  
-8. Docs (companion + env-default).  
+8. Docs (companion + `shared/config/pod.conf-default`).
 9. Only then consider chipper changes.
 
 ---
@@ -403,7 +403,7 @@ Improvements that help **all** FSMs (registry, shared clock TZ, migrating ambien
 | Goal | Where |
 |------|--------|
 | New FSM logic | `shared/vector-ai/behaviors/<name>.py` |
-| Env parsing | `shared/vector-ai/behaviors/config.py` + `env-default` |
+| Env parsing | `shared/vector-ai/behaviors/config.py` + knobs in `pod.conf` / `shared/config/pod.conf-default` (LLM stays in `.env`) |
 | Register plugin | `shared/vector-ai/behaviors/runtime.py` |
 | HTTP / chat only if needed | `shared/vector-ai/service.py` (wiring only) |
 | Durable state | `continuity.py` or dedicated store |

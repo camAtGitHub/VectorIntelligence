@@ -41,7 +41,11 @@ $ErrorActionPreference = "Stop"
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Re-launching as administrator (scheduled task registration)..." -ForegroundColor Yellow
-    $fwd = " -AiPort $AiPort -WebPort $WebPort"
+    # Only forward ports when the user actually passed them (preserve hand-edited
+    # pod.conf ports on re-run without -WebPort/-AiPort).
+    $fwd = ""
+    if ($PSBoundParameters.ContainsKey('AiPort'))  { $fwd += " -AiPort $AiPort" }
+    if ($PSBoundParameters.ContainsKey('WebPort')) { $fwd += " -WebPort $WebPort" }
     if ($WirePodDir) { $fwd += " -WirePodDir `"$WirePodDir`"" }
     if ($DataDir)    { $fwd += " -DataDir `"$DataDir`"" }
     Start-Process powershell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"$fwd"
@@ -126,15 +130,26 @@ if (-not (Test-Path (Join-Path $VectorAIDir ".env"))) {
 Copy-Item "$SharedDir\supervisor.py" (Join-Path $InstallRoot "supervisor.py") -Force
 
 # -- pod.conf (companion mode) -------------------------------------------------
+# Upsert managed companion keys only — never truncate foreign keys
+# (WORKDAY_*/JOKE_*/etc. survive re-runs of setup-companion).
+# Ports: only write when user passed -WebPort/-AiPort, or key is missing
+# (first-run defaults). Re-run without flags preserves custom ports.
 $podConf = Get-PodConfPath
-@(
-    "WEB_PORT=$WebPort"
-    "AI_PORT=$AiPort"
-    "EXTERNAL_CHIPPER=1"
-    "WIREPOD_DIR=$wp"
-    "WIREPOD_DATA_DIR=$wpData"
-) | Set-Content -Path $podConf -Encoding UTF8
-Info "pod.conf written (EXTERNAL_CHIPPER=1, install + data dirs, AI_PORT=$AiPort)"
+$confMap = Read-PodConf
+$set = @{
+    EXTERNAL_CHIPPER = "1"
+    WIREPOD_DIR      = "$wp"
+    WIREPOD_DATA_DIR = "$wpData"
+}
+if ($PSBoundParameters.ContainsKey('WebPort') -or -not $confMap.ContainsKey('WEB_PORT')) {
+    $set['WEB_PORT'] = "$WebPort"
+}
+if ($PSBoundParameters.ContainsKey('AiPort') -or -not $confMap.ContainsKey('AI_PORT')) {
+    $set['AI_PORT'] = "$AiPort"
+}
+Update-PodConf -Path $podConf -Set $set
+$aiShown = if ($set.ContainsKey('AI_PORT')) { $set['AI_PORT'] } elseif ($confMap['AI_PORT']) { $confMap['AI_PORT'] } else { "$AiPort" }
+Info "pod.conf updated (EXTERNAL_CHIPPER=1, install + data dirs, AI_PORT=$aiShown)"
 
 # -- venv ----------------------------------------------------------------------
 $VenvDir = Join-Path $VectorAIDir "venv"
