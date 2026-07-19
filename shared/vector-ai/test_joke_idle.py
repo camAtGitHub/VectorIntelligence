@@ -3,9 +3,8 @@
 
 No network, robot, or real LLM. Time is injected; SQLite uses temp files.
 
-Run from shared/vector-ai:
-  python3 test_joke_idle.py
-  python3 test_behaviors.py   # also invokes these via run_all()
+Run:
+  python3 -m pytest shared/vector-ai/test_joke_idle.py -q
 """
 from __future__ import annotations
 
@@ -16,10 +15,6 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
-
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from behaviors.config import JokeConfig, WorkdayConfig, load_joke_config, load_runtime_config
 from behaviors.continuity import ContinuityStore
@@ -36,10 +31,8 @@ from behaviors.types import BehaviorContext, FaceIdentity, PresenceSnapshot
 
 
 def check(name: str, cond: bool) -> None:
-    status = "PASS" if cond else "FAIL"
-    print(f"  [{status}] {name}")
-    if not cond:
-        raise SystemExit(1)
+    """Assert with a label (pytest-friendly; replaces old SystemExit runner)."""
+    assert cond, name
 
 
 # ---------------------------------------------------------------------------
@@ -661,29 +654,8 @@ def test_anti_patterns() -> None:
     check("no top-level service import in joke_sources", top_service is False)
 
 
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
-
-def run_all() -> None:
-    print("test_joke_idle")
-    test_joke_config_defaults()
-    test_joke_config_bad_audience_and_numeric()
-    test_joke_continuity_push_pop_daily()
-    test_pop_line_ratio_fallback_served_empty()
-    test_parse_json_array_tolerant()
-    test_refill_filters_and_target()
-    test_refill_garbage_and_llm_down_curated()
-    test_refill_watermark_noop_and_batch_cap()
-    test_refill_stops_at_queue_target()
-    test_fsm_happy_path()
-    test_fsm_denied_speech_no_commit()
-    test_fsm_identity_gating()
-    test_feature_flag_off()
-    test_anti_patterns()
-    print("joke_idle ALL PASS")
-
-
 if __name__ == "__main__":
-    run_all()
-    print("ALL PASS")
+    import pytest
+    import sys
+
+    raise SystemExit(pytest.main([__file__, "-q", *sys.argv[1:]]))

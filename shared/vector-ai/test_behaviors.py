@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """Unit tests for behaviors runtime + Work Day Mode.
 
-Run from shared/vector-ai:
-  python test_behaviors.py
+Run (repo root or any cwd with pytest.ini):
+  python3 -m pytest shared/vector-ai/test_behaviors.py -q
 """
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from behaviors.config import WorkdayConfig, load_workday_config, parse_hhmm
 from behaviors.presence import PresenceCache
@@ -32,10 +29,8 @@ from behaviors.config import RuntimeConfig, load_runtime_config
 
 
 def check(name: str, cond: bool) -> None:
-    status = "PASS" if cond else "FAIL"
-    print(f"  [{status}] {name}")
-    if not cond:
-        raise SystemExit(1)
+    """Assert with a label (pytest-friendly; replaces old SystemExit runner)."""
+    assert cond, name
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +45,6 @@ def test_parse_hhmm() -> None:
         raise AssertionError("should fail")
     except ValueError:
         pass
-    print("  [PASS] parse_hhmm")
 
 
 def test_load_workday_disabled_by_default() -> None:
@@ -732,39 +726,9 @@ def test_single_pipe_work_tags() -> None:
 
 
 if __name__ == "__main__":
-    print("test_behaviors")
-    test_parse_hhmm()
-    test_load_workday_disabled_by_default()
-    test_load_workday_enabled()
-    test_presence_occupancy_without_face()
-    test_presence_identity_cached()
-    test_arbiter_min_gap_and_quiet()
-    test_continuity_roundtrip()
-    test_workday_disabled()
-    test_morning_start()
-    test_morning_no_face_needs_identity()
-    test_stranger_cannot_start()
-    test_no_show_after_window()
-    test_late_check_and_yes()
-    test_poke_interval()
-    test_away_29m_no_speak_30m_speaks()
-    test_pause_blocks_pokes()
-    test_parse_work_commands()
-    test_runtime_need_identity_and_priority()
-    test_runtime_disabled_workday_not_registered()
-    test_simulated_workday()
-    test_clock_tick_no_show()
-    test_late_no_and_timeout_no_reask()
-    test_on_afternoon_no_mode_guard()
-    test_pause_resume_and_expiry()
-    test_arbiter_voice_suppress()
-    test_negative_face_id_stranger()
-    test_bad_config_does_not_crash()
-    test_malformed_work_tags_stripped()
-    test_arbiter_deny_does_not_commit_poke()
-    test_identity_reject_cooldown_after_stale_cache()
-    test_single_pipe_work_tags()
-    # Joke idle FSM (TASK-09) — dedicated module, same check()/temp-file style
-    from test_joke_idle import run_all as run_joke_idle_tests
-    run_joke_idle_tests()
-    print("ALL PASS")
+    import pytest
+    import sys
+
+    raise SystemExit(
+        pytest.main([__file__, "-q", *sys.argv[1:]])
+    )

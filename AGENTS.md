@@ -45,19 +45,17 @@ uvicorn service:app --host 127.0.0.1 --port 8090
 # health: http://127.0.0.1:8090/health  → api_key_set: true
 ```
 
-Behavior unit tests (no robot):
+Unit tests (pytest; no robot). From repo root:
 
 ```bash
-cd shared/vector-ai
-python test_behaviors.py
+python3 -m pytest -q
+# or subsets:
+python3 -m pytest shared/test_supervisor_pod_conf.py shared/test_supervisor_wedge.py -q
+python3 -m pytest shared/vector-ai/test_behaviors.py shared/vector-ai/test_joke_idle.py -q
 ```
 
-Supervisor wedge unit test:
-
-```bash
-cd shared
-python test_supervisor_wedge.py
-```
+Debian: `sudo apt install python3-pytest` (optional: `python3-pytest-asyncio`).
+Config: root `pytest.ini` (`pythonpath`, asyncio loop scope).
 
 Daily ops (installed stack): see README tables — `start-companion` / `start-vector` / `stop-vector` under `windows/` or `linux/`.
 
@@ -394,18 +392,23 @@ sent back.
 
 ## Testing
 
-No heavy test framework required today. Prefer plain Python scripts that print
-`[PASS]` / fail fast:
+Use **pytest** (`python3 -m pytest`). Root `pytest.ini` sets `testpaths=shared`,
+`pythonpath` for `supervisor` + `behaviors`, and
+`asyncio_default_fixture_loop_scope=function` (quiets system pytest-asyncio).
 
 | Suite | Command | Covers |
 |-------|---------|--------|
-| Behaviors | `cd shared/vector-ai && python test_behaviors.py` | Config, presence, arbiter, Work Day modes, runtime, chat tags |
-| Supervisor wedge | `cd shared && python test_supervisor_wedge.py` | SDK-wedge pattern / bounce logic |
+| All unit | `python3 -m pytest -q` (repo root) | Everything below |
+| Behaviors / Work Day | `python3 -m pytest shared/vector-ai/test_behaviors.py -q` | Config, presence, arbiter, modes, runtime, chat tags |
+| Joke idle | `python3 -m pytest shared/vector-ai/test_joke_idle.py -q` | Joke config, queue, refill mocks, FSM |
+| Supervisor pod.conf | `python3 -m pytest shared/test_supervisor_pod_conf.py -q` | load/apply/merge pod.conf → loaders |
+| Supervisor wedge | `python3 -m pytest shared/test_supervisor_wedge.py -q` | SDK-wedge pattern / bounce logic |
 
 **Design goals:**
 - Unit tests run **without a robot** and without network.
 - Freeze clocks / inject presence; do not sleep real wall-clock for policy.
 - Load real modules (no parallel reimplementation of FSM logic in the test).
+- Prefer `assert cond, "label"` (or plain `assert`); no module-level script runners.
 - Add tests when you fix subtle bugs in speech-gating, mode transitions, or tag parsing.
 
 There is no CI config in-repo by default; still run the suites before handing work back.
@@ -531,9 +534,9 @@ needs care if multiple Vectors share one brain.
 
 - [ ] Meaningful commits landed; working tree clean or intentional  
 - [ ] Runtime vs repo path confusion avoided for config edits  
-- [ ] `python test_behaviors.py` green if behaviors/arbiter/workday touched  
+- [ ] `python3 -m pytest -q` green if behaviors/arbiter/workday/pod.conf/supervisor touched  
 - [ ] No new proactive speech path bypasses SpeechArbiter  
-- [ ] New env knobs documented in `env-default` (and companion docs if user-facing)  
+- [ ] New non-LLM knobs documented in `pod.conf` / `pod.conf-default` (LLM still `env-default`)  
 - [ ] Persona/command/LLM concerns stayed in the right files  
 
 ---
