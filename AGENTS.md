@@ -192,14 +192,27 @@ leak fixes, wake-word mute during camera, etc.
 
 **Preferred split:** leave `.env` as the OpenRouter config. Put operational tunables in **`pod.conf`**.
 
-Today some brain features (e.g. Work Day) still read from process env / `.env` because vector-ai loads dotenv at startup — that works, but **new non-LLM knobs should prefer `pod.conf`** (and supervisor forwarding into child env when chipper needs them). Do not dump stack-wide settings into `.env` just because dotenv is convenient.
+**How supervisor loads `pod.conf`:** `shared/supervisor.py` uses a generic
+`load_pod_conf()` (all `KEY=VALUE` lines → string dict). Only a small set of
+supervisor-owned keys is type-applied (`apply_supervisor_pod_conf`). **Every**
+other key is still kept in `POD_CONF` and **forwarded into chipper and
+vector-ai child env** via `merge_pod_conf_into_env`. Adding a new FSM knob
+means putting it in `pod.conf` — not a new `if/elif` in the supervisor.
+
+vector-ai still `load_dotenv()`s its `.env` for OpenRouter; python-dotenv does
+**not** override keys already in the process env, so a value set in `pod.conf`
+(and injected by the supervisor) wins over the same key in `.env`.
+
+Work Day / Joke idle may still appear in `env-default` for local dev, but
+**runtime should prefer `pod.conf`** for those knobs. Do not grow `.env` with
+stack-wide settings just because dotenv is convenient.
 
 | Want | Where |
 |------|--------|
 | OpenRouter key / models / history | Runtime `vector-ai/.env` (not only repo template) |
 | Personality | `persona.txt` next to that `.env` |
 | Knowledge endpoint | `%APPDATA%\wire-pod\apiConfig.json` (custom → `:8090/v1`) |
-| Ports, companion flags, volume duck | **`pod.conf`** next to supervisor |
+| Ports, companion flags, volume duck, FSM knobs | **`pod.conf`** next to supervisor |
 
 **LLM (`.env` only — keep it that way):**
 
@@ -222,8 +235,13 @@ Today some brain features (e.g. Work Day) still read from process env / `.env` b
 | `EXTERNAL_CHIPPER=1` | Companion: do not start/stop chipper |
 | `WIREPOD_DIR` / `WIREPOD_DATA_DIR` | Packaged Wire-Pod install + AppData paths |
 | `USE_LOCAL_OLLAMA` | Legacy local LLM process (default off) |
-| `VOLUME_DROP` | See speech-volume section (supervisor key) |
-| `VOLUME_HANG_MS` | See speech-volume section (supervisor key) |
+| `VOLUME_DROP` / `VECTOR_VOLUME_DROP` | Speech-volume duck levels (see below) |
+| `VOLUME_HANG_MS` / `VECTOR_VOLUME_HANG_MS` | Extra hold after estimated speech |
+| `VECTOR_VOLUME_MS_PER_WORD` | Assumed TTS rate for hold sizing |
+| `WORKDAY_*`, `JOKE_*`, `BEHAVIORS_ENABLED`, `SPEECH_*` | Behavior FSMs — preferred here, not `.env` |
+
+Format: one `KEY=value` per line, `#` full-line comments, blank lines OK.
+UTF-8 (BOM stripped if present). Unknown keys are preserved and forwarded.
 
 **Speech volume bump** (full install + `add-speech-volume-bump.py` patch only):
 
@@ -246,14 +264,14 @@ always estimated from text length + hang margin.
 **If Vector ducks mid-reply:** raise `VECTOR_VOLUME_MS_PER_WORD` and/or
 `VECTOR_VOLUME_HANG_MS` until he doesn’t.
 
-**Where to set them:** prefer **`pod.conf`** (not `.env`). Supervisor already
-knows `VOLUME_DROP` and `VOLUME_HANG_MS` as pod.conf keys and is the place to
-forward them into chipper as `VECTOR_VOLUME_*` when launching the child. Do not
-park these next to the OpenRouter key.
+**Where to set them:** prefer **`pod.conf`** (not `.env`). Supervisor reads
+`VOLUME_DROP` / `VOLUME_HANG_MS` (or the `VECTOR_VOLUME_*` names) from pod.conf
+and always injects `VECTOR_VOLUME_*` into the chipper child env. Do not park
+these next to the OpenRouter key.
 
-**Work Day** (default off; needs full install + behavior-tick). Currently loaded
-by vector-ai from process env / its `.env` — functional, but treat as brain
-feature flags; prefer not to grow `.env` with unrelated stack knobs:
+**Work Day / Joke idle** (default off; needs full install + behavior-tick).
+vector-ai loaders still take an env mapping (`load_workday_config` /
+`load_joke_config`); with supervisor forwarding, put knobs in **`pod.conf`**:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

@@ -60,8 +60,8 @@ AI_PORT       = "8090"        # vector-ai service port (localhost only). NOT
                               # 8000 - too many other tools default to it
                               # (uvicorn, python -m http.server, MCP servers)
                               # and a squatter leaves vector-ai crash-looping.
-VOLUME_HANG_MS = 2500         #
-VOLUME_DROP = 2               # 
+VOLUME_HANG_MS = 2500
+VOLUME_DROP = 2
 VECTOR_VOLUME_MS_PER_WORD = 400
 
 # Local Ollama is optional/legacy. Default is OpenRouter via vector-ai/.env.
@@ -82,31 +82,150 @@ EXTERNAL_CHIPPER = os.environ.get("EXTERNAL_CHIPPER", "").strip().lower() in (
 # external mode.
 _WIREPOD_DIR_OVERRIDE = os.environ.get("WIREPOD_DIR", "").strip()
 
-# The installer's -WebPort/--web-port and -AiPort/--ai-port write overrides to
-# pod.conf next to this file, so the supervisor, the setup scripts, chipper and
-# the firewall all agree on one value. Only numeric values are accepted.
-try:
-    for _line in (POD_DIR / "pod.conf").read_text(encoding="utf-8").splitlines():
-        _key, _, _val = _line.strip().partition("=")
-        _k = _key.strip()
-        _v = _val.strip()
-        if _v.isdigit():
-            if _k == "WEB_PORT":
-                WEB_PORT = _v
-            elif _k == "AI_PORT":
-                AI_PORT = _v
-            elif _k == "VOLUME_DROP":
-                VOLUME_DROP = _v
-            elif _k == "VOLUME_HANG_MS":
-                VOLUME_HANG_MS = _v                       
-        if _k == "USE_LOCAL_OLLAMA":
-            USE_LOCAL_OLLAMA = _v.lower() in ("1", "true", "yes", "on")
-        if _k == "EXTERNAL_CHIPPER":
-            EXTERNAL_CHIPPER = _v.lower() in ("1", "true", "yes", "on")
-        if _k == "WIREPOD_DIR" and _v:
-            _WIREPOD_DIR_OVERRIDE = _v
-except OSError:
-    pass
+
+# -- pod.conf ------------------------------------------------------------------
+# KEY=VALUE stack/deploy config next to this file. Grows with FSMs and robot
+# knobs (ports, EXTERNAL_CHIPPER, WORKDAY_*, JOKE_*, volume duck, paths, …).
+# .env under vector-ai stays OpenRouter/LLM secrets only.
+#
+# Loader is intentionally dumb and complete: every non-comment key is kept in
+# POD_CONF. Supervisor-owned keys are applied via a tiny typed map below; all
+# other keys are forwarded into child process envs so vector-ai loaders
+# (load_workday_config / load_joke_config / …) can read them without each key
+# needing a new if/elif branch here.
+
+
+def load_pod_conf(path: Path | None = None) -> dict[str, str]:
+    """Parse KEY=VALUE lines from pod.conf into a flat string dict.
+
+    - Blank lines and full-line `#` comments are ignored.
+    - First `=` separates key and value; both sides are stripped.
+    - Empty values are kept (key present → "").
+    - Missing/unreadable file → {}.
+    - No shell expansion, no type coercion (callers coerce).
+    """
+    conf: dict[str, str] = {}
+    conf_path = path if path is not None else (POD_DIR / "pod.conf")
+    try:
+        text = conf_path.read_text(encoding="utf-8")
+    except OSError:
+        return conf
+    # Strip a UTF-8 BOM if an editor/PowerShell wrote one.
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, val = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        if not key:
+            continue
+        conf[key] = val.strip()
+    return conf
+
+
+def _pod_truthy(v: str) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _pod_digit_str(conf: dict[str, str], key: str, default: str) -> str:
+    """Port-like values: accept only non-empty digit strings."""
+    raw = conf.get(key)
+    if raw is None:
+        return default
+    v = str(raw).strip()
+    return v if v.isdigit() else default
+
+
+def _pod_int(conf: dict[str, str], key: str, default: int) -> int:
+    raw = conf.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _pod_bool(conf: dict[str, str], key: str, default: bool) -> bool:
+    if key not in conf:
+        return default
+    return _pod_truthy(conf[key])
+
+
+def _pod_str(conf: dict[str, str], key: str, default: str = "") -> str:
+    raw = conf.get(key)
+    if raw is None:
+        return default
+    v = str(raw).strip()
+    return v if v else default
+
+
+def apply_supervisor_pod_conf(conf: dict[str, str]) -> dict:
+    """Map known supervisor keys out of a pod.conf dict.
+
+    Returns a plain dict of applied values so tests can assert without
+    mutating module globals. Unknown keys are ignored here (still live in
+    POD_CONF and are forwarded to children).
+    """
+    # Prefer VECTOR_VOLUME_* names when present; fall back to short aliases.
+    volume_drop = _pod_int(
+        conf, "VECTOR_VOLUME_DROP",
+        _pod_int(conf, "VOLUME_DROP", VOLUME_DROP),
+    )
+    volume_hang = _pod_int(
+        conf, "VECTOR_VOLUME_HANG_MS",
+        _pod_int(conf, "VOLUME_HANG_MS", VOLUME_HANG_MS),
+    )
+    volume_ms_word = _pod_int(
+        conf, "VECTOR_VOLUME_MS_PER_WORD",
+        VECTOR_VOLUME_MS_PER_WORD,
+    )
+    return {
+        "WEB_PORT": _pod_digit_str(conf, "WEB_PORT", WEB_PORT),
+        "AI_PORT": _pod_digit_str(conf, "AI_PORT", AI_PORT),
+        "VOLUME_DROP": volume_drop,
+        "VOLUME_HANG_MS": volume_hang,
+        "VECTOR_VOLUME_MS_PER_WORD": volume_ms_word,
+        "USE_LOCAL_OLLAMA": _pod_bool(conf, "USE_LOCAL_OLLAMA", USE_LOCAL_OLLAMA),
+        "EXTERNAL_CHIPPER": _pod_bool(conf, "EXTERNAL_CHIPPER", EXTERNAL_CHIPPER),
+        "WIREPOD_DIR": _pod_str(conf, "WIREPOD_DIR", ""),
+    }
+
+
+def merge_pod_conf_into_env(
+    conf: dict[str, str],
+    base: dict | None = None,
+    *,
+    conf_wins: bool = True,
+) -> dict:
+    """Build a child env: base (or os.environ) with pod.conf keys overlaid.
+
+    conf_wins=True (default): keys present in pod.conf replace base values so
+    the deploy file is source of truth for stack knobs. Secrets should not
+    live in pod.conf (keep OpenRouter keys in vector-ai/.env).
+    """
+    env = dict(base if base is not None else os.environ)
+    for key, val in conf.items():
+        if conf_wins or key not in env or str(env.get(key, "")).strip() == "":
+            env[key] = val
+    return env
+
+
+POD_CONF: dict[str, str] = load_pod_conf(POD_DIR / "pod.conf")
+_applied = apply_supervisor_pod_conf(POD_CONF)
+WEB_PORT = _applied["WEB_PORT"]
+AI_PORT = _applied["AI_PORT"]
+VOLUME_DROP = _applied["VOLUME_DROP"]
+VOLUME_HANG_MS = _applied["VOLUME_HANG_MS"]
+VECTOR_VOLUME_MS_PER_WORD = _applied["VECTOR_VOLUME_MS_PER_WORD"]
+USE_LOCAL_OLLAMA = _applied["USE_LOCAL_OLLAMA"]
+EXTERNAL_CHIPPER = _applied["EXTERNAL_CHIPPER"]
+if _applied["WIREPOD_DIR"]:
+    _WIREPOD_DIR_OVERRIDE = _applied["WIREPOD_DIR"]
 
 if _WIREPOD_DIR_OVERRIDE:
     WIREPOD_DIR = Path(_WIREPOD_DIR_OVERRIDE)
@@ -723,9 +842,10 @@ class Supervisor:
 
     # -- child definitions --
     def _chipper_env(self) -> dict:
-        # Pass chipper's config explicitly rather than relying on machine-wide
-        # environment variables - keeps the install self-contained.
-        env = dict(os.environ)
+        # Base = process env + full pod.conf overlay, then pin chipper-owned
+        # keys. Unknown pod.conf keys (WIREPOD_DATA_DIR, future knobs) ride
+        # along harmlessly; volume aliases are normalized to VECTOR_VOLUME_*.
+        env = merge_pod_conf_into_env(POD_CONF)
         env["STT_SERVICE"] = STT_SERVICE
         # Wire-Pod re-reads STT_LANGUAGE from env whenever the service string
         # changes (see WriteSTT in chipper/pkg/vars/config.go), so pin it here
@@ -739,14 +859,27 @@ class Supervisor:
         # Wire-Pod binds its web UI / config server to WEBSERVER_PORT (see
         # vars.go); default 8080. Pin it from WEB_PORT so a port chosen at
         # install time (pod.conf) actually takes effect.
-        env["WEBSERVER_PORT"] = WEB_PORT
+        env["WEBSERVER_PORT"] = str(WEB_PORT)
         # Our chipper patches (sensor/ambient/greeting/face) call vector-ai at
         # this port; passing it here means a port change never needs a rebuild.
-        env["VECTORAI_PORT"] = AI_PORT
-        # Set non-speech sounds VOLUME_DROP levels below volume setting.
-        # env["VECTOR_VOLUME_DROP"] = VOLUME_DROP
-        # env["VECTOR_VOLUME_HANG_MS"] = VOLUME_HANG_MS
+        env["VECTORAI_PORT"] = str(AI_PORT)
+        # Speech-volume duck (add-speech-volume-bump.py). Values come from
+        # pod.conf (VOLUME_* or VECTOR_VOLUME_*); chipper only reads VECTOR_*.
+        env["VECTOR_VOLUME_DROP"] = str(VOLUME_DROP)
+        env["VECTOR_VOLUME_HANG_MS"] = str(VOLUME_HANG_MS)
+        env["VECTOR_VOLUME_MS_PER_WORD"] = str(VECTOR_VOLUME_MS_PER_WORD)
         return env
+
+    def _vectorai_env(self) -> dict:
+        """Env for vector-ai: process env + pod.conf overlay.
+
+        FSM / behavior knobs (WORKDAY_*, JOKE_*, BEHAVIORS_ENABLED, …) should
+        live in pod.conf and arrive here so load_*_config(os.environ) sees
+        them. vector-ai still load_dotenv()'s its .env for OpenRouter only;
+        dotenv does not override keys already present, so pod.conf wins when
+        both define the same non-secret knob.
+        """
+        return merge_pod_conf_into_env(POD_CONF)
 
     def start_ollama(self):
         """Legacy: only used when USE_LOCAL_OLLAMA is enabled."""
@@ -777,7 +910,7 @@ class Supervisor:
             "vector-ai",
             [py, "-u", "-m", "uvicorn", "service:app",
              "--host", "127.0.0.1", "--port", AI_PORT],
-            VECTORAI_DIR, VECTORAI_LOG)
+            VECTORAI_DIR, VECTORAI_LOG, env=self._vectorai_env())
         self.vectorai.start()
 
     # -- health --
