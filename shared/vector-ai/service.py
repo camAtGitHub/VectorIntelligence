@@ -29,9 +29,10 @@ from pydantic import BaseModel
 
 from memory import MemoryStore
 from behaviors.runtime import BehaviorRuntime
-from behaviors.config import load_runtime_config, load_workday_config
+from behaviors.config import load_runtime_config, load_workday_config, load_joke_config
 from behaviors.continuity import ContinuityStore
 from behaviors.workday import parse_work_commands, pause_until_ts
+from behaviors.joke_sources import _joke_refill_loop
 
 # Make print() flush immediately so journalctl / vector-ai.log show lines in real time.
 sys.stdout.reconfigure(line_buffering=True)
@@ -185,6 +186,7 @@ MEMORY = MemoryStore(Path(__file__).parent / "memory.db")
 _LAST_USER_VOICE_TS = 0.0  # updated on each chat generate for speech suppress
 _runtime_cfg = load_runtime_config()
 _workday_cfg = load_workday_config()
+JOKE_CFG = load_joke_config()
 _continuity = ContinuityStore(Path(__file__).resolve().parent / "workday.db")
 BEHAVIOR_RUNTIME = BehaviorRuntime(
     _runtime_cfg,
@@ -192,6 +194,7 @@ BEHAVIOR_RUNTIME = BehaviorRuntime(
     _continuity,
     quiet_fn=lambda: bool(_ambient_state.get("quiet")),
     voice_ts_fn=lambda: _LAST_USER_VOICE_TS,
+    joke_cfg=JOKE_CFG,
 )
 if _workday_cfg.enabled:
     print(
@@ -201,6 +204,10 @@ if _workday_cfg.enabled:
     )
 else:
     print("[behaviors] Work Day Mode OFF (set WORKDAY_ENABLED=1 to enable)")
+if JOKE_CFG.enabled:
+    print("[behaviors] Joke Idle ON (set JOKE_ENABLED=0 to disable)")
+else:
+    print("[behaviors] Joke Idle OFF (set JOKE_ENABLED=1 to enable)")
 
 
 def _redact_content(content: Any) -> Any:
@@ -624,6 +631,12 @@ async def _mood_loop() -> None:
 @app.on_event("startup")
 async def _start_mood_loop() -> None:
     asyncio.create_task(_mood_loop())
+
+
+@app.on_event("startup")
+async def _start_joke_refill_loop() -> None:
+    if JOKE_CFG.enabled:
+        asyncio.create_task(_joke_refill_loop(store=_continuity, cfg=JOKE_CFG))
 
 
 @app.get("/v1/mood")
