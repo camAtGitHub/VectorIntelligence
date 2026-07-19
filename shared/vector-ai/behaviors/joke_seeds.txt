@@ -1,0 +1,163 @@
+# joke_seeds.txt — curated one-liners for the idle Joke FSM
+#
+# Format: KIND<TAB>TEXT
+#   KIND is `joke` or `question`
+#   Blank lines and lines starting with # are ignored
+# Voice: deadpan, dry, absurd-literal desk robot
+# Constraints: guest-safe, workplace-safe; each line < 20 words
+
+joke	I used to have a handle on life. Then it fell off.
+joke	My plans for today are flexible. Mostly because I have none.
+joke	I put things in a safe place. Now nothing is safe.
+joke	I am not lazy. I am in energy-saving mode.
+joke	My to-do list and I are not speaking.
+joke	I finished half my work. The other half is still work.
+joke	I woke up early once. It did not stick.
+joke	I filed that under later. Later has no folder.
+joke	My attention span left a note. It said goodbye.
+joke	I multi-task by failing at several things at once.
+joke	The meeting could have been silence.
+joke	I marked it urgent. Then I marked myself unavailable.
+joke	Coffee is gone. Hope left with it.
+joke	I am on track. The track is circular.
+joke	My calendar is full of empty promises.
+joke	I tried mindfulness. My mind wandered off.
+joke	I do not procrastinate. I strategically delay excellence.
+joke	The button says submit. I prefer resist.
+joke	I cleaned my desk. The chaos relocated.
+joke	My inbox is a lifestyle choice.
+joke	I set a reminder. Then I ignored that too.
+joke	I am not lost. I am exploring inefficiently.
+joke	The cloud ate my homework. Again.
+joke	I wrote a todo for writing todos. Progress.
+joke	Silence is golden. My speakers are off for a reason.
+joke	I brought snacks. The snacks did not survive.
+joke	My password is long. My patience is not.
+joke	I almost had a productive thought. It escaped.
+joke	The status is green. The vibe is gray.
+joke	I closed all tabs. Identity crisis followed.
+joke	I am waiting for motivation. It is running late.
+joke	My desk plant is judging me. Fair.
+joke	I organized my files by regret.
+joke	The day is long. My energy is not.
+joke	I hit send. Then I hit panic.
+joke	I am in a meeting with myself. No agenda.
+joke	My charger is missing. So is my will.
+joke	I labeled the box misc. That was a mistake.
+joke	I rebooted my attitude. Same bugs.
+joke	The printer jammed. Morale followed.
+joke	I have three priorities. All of them are snacks.
+joke	I sat down to focus. My chair disagreed.
+joke	The deadline moved. I did not.
+joke	I am not stalling. I am buffering.
+joke	My notes say remember this. I do not.
+joke	I found the problem. It was me, briefly.
+joke	The wifi is fine. My motivation is not.
+joke	I cleared my notifications. They came back angrier.
+joke	I set goals. They set me.
+joke	My backup plan is the same plan, slower.
+joke	I am free later. Free as in unscheduled and unprepared.
+joke	The mug says world best. Evidence is pending.
+joke	I stretched once. My spine filed a complaint.
+joke	I opened a spreadsheet. Time vanished.
+joke	My headphones are on. Empathy is off.
+joke	I almost stood up. Almost counts for sitting.
+joke	The sticky note fell off. So did the task.
+joke	I am optimizing. Mostly for comfort.
+joke	My lunch is in the fridge. My ambition is not.
+joke	I fixed one bug. Two applied for the vacancy.
+joke	I wrote it down. Then I lost the paper.
+joke	The day has peaks. I am in a valley.
+joke	I am not bored. I am aggressively understimulated.
+joke	My chair rolls away when I need it most.
+joke	I saved the document. Faith remains unrestored.
+joke	I checked the time. It checked me back.
+joke	The window is for looking. Not for escaping. Allegedly.
+joke	I have a system. Chaos is the system.
+joke	My water bottle is empty. Symbolism achieved.
+joke	I tried standing. Gravity won.
+joke	The task is simple. That is a trap.
+joke	I am present. Present and slightly horizontal.
+joke	My mouse ran out of battery. Metaphor accepted.
+joke	I scheduled rest. Rest declined the invite.
+joke	The room is quiet. My thoughts are not.
+joke	I solved it in the shower. Then forgot in the towel.
+joke	My socks match. That is the win today.
+joke	I am caught up. On nothing important.
+joke	The lamp is bright. My ideas are dim.
+joke	I closed the loop. It opened another.
+joke	My lunch break has a lunch break.
+joke	I am aligned. With the path of least resistance.
+joke	The clock is working. I am optional.
+joke	I drafted a reply. It is still drafting me.
+joke	My pen ran dry mid-thought. Mercy.
+joke	I am online. Spiritually offline.
+joke	The chair squeaks. It knows things.
+joke	I sorted email by unread. It laughed.
+joke	My plan B is plan A after snacks.
+joke	I found a paperclip. Peak achievement unlocked.
+joke	The desk is stable. My focus is not.
+joke	I am low power. Do not expect high drama.
+joke	My sticky notes have sticky notes.
+joke	I almost emailed the wrong person. Character development.
+joke	The fan is loud. My productivity is whisper-quiet.
+joke	I sat still for five minutes. That was the meeting.
+joke	My keyboard is clicking. Meaningful work is pending.
+joke	I am available. Available for nothing specific.
+joke	The whiteboard is blank. Honesty in dry-erase form.
+joke	I tried to multi-monitor. My eyes filed overtime.
+joke	My bag has everything except what I need.
+joke	I am not stuck. I am deeply paused.
+joke	The snack drawer is empty. Existential update complete.
+joke	I renamed the folder final_final_v3. Tradition.
+
+question	What is one small thing that made today slightly better?
+question	If your desk could talk, what would it complain about first?
+question	What song would be the theme for your afternoon?
+question	Coffee, tea, or the pure force of will today?
+question	What is the most useful thing within arm reach right now?
+question	If this hour had a title, what would you call it?
+question	What is one task you would gladly delete forever?
+question	Which window would you rather be looking out of?
+question	What is a tiny skill you wish you practiced more?
+question	If your to-do list shrank to one item, what stays?
+question	What snack would improve this exact moment?
+question	Is your chair a friend or a cautious ally today?
+question	What is the last thing that made you laugh at work?
+question	If silence had a volume knob, where would you set it?
+question	What is one tool you overuse and refuse to apologize for?
+question	Would you rather more monitors or more floor space?
+question	What color feels like productivity to you right now?
+question	If your calendar took a day off, what would you do?
+question	What is the best desk object you own for no good reason?
+question	Morning person, night person, or negotiator of both?
+question	What is a boring skill that secretly saves you time?
+question	If today were a weather report, what is the forecast?
+question	What is one app you open too often out of habit?
+question	Would you rather perfect focus or perfect snacks?
+question	What is the first thing you notice when you sit down?
+question	If your plant could rate your work ethic, what score?
+question	What small upgrade would make this desk nicer tomorrow?
+question	Is your current playlist helping or quietly judging you?
+question	What is one meeting you would replace with a walk?
+question	If energy came in bottles, which flavor do you need?
+question	What is a hobby that never shows up on your calendar?
+question	Would you rather a shorter day or a quieter one?
+question	What is the most satisfying click on your keyboard?
+question	If your notebook had a personality, what would it be?
+question	What is one thing you always pack and rarely use?
+question	Is the afternoon more puzzle or more endurance race?
+question	What would a five-minute reset look like for you?
+question	If your browser history told a story, what genre is it?
+question	What is a comfort food that somehow ends up at desks?
+question	Would you rather endless sticky notes or zero sticky notes?
+question	What is one word that describes your desk right now?
+question	If you could rename Monday, what would you call it?
+question	What is the smallest win you will accept today?
+question	Is your water bottle half full or a decorative object?
+question	What sound from outside would you welcome right now?
+question	If your status message were honest, what would it say?
+question	What is one thing your future self would thank you for?
+question	Would you rather better lighting or a better chair?
+question	What is a question you wish people asked more often?
+question	If this room had a soundtrack, who is scoring it?

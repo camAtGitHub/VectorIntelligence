@@ -92,6 +92,40 @@ class ContinuityStore:
                 if col not in cols:
                     c.execute(f"ALTER TABLE workday_days ADD COLUMN {col} {decl}")
 
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS joke_queue (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text       TEXT NOT NULL,
+                    kind       TEXT NOT NULL,
+                    source     TEXT NOT NULL,
+                    score      REAL DEFAULT 0.0,
+                    text_hash  TEXT NOT NULL UNIQUE,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS joke_served (
+                    text_hash  TEXT PRIMARY KEY,
+                    text       TEXT NOT NULL,
+                    kind       TEXT NOT NULL,
+                    served_at  REAL NOT NULL
+                )
+                """
+            )
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS joke_daily (
+                    date               TEXT PRIMARY KEY,
+                    count              INTEGER DEFAULT 0,
+                    last_spoke_at      REAL DEFAULT 0.0,
+                    last_reject_at     REAL DEFAULT 0.0
+                )
+                """
+            )
+
     def _row_to_record(self, date: str, row: sqlite3.Row) -> WorkdayRecord:
         try:
             mode = WorkdayMode(row["mode"] or WorkdayMode.WAITING_MORNING.value)
@@ -220,3 +254,144 @@ class ContinuityStore:
         if rec.arm_source == "late_yes":
             bits.append("armed after late check")
         return "Work day: " + "; ".join(bits) + "."
+
+    # --- joke queue / serve / daily ---
+
+    def joke_queue_len(self, kind: Optional[str] = None) -> int:
+        with self._lock, self._conn() as c:
+            if kind is None:
+                row = c.execute("SELECT COUNT(*) AS n FROM joke_queue").fetchone()
+            else:
+                row = c.execute(
+                    "SELECT COUNT(*) AS n FROM joke_queue WHERE kind = ?", (kind,)
+                ).fetchone()
+            return int(row["n"] if row else 0)
+
+    def joke_queue_push(
+        self,
+        text: str,
+        kind: str,
+        source: str,
+        score: float,
+        text_hash: str,
+        created_at: float,
+    ) -> bool:
+        """Insert into joke_queue. Returns False if hash already in queue or served."""
+        with self._lock, self._conn() as c:
+            served = c.execute(
+                "SELECT 1 FROM joke_served WHERE text_hash = ?", (text_hash,)
+            ).fetchone()
+            if served:
+                return False
+            existing = c.execute(
+                "SELECT 1 FROM joke_queue WHERE text_hash = ?", (text_hash,)
+            ).fetchone()
+            if existing:
+                return False
+            c.execute(
+                """
+                INSERT INTO joke_queue (text, kind, source, score, text_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (text, kind, source, score, text_hash, created_at),
+            )
+            return True
+
+    def joke_queue_pop(self, kind: Optional[str] = None) -> Optional[dict]:
+        """Atomically select highest-score row and delete it. None if empty."""
+        with self._lock, self._conn() as c:
+            if kind is None:
+                row = c.execute(
+                    """
+                    SELECT id, text, kind, source, score, text_hash
+                    FROM joke_queue
+                    ORDER BY score DESC, id ASC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            else:
+                row = c.execute(
+                    """
+                    SELECT id, text, kind, source, score, text_hash
+                    FROM joke_queue
+                    WHERE kind = ?
+                    ORDER BY score DESC, id ASC
+                    LIMIT 1
+                    """,
+                    (kind,),
+                ).fetchone()
+            if not row:
+                return None
+            c.execute("DELETE FROM joke_queue WHERE id = ?", (row["id"],))
+            return {
+                "text": row["text"],
+                "kind": row["kind"],
+                "source": row["source"],
+                "score": float(row["score"] if row["score"] is not None else 0.0),
+                "text_hash": row["text_hash"],
+            }
+
+    def joke_all_served_hashes(self) -> set[str]:
+        with self._lock, self._conn() as c:
+            rows = c.execute("SELECT text_hash FROM joke_served").fetchall()
+            return {r["text_hash"] for r in rows}
+
+    def joke_all_served_texts(self) -> list[str]:
+        with self._lock, self._conn() as c:
+            rows = c.execute("SELECT text FROM joke_served").fetchall()
+            return [r["text"] for r in rows]
+
+    def joke_mark_served(
+        self, text_hash: str, text: str, kind: str, served_at: float
+    ) -> None:
+        with self._lock, self._conn() as c:
+            c.execute(
+                """
+                INSERT INTO joke_served (text_hash, text, kind, served_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(text_hash) DO UPDATE SET
+                    text=excluded.text,
+                    kind=excluded.kind,
+                    served_at=excluded.served_at
+                """,
+                (text_hash, text, kind, served_at),
+            )
+
+    def joke_load_daily(self, date: str) -> dict:
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT count, last_spoke_at, last_reject_at FROM joke_daily WHERE date = ?",
+                (date,),
+            ).fetchone()
+        if not row:
+            return {"count": 0, "last_spoke_at": 0.0, "last_reject_at": 0.0}
+        return {
+            "count": int(row["count"] or 0),
+            "last_spoke_at": float(row["last_spoke_at"] or 0.0),
+            "last_reject_at": float(row["last_reject_at"] or 0.0),
+        }
+
+    def joke_commit_spoke(self, date: str, now: float) -> None:
+        with self._lock, self._conn() as c:
+            c.execute(
+                """
+                INSERT INTO joke_daily (date, count, last_spoke_at, last_reject_at)
+                VALUES (?, 1, ?, 0.0)
+                ON CONFLICT(date) DO UPDATE SET
+                    count = joke_daily.count + 1,
+                    last_spoke_at = excluded.last_spoke_at
+                """,
+                (date, now),
+            )
+
+    def joke_mark_reject(self, date: str, now: float) -> None:
+        with self._lock, self._conn() as c:
+            c.execute(
+                """
+                INSERT INTO joke_daily (date, count, last_spoke_at, last_reject_at)
+                VALUES (?, 0, 0.0, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    last_reject_at = excluded.last_reject_at
+                """,
+                (date, now),
+            )
