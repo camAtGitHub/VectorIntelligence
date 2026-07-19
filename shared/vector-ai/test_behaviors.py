@@ -764,4 +764,7 @@ if __name__ == "__main__":
     test_arbiter_deny_does_not_commit_poke()
     test_identity_reject_cooldown_after_stale_cache()
     test_single_pipe_work_tags()
+    # Joke idle FSM (TASK-09) — dedicated module, same check()/temp-file style
+    from test_joke_idle import run_all as run_joke_idle_tests
+    run_joke_idle_tests()
     print("ALL PASS")
