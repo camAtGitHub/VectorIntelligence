@@ -5,8 +5,9 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from .arbiter import SpeechArbiter
-from .config import RuntimeConfig, WorkdayConfig
+from .config import JokeConfig, RuntimeConfig, WorkdayConfig
 from .continuity import ContinuityStore
+from .joke_idle import JokeIdleBehavior, JOKE_IDLE_ID
 from .presence import PresenceCache
 from .types import (
     FaceIdentity,
@@ -25,6 +26,7 @@ class BehaviorRuntime:
         store: ContinuityStore,
         quiet_fn: Optional[Callable[[], bool]] = None,
         voice_ts_fn: Optional[Callable[[], float]] = None,
+        joke_cfg: Optional[JokeConfig] = None,
     ):
         self.runtime_cfg = runtime_cfg
         self.workday_cfg = workday_cfg
@@ -49,6 +51,8 @@ class BehaviorRuntime:
         if "workday" in enabled and workday_cfg.enabled:
             self.workday = WorkDayBehavior(workday_cfg, store)
             self.behaviors.append(self.workday)
+        if JOKE_IDLE_ID in enabled and joke_cfg is not None and joke_cfg.enabled:
+            self.behaviors.append(JokeIdleBehavior(joke_cfg, store))
 
     def ingest_tick_payload(
         self,
