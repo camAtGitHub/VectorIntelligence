@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import List, Optional, Tuple
-from zoneinfo import ZoneInfo
 
 from .config import WorkdayConfig, minutes_since_midnight, parse_hhmm
 from .continuity import ContinuityStore, WorkdayRecord
@@ -555,7 +554,7 @@ class WorkDayBehavior:
                 self.store.save_workday(rec)
 
 
-def pause_until_ts(local_dt: datetime, until_hhmm: str, tz: ZoneInfo) -> float:
+def pause_until_ts(local_dt: datetime, until_hhmm: str, tz: tzinfo) -> float:
     """Convert HH:MM on the same local day (or next if already past) to epoch.
 
     Raises ValueError on invalid times.

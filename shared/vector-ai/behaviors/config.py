@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, tzinfo
 from typing import Mapping, Optional
 from zoneinfo import ZoneInfo
 
 _log = logging.getLogger("behaviors.config")
+
+
+def _ts_print(msg: str) -> None:
+    """Stdout line with timestamp (this module's print is not service.print)."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{ts} {msg}", flush=True)
 
 
 def parse_hhmm(s: str) -> tuple[int, int]:
@@ -17,6 +24,29 @@ def parse_hhmm(s: str) -> tuple[int, int]:
     if not (0 <= h <= 23 and 0 <= m <= 59):
         raise ValueError(f"invalid time {s!r}")
     return h, m
+
+
+def resolve_tz(name: str) -> tzinfo:
+    """Resolve an IANA tz name. On Windows, ZoneInfo needs the tzdata package."""
+    key = (name or "UTC").strip() or "UTC"
+    try:
+        return ZoneInfo(key)
+    except Exception as e:
+        # Windows ships no system tzdb; without pip install tzdata, even "UTC" fails.
+        if key.upper() in ("UTC", "GMT", "ETC/UTC"):
+            _log.warning(
+                "zoneinfo %r unavailable (%s); using datetime.timezone.utc. "
+                "On Windows install the tzdata package: pip install tzdata",
+                key,
+                e,
+            )
+            return timezone.utc
+        _log.warning("invalid WORKDAY_TZ/TZ %r (%s); falling back to UTC", key, e)
+        return resolve_tz("UTC")
+
+
+def _default_tz() -> tzinfo:
+    return resolve_tz("UTC")
 
 
 def _truthy(v: Optional[str]) -> bool:
@@ -55,7 +85,9 @@ class RuntimeConfig:
 @dataclass(frozen=True)
 class WorkdayConfig:
     enabled: bool = False
-    tz: ZoneInfo = ZoneInfo("UTC")
+    # default_factory: do not call ZoneInfo at class-definition time (Windows
+    # without tzdata raises ZoneInfoNotFoundError and kills import of vector-ai).
+    tz: tzinfo = field(default_factory=_default_tz)
     start_begin: tuple[int, int] = (9, 0)
     start_end: tuple[int, int] = (10, 30)
     away_window_begin: tuple[int, int] = (9, 30)
@@ -92,11 +124,7 @@ def load_workday_config(env: Optional[Mapping[str, str]] = None) -> WorkdayConfi
     env = env if env is not None else os.environ
     try:
         tz_name = (env.get("WORKDAY_TZ") or env.get("TZ") or "UTC").strip()
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            _log.warning("invalid WORKDAY_TZ/TZ %r; using UTC", tz_name)
-            tz = ZoneInfo("UTC")
+        tz = resolve_tz(tz_name)
         return WorkdayConfig(
             enabled=_truthy(env.get("WORKDAY_ENABLED")),
             tz=tz,
@@ -114,7 +142,7 @@ def load_workday_config(env: Optional[Mapping[str, str]] = None) -> WorkdayConfi
     except Exception as e:
         # Never crash vector-ai import on bad env — chat must still work.
         _log.error("load_workday_config failed (%s); Work Day disabled with defaults", e)
-        print(f"[behaviors] WORKDAY config error ({e}); disabled with defaults")
+        _ts_print(f"[behaviors] WORKDAY config error ({e}); disabled with defaults")
         return WorkdayConfig(enabled=False)
 
 

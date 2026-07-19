@@ -39,6 +39,8 @@ sys.stderr.reconfigure(line_buffering=True)
 
 # Timestamp every log line written to stdout/stderr (vector-ai.log via supervisor).
 _orig_print = print
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+_LOG_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 def print(*args, sep=" ", end="\n", file=None, flush=True):  # noqa: A001 - intentional wrap
@@ -48,7 +50,7 @@ def print(*args, sep=" ", end="\n", file=None, flush=True):  # noqa: A001 - inte
     if dest not in (sys.stdout, sys.stderr, None):
         _orig_print(*args, sep=sep, end=end, file=file, flush=flush)
         return
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now().strftime(_LOG_DATEFMT)
     if not args:
         _orig_print(end=end, file=dest, flush=True)
         return
@@ -59,6 +61,18 @@ def print(*args, sep=" ", end="\n", file=None, flush=True):  # noqa: A001 - inte
     else:
         _orig_print(f"{ts} {msg}", end=end, file=dest, flush=True)
 
+
+def _apply_log_timestamps() -> None:
+    """Stamp stdlib logging (uvicorn, behaviors.*) the same way as print().
+
+    Only reformats existing handlers so we do not double-emit uvicorn lines.
+    """
+    formatter = logging.Formatter(_LOG_FMT, datefmt=_LOG_DATEFMT)
+    names = ("", "uvicorn", "uvicorn.error", "uvicorn.access", "behaviors", "behaviors.config")
+    for name in names:
+        lg = logging.getLogger(name) if name else logging.getLogger()
+        for h in lg.handlers:
+            h.setFormatter(formatter)
 
 # Load vector-ai/.env next to this file (works even when cwd is elsewhere).
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -83,6 +97,8 @@ class _SkipHealthAccessLog(logging.Filter):
 
 @app.on_event("startup")
 async def _configure_access_log() -> None:
+    # Uvicorn may rebind handlers after import; re-apply timestamps.
+    _apply_log_timestamps()
     logging.getLogger("uvicorn.access").addFilter(_SkipHealthAccessLog())
     if DEBUG:
         print(

@@ -442,6 +442,10 @@ New-Item -ItemType Directory -Force $VectorAIDir | Out-Null
 Copy-Item "$SharedDir\vector-ai\service.py"       (Join-Path $VectorAIDir "service.py")       -Force
 Copy-Item "$SharedDir\vector-ai\memory.py"        (Join-Path $VectorAIDir "memory.py")        -Force
 Copy-Item "$SharedDir\vector-ai\requirements.txt" (Join-Path $VectorAIDir "requirements.txt") -Force
+# Work Day / behavior FSMs (required by service.py import).
+if (Test-Path "$SharedDir\vector-ai\behaviors") {
+    Copy-Item "$SharedDir\vector-ai\behaviors" (Join-Path $VectorAIDir "behaviors") -Recurse -Force
+}
 # persona.txt holds Vector's editable personality - copy only if absent so a
 # re-run never clobbers a customized character.
 if (-not (Test-Path (Join-Path $VectorAIDir "persona.txt"))) {
@@ -489,7 +493,8 @@ if ($LASTEXITCODE -ne 0) { Fail "pip failed to install vector-ai dependencies (s
 # Verify the critical runtime deps actually landed. A partial pip install
 # otherwise leaves vector-ai crash-looping on "No module named uvicorn",
 # which the supervisor papers over as an endless "vector-ai unhealthy" loop.
-& $VenvPy -c "import uvicorn, fastapi, httpx, zeroconf, dotenv, pydantic"
+# zoneinfo("UTC") needs tzdata on Windows — fail install if missing.
+& $VenvPy -c "import uvicorn, fastapi, httpx, zeroconf, dotenv, pydantic, tzdata; from zoneinfo import ZoneInfo; ZoneInfo('UTC')"
 if ($LASTEXITCODE -ne 0) { Fail "vector-ai dependencies are incomplete (import check failed). Run: & '$VenvPy' -m pip install -r '$ReqFile'" }
 Info "vector-ai ready."
 

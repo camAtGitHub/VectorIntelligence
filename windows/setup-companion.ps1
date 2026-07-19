@@ -109,6 +109,10 @@ New-Item -ItemType Directory -Force $VectorAIDir | Out-Null
 Copy-Item "$SharedDir\vector-ai\service.py"       (Join-Path $VectorAIDir "service.py")       -Force
 Copy-Item "$SharedDir\vector-ai\memory.py"        (Join-Path $VectorAIDir "memory.py")        -Force
 Copy-Item "$SharedDir\vector-ai\requirements.txt" (Join-Path $VectorAIDir "requirements.txt") -Force
+# Work Day / behavior FSMs (required by service.py import).
+if (Test-Path "$SharedDir\vector-ai\behaviors") {
+    Copy-Item "$SharedDir\vector-ai\behaviors" (Join-Path $VectorAIDir "behaviors") -Recurse -Force
+}
 if (-not (Test-Path (Join-Path $VectorAIDir "persona.txt"))) {
     Copy-Item "$SharedDir\vector-ai\persona.txt" (Join-Path $VectorAIDir "persona.txt") -Force
     Info "persona.txt installed - edit for personality."
@@ -151,7 +155,8 @@ Info "Installing Python deps..."
 & $VenvPy -m pip install --upgrade pip --quiet
 & $VenvPy -m pip install -r (Join-Path $VectorAIDir "requirements.txt")
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed" }
-& $VenvPy -c "import uvicorn, fastapi, httpx, zeroconf, dotenv, pydantic"
+# zoneinfo("UTC") needs tzdata on Windows — fail setup if missing.
+& $VenvPy -c "import uvicorn, fastapi, httpx, zeroconf, dotenv, pydantic, tzdata; from zoneinfo import ZoneInfo; ZoneInfo('UTC')"
 if ($LASTEXITCODE -ne 0) { Fail "import check failed" }
 Info "vector-ai ready."
 

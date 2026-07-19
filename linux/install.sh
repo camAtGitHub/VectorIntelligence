@@ -246,6 +246,11 @@ mkdir -p "$HOME/vector-pod"
 cp "$SHARED_DIR/vector-ai/service.py"       "$VECTORAI_DIR/service.py"
 cp "$SHARED_DIR/vector-ai/memory.py"        "$VECTORAI_DIR/memory.py"
 cp "$SHARED_DIR/vector-ai/requirements.txt" "$VECTORAI_DIR/requirements.txt"
+# Work Day / behavior FSMs (required by service.py import).
+if [ -d "$SHARED_DIR/vector-ai/behaviors" ]; then
+    rm -rf "$VECTORAI_DIR/behaviors"
+    cp -a "$SHARED_DIR/vector-ai/behaviors" "$VECTORAI_DIR/behaviors"
+fi
 cp "$SHARED_DIR/supervisor.py"              "$HOME/vector-pod/supervisor.py"
 
 # pod.conf - single source of truth for the web UI port (WEB_PORT) and
@@ -286,7 +291,7 @@ python3 -m venv "$VECTORAI_DIR/venv"
 # crash-loops on "No module named uvicorn" and the supervisor just keeps
 # restarting it. (set -e aborts on a failed pip, but not on pip exit 0 +
 # a broken import, so check explicitly.)
-"$VECTORAI_DIR/venv/bin/python" -c "import uvicorn, fastapi, httpx, zeroconf, dotenv, pydantic"
+"$VECTORAI_DIR/venv/bin/python" -c "import uvicorn, fastapi, httpx, zeroconf, dotenv, pydantic, tzdata; from zoneinfo import ZoneInfo; ZoneInfo('UTC')"
 info "Python service ready."
 
 # -- 6. Systemd service - one supervisor unit ---------------------------------
