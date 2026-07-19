@@ -1,16 +1,30 @@
-"""Joke idle sourcing — serve side + pure prompt/JSON helpers.
+"""Joke idle sourcing — serve side + pure prompt/JSON helpers + async refill.
 
 Serve (`pop_line`) is synchronous and pure SQLite: no network, no LLM.
-Refill pipeline (async LLM loop) is added in TASK-05; do not import service here.
+Refill (`refill_joke_queue` / `_joke_refill_loop`) runs off the tick path only.
+Do not top-level import service (import cycles); inject llm_chat_once or lazy-import.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
+import os
 import random
 import re
 import time
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Optional
+
+_log = logging.getLogger("behaviors.joke_sources")
+
+# Per-refill generation bound — avoid runaway API spend if critic rejects everything.
+_MAX_GEN_BATCHES = 12
+_GEN_BATCH_SIZE = 6
+
+# Injectable LLM callable: async def fake(messages, *, model=None, temperature=1.0, **kw) -> str
+LlmChatOnce = Callable[..., Awaitable[str]]
 
 # Concrete noun seeds for generation prompts (rotating pool).
 _SEED_NOUNS: tuple[str, ...] = (
@@ -291,3 +305,311 @@ def random_seeds(n: int) -> list[str]:
         # With replacement only if asked for more than the pool.
         return [random.choice(_SEED_NOUNS) for _ in range(n)]
     return random.sample(list(_SEED_NOUNS), n)
+
+
+def _tokens(text: str) -> set[str]:
+    """Lowercase alphanumeric tokens for lexical novelty."""
+    return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def novelty(text: str, served_texts: list[str]) -> float:
+    """Return 0..1, higher = more novel.
+
+    Approach used: LEXICAL token Jaccard (A5 fallback — no embeddings in codebase).
+    novelty = 1 - max_jaccard(tokens(text), tokens(served_i)) over served_texts.
+    Empty served_texts → 1.0.
+    """
+    if not served_texts:
+        return 1.0
+    tokens = _tokens(text)
+    if not tokens:
+        # Empty/non-token text: treat as maximally similar to nothing useful → low novelty
+        # but still defined; against empty served we already returned 1.0.
+        return 0.0
+    max_j = 0.0
+    for s in served_texts:
+        st = _tokens(s)
+        if not st:
+            continue
+        inter = len(tokens & st)
+        union = len(tokens | st)
+        if union > 0:
+            j = inter / union
+            if j > max_j:
+                max_j = j
+    return 1.0 - max_j
+
+
+def _resolve_seed_path(seed_file: str) -> str:
+    """Absolute path, or relative to this module directory (behaviors/)."""
+    if not seed_file:
+        seed_file = "joke_seeds.txt"
+    if os.path.isabs(seed_file):
+        return seed_file
+    return str(Path(__file__).resolve().parent / seed_file)
+
+
+def _resolve_llm(llm_chat_once: Optional[LlmChatOnce]) -> Optional[LlmChatOnce]:
+    """Prefer injected callable; else lazy-import service.llm_chat_once (no top-level import)."""
+    if llm_chat_once is not None:
+        return llm_chat_once
+    try:
+        # Lazy import: service is heavy and would create a cycle if imported at module load.
+        from service import llm_chat_once as _llm  # type: ignore
+
+        return _llm
+    except Exception as e:
+        _log.warning("joke refill: llm_chat_once unavailable (%s); curated-only fill", e)
+        return None
+
+
+def _push_if_novel(
+    store: Any,
+    text: str,
+    kind: str,
+    source: str,
+    score: float,
+    served_texts: list[str],
+    novelty_min: float,
+    now: float,
+) -> bool:
+    """Hash-dedupe via store push; drop low-novelty. Returns True if banked."""
+    text = (text or "").strip()
+    kind = (kind or "").strip().lower()
+    if not text or kind not in _ALLOWED_KINDS:
+        return False
+    if novelty(text, served_texts) < novelty_min:
+        return False
+    h = joke_hash(text)
+    return bool(store.joke_queue_push(text, kind, source, float(score), h, now))
+
+
+def _fill_curated(
+    store: Any,
+    curated: list[dict],
+    *,
+    target: int,
+    limit: int,
+    served_texts: list[str],
+    novelty_min: float,
+    now: float,
+) -> int:
+    """Push up to `limit` curated lines while queue_len < target. Returns count added."""
+    if limit <= 0:
+        return 0
+    added = 0
+    for item in curated:
+        if added >= limit:
+            break
+        if store.joke_queue_len() >= target:
+            break
+        text = item.get("text") or ""
+        kind = item.get("kind") or "joke"
+        if _push_if_novel(
+            store, text, kind, "curated", 1.0, served_texts, novelty_min, now
+        ):
+            added += 1
+    return added
+
+
+async def _generate_batch(
+    store: Any,
+    cfg: Any,
+    llm: LlmChatOnce,
+    *,
+    target: int,
+    served_texts: list[str],
+    now: float,
+) -> tuple[int, bool]:
+    """One generate→critic→filter→push cycle.
+
+    Returns (lines_added, hard_fail). hard_fail=True means the LLM raised;
+    caller should stop generation and fall back to curated. Never raises.
+    """
+    if store.joke_queue_len() >= target:
+        return 0, False
+
+    q_ratio = float(getattr(cfg, "question_ratio", 0.6))
+    want_questions = max(0, int(round(_GEN_BATCH_SIZE * q_ratio)))
+    want_jokes = max(0, _GEN_BATCH_SIZE - want_questions)
+    if want_jokes == 0 and want_questions == 0:
+        want_jokes, want_questions = 3, 3
+
+    gen_model = (getattr(cfg, "generate_model", None) or "") or None
+    critic_model = (getattr(cfg, "critic_model", None) or "") or None
+    min_score = float(getattr(cfg, "min_score", 0.55))
+    novelty_min = float(getattr(cfg, "novelty_min", 0.4))
+
+    try:
+        seeds = random_seeds(4)
+        messages = build_generate_messages(seeds, want_jokes, want_questions)
+        raw = await llm(
+            messages, model=gen_model, temperature=1.0, tag="joke_gen"
+        )
+        cands = parse_json_array(raw if isinstance(raw, str) else "")
+        if not cands:
+            return 0, False
+
+        # Ensure stable ids for critic matching (position if missing).
+        for i, c in enumerate(cands):
+            if "id" not in c:
+                c["id"] = i
+
+        scored_raw = await llm(
+            build_critic_messages(cands),
+            model=critic_model,
+            temperature=0.2,
+            tag="joke_critic",
+        )
+        verdicts = parse_json_array(scored_raw if isinstance(scored_raw, str) else "")
+        by_id: dict[Any, dict] = {}
+        for v in verdicts:
+            if "id" in v:
+                by_id[v["id"]] = v
+
+        added = 0
+        for c in cands:
+            if store.joke_queue_len() >= target:
+                break
+            cid = c.get("id")
+            v = by_id.get(cid)
+            if v is None:
+                continue
+            try:
+                score = float(v.get("score", 0.0))
+            except (TypeError, ValueError):
+                continue
+            seen = v.get("seen_before", False)
+            if seen is True or (
+                isinstance(seen, str) and seen.strip().lower() in ("true", "1", "yes")
+            ):
+                continue
+            if score < min_score:
+                continue
+            text = c.get("text") or ""
+            kind = (c.get("kind") or "joke").strip().lower()
+            if _push_if_novel(
+                store, text, kind, "generated", score, served_texts, novelty_min, now
+            ):
+                added += 1
+        return added, False
+    except Exception as e:
+        _log.warning("joke gen batch failed: %s", e)
+        return 0, True
+
+
+async def refill_joke_queue(
+    store: Any,
+    cfg: Any,
+    llm_chat_once: Optional[LlmChatOnce] = None,
+) -> int:
+    """Top queue to cfg.queue_target ONLY when joke_queue_len() <= cfg.refill_low_watermark.
+
+    Else return 0 with NO LLM calls.
+    Mix ~cfg.curated_ratio from curated, remainder from LLM.
+    LLM-down invariant: curated may fill 100% if generation fails — fill curated FIRST
+    (then always attempt curated top-up after generation).
+    Returns number of lines added. Never raise out for a single bad batch.
+    Max generation batches e.g. 12 per refill.
+    """
+    try:
+        current = int(store.joke_queue_len())
+        watermark = int(getattr(cfg, "refill_low_watermark", 30))
+        target = int(getattr(cfg, "queue_target", 50))
+        if current > watermark:
+            return 0
+        need = target - current
+        if need <= 0:
+            return 0
+
+        curated_ratio = float(getattr(cfg, "curated_ratio", 0.5))
+        curated_ratio = max(0.0, min(1.0, curated_ratio))
+        novelty_min = float(getattr(cfg, "novelty_min", 0.4))
+        now = time.time()
+
+        served_texts = list(store.joke_all_served_texts() or [])
+        seed_path = _resolve_seed_path(str(getattr(cfg, "seed_file", "joke_seeds.txt")))
+        curated = load_curated(seed_path)
+        random.shuffle(curated)
+
+        # Preference quota for curated; remainder preferred for generation.
+        curated_quota = int(round(need * curated_ratio))
+        # Always leave room for at least some curated attempt when need > 0 and ratio > 0.
+        if curated_ratio > 0 and need > 0 and curated_quota == 0:
+            curated_quota = 1
+        if curated_ratio < 1.0 and need > 1 and curated_quota >= need:
+            curated_quota = need - 1
+
+        added = 0
+
+        # 1) Curated FIRST (LLM-down invariant — partial fill even if gen never runs).
+        added += _fill_curated(
+            store,
+            curated,
+            target=target,
+            limit=curated_quota,
+            served_texts=served_texts,
+            novelty_min=novelty_min,
+            now=now,
+        )
+
+        # 2) Generated remainder (bounded batches).
+        remaining = target - store.joke_queue_len()
+        if remaining > 0:
+            llm = _resolve_llm(llm_chat_once)
+            if llm is not None:
+                for _ in range(_MAX_GEN_BATCHES):
+                    if store.joke_queue_len() >= target:
+                        break
+                    n, hard_fail = await _generate_batch(
+                        store,
+                        cfg,
+                        llm,
+                        target=target,
+                        served_texts=served_texts,
+                        now=now,
+                    )
+                    added += n
+                    # LLM raised: stop generation; curated top-up fills the rest.
+                    if hard_fail:
+                        break
+                    # Soft empty (garbage / all rejected): keep trying up to cap
+                    # with fresh seeds.
+
+        # 3) Curated top-up to target (100% curated allowed when gen failed/short).
+        remaining = target - store.joke_queue_len()
+        if remaining > 0:
+            added += _fill_curated(
+                store,
+                curated,
+                target=target,
+                limit=remaining,
+                served_texts=served_texts,
+                novelty_min=novelty_min,
+                now=now,
+            )
+
+        return added
+    except Exception as e:
+        _log.exception("refill_joke_queue failed: %s", e)
+        return 0
+
+
+async def _joke_refill_loop(store: Any, cfg: Any) -> None:
+    """await asyncio.sleep(90) settle, then loop:
+       try: await refill_joke_queue(store, cfg)
+       except Exception: log, continue
+       await asyncio.sleep(cfg.refill_interval_s)
+    """
+    await asyncio.sleep(90)
+    while True:
+        try:
+            n = await refill_joke_queue(store, cfg)
+            if n:
+                _log.info("joke refill banked %s line(s); queue=%s", n, store.joke_queue_len())
+        except Exception:
+            _log.exception("joke refill loop iteration failed")
+        interval = int(getattr(cfg, "refill_interval_s", 43200) or 43200)
+        if interval < 1:
+            interval = 1
+        await asyncio.sleep(interval)
