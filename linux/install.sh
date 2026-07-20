@@ -183,6 +183,7 @@ sudo python3 "$SHARED_DIR/patches/add-speech-volume-bump.py" "$WIREPOD_DIR"
 # but never closes it, so every voice query leaks one until the robot's SDK
 # wedges. Pull the pinned SDK commit into chipper/third_party, patch in a
 # Close() method, and point chipper's go.mod at the local copy.
+# Required by chipper robotsession (Session.Close); third_party SDK is mandatory.
 info "Installing patched vector-go-sdk (adds Close() to stop the leak)..."
 SDK_DIR="$WIREPOD_DIR/chipper/third_party/vector-go-sdk"
 if [ ! -f "$SDK_DIR/go.mod" ]; then
@@ -194,6 +195,7 @@ if [ ! -f "$SDK_DIR/go.mod" ]; then
     rm -rf "$SDK_DIR/.git"
 fi
 # add-sdk-close.py is idempotent - safe to run on every install.
+# robotsession relies on this Close(); do not skip even if third_party already exists.
 sudo python3 "$SHARED_DIR/patches/add-sdk-close.py" "$SDK_DIR/pkg/vector/vector.go"
 CHIPPER_GOMOD="$WIREPOD_DIR/chipper/go.mod"
 if ! grep -q 'replace github.com/fforchino/vector-go-sdk' "$CHIPPER_GOMOD"; then

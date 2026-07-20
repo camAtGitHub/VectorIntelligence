@@ -384,7 +384,14 @@ as invalid.
 
 - Live under `shared/patches/*.py` — they **mutate cloned Wire-Pod source** at full install.
 - Prefer thin body loops: report sensors, speak lines, close SDK connections.
-- Always `Close()` robot connections; no continuous face streams for occupancy.
+- **Robot I/O via `robotsession`:** chipper owns one durable session per ESN
+  (`pkg/wirepod/robotsession`). Do **not** call `vector.New` in new chipper code;
+  obtain a session from `robotsession.Default` and use `WithControl` / `Unary` /
+  `Say` / `SubscribeState`. **`Close` is session-owned** — callers must never
+  `Close` a shared client from Get/GetRobot (that tears down voice + sensor
+  streams for everyone). Full install still applies `add-sdk-close.py` so the
+  third_party SDK exposes `Close()` for the session package.
+- No continuous face streams for occupancy (short probes only).
 - Companion mode never applies these patches — design features accordingly.
 
 ### Scripts (PowerShell / bash)
