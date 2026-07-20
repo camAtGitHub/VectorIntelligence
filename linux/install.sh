@@ -127,15 +127,19 @@ fi
 info "Expanding Wire-Pod animation vocabulary..."
 sudo python3 "$SHARED_DIR/patches/expand-animations.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/kgsim_cmds.go"
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 info "Adding wake-word interrupt grace period..."
 sudo python3 "$SHARED_DIR/patches/wake-word-grace-period.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/kgsim_interrupt.go"
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 info "Making the back button interrupt Vector's speech..."
 sudo python3 "$SHARED_DIR/patches/add-button-interrupt.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/kgsim_interrupt.go"
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 info "Muting wake-word interrupts during getImage (prevents shutter-sound self-interrupt)..."
 sudo python3 "$SHARED_DIR/patches/wake-word-mute-during-getimage.py" "$WIREPOD_DIR"
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 info "Adding on-demand face detection (per-interaction only, never a 24/7 firehose)..."
 sudo python3 "$SHARED_DIR/patches/add-ondemand-face.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/kgsim_interrupt.go"
 

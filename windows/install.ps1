@@ -223,15 +223,19 @@ if ($newVad -ne $vadSrc) {
 Info "Expanding animation vocabulary..."
 Patch "$SharedDir\patches\expand-animations.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\kgsim_cmds.go")
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 Info "Adding wake-word interrupt grace period..."
 Patch "$SharedDir\patches\wake-word-grace-period.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\kgsim_interrupt.go")
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 Info "Making the back button interrupt Vector's speech..."
 Patch "$SharedDir\patches\add-button-interrupt.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\kgsim_interrupt.go")
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 Info "Muting wake-word interrupts during getImage (stops Vector's own shutter sound self-interrupting)..."
 Patch "$SharedDir\patches\wake-word-mute-during-getimage.py" $WirePodDir
 
+# Session interrupter: patches must exit 0 / idempotent after robotsession port.
 Info "Adding on-demand face detection (per-interaction only, never a 24/7 firehose)..."
 Patch "$SharedDir\patches\add-ondemand-face.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\kgsim_interrupt.go")
 

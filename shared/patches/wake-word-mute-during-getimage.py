@@ -11,21 +11,38 @@ aborts the LLM response before Vector ever speaks it. This patch:
 3. The wake-word interrupt loop skips events when time.Now() is before
    WakeWordMutedUntil
 
+On robotsession builds, mute is implemented in-tree (atomic deadline;
+sentinel substring WakeWordMutedUntil remains for detection).
+
+Exit policy (max of both halves):
+  0 — sentinel present, inject applied, or robotsession interrupt without
+      legacy anchor (in-tree port expected)
+  1 — missing files or unrecognized stock without injectable anchors
+  2 — usage error
+
 Idempotent.
 """
 import re
 import sys
 from pathlib import Path
 
-CMDS_RELATIVE     = Path("chipper/pkg/wirepod/ttr/kgsim_cmds.go")
-INTERRUPT_RELATIVE= Path("chipper/pkg/wirepod/ttr/kgsim_interrupt.go")
+CMDS_RELATIVE = Path("chipper/pkg/wirepod/ttr/kgsim_cmds.go")
+INTERRUPT_RELATIVE = Path("chipper/pkg/wirepod/ttr/kgsim_interrupt.go")
+SENTINEL = "WakeWordMutedUntil"
 
 
-def patch_cmds(path: Path) -> bool:
+def is_session_tree(src: str) -> bool:
+    return "SubscribeState" in src or "robotsession" in src
+
+
+def patch_cmds(path: Path) -> int:
+    if not path.is_file():
+        print(f"[mute-on-getimage] ERROR: cmds not found: {path}", file=sys.stderr)
+        return 1
     src = path.read_text(encoding="utf-8")
-    if "WakeWordMutedUntil" in src:
+    if SENTINEL in src:
         print(f"[mute-on-getimage] {path.name} already patched.")
-        return False
+        return 0
 
     # Add the package-level variable after the imports block.
     # NOTE: stick to ASCII - Python's default file encoding on Windows is
@@ -38,43 +55,51 @@ def patch_cmds(path: Path) -> bool:
         "// self-interrupting the response during getImage.\n"
         "var WakeWordMutedUntil time.Time\n"
     )
-    # Insert AFTER the imports closing ')' but BEFORE the `const (` block.
-    # The capture group splits on the ')' so we can put the var block in
-    # the right place.
     new_src, n = re.subn(
         r"(\)\n)(\nconst \(\n\t// arg: text to say)",
         r"\g<1>" + var_block + r"\g<2>",
-        src, count=1,
+        src,
+        count=1,
     )
     if n != 1:
-        print(f"[mute-on-getimage] anchor not found in {path}", file=sys.stderr)
-        sys.exit(1)
+        print(
+            f"[mute-on-getimage] ERROR: cmds var anchor not found in {path}",
+            file=sys.stderr,
+        )
+        return 1
 
-    # Set the mute window when DoGetImage starts.
     mute_set = (
-        '\tWakeWordMutedUntil = time.Now().Add(6 * time.Second)\n'
+        "\tWakeWordMutedUntil = time.Now().Add(6 * time.Second)\n"
         '\tlogger.Println("Muting wake-word interrupts for ~6s (getImage)")\n'
     )
     new_src, n = re.subn(
         r"func DoGetImage\(msgs \[\]openai\.ChatCompletionMessage, param string, robot \*vector\.Vector, stopStop chan bool\) \{\n",
         r"\g<0>" + mute_set,
-        new_src, count=1,
+        new_src,
+        count=1,
     )
     if n != 1:
-        print(f"[mute-on-getimage] DoGetImage anchor not found", file=sys.stderr)
-        sys.exit(1)
+        print(
+            "[mute-on-getimage] ERROR: DoGetImage anchor not found",
+            file=sys.stderr,
+        )
+        return 1
 
-    path.write_text(new_src, encoding="utf-8", newline="")
+    path.write_text(new_src, encoding="utf-8", newline="\n")
     print(f"[mute-on-getimage] {path.name} patched.")
-    return True
+    return 0
 
 
-def patch_interrupt(path: Path) -> bool:
+def patch_interrupt(path: Path) -> int:
+    if not path.is_file():
+        print(f"[mute-on-getimage] ERROR: interrupt not found: {path}", file=sys.stderr)
+        return 1
     src = path.read_text(encoding="utf-8")
-    if "WakeWordMutedUntil" in src:
+    if SENTINEL in src:
         print(f"[mute-on-getimage] {path.name} already patched.")
-        return False
+        return 0
 
+    # Legacy path: inject mute check after grace block (pre-robotsession).
     OLD = """\t\t\tcase *vectorpb.Event_WakeWord:
 \t\t\t\tif time.Since(startTime) < wakeWordGrace {
 \t\t\t\t\tlogger.Println(\"Ignoring wake-word during grace period\")
@@ -95,19 +120,33 @@ def patch_interrupt(path: Path) -> bool:
 \t\t\t\tlogger.Println(\"Interrupting LLM response (source: wake word)\")
 \t\t\t\tstopResponse = true"""
 
-    if OLD not in src:
-        print(f"[mute-on-getimage] anchor not found in {path}", file=sys.stderr)
-        sys.exit(1)
-    src = src.replace(OLD, NEW)
-    path.write_text(src, encoding="utf-8", newline="")
-    print(f"[mute-on-getimage] {path.name} patched.")
-    return True
+    if OLD in src:
+        src = src.replace(OLD, NEW, 1)
+        path.write_text(src, encoding="utf-8", newline="\n")
+        print(f"[mute-on-getimage] {path.name} patched.")
+        return 0
+
+    if is_session_tree(src):
+        print(
+            f"[mute-on-getimage] WARN: {path.name}: robotsession interrupter without "
+            f"{SENTINEL}; requires in-tree port. Skipping (exit 0)."
+        )
+        return 0
+
+    print(
+        f"[mute-on-getimage] ERROR: {path.name}: interrupt anchor not found "
+        f"on non-session tree; refusing silent feature drop.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <path>", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <wire-pod-root>", file=sys.stderr)
         sys.exit(2)
     wirepod_root = Path(sys.argv[1])
-    patch_cmds(wirepod_root / CMDS_RELATIVE)
-    patch_interrupt(wirepod_root / INTERRUPT_RELATIVE)
+    rc = 0
+    rc = max(rc, patch_cmds(wirepod_root / CMDS_RELATIVE))
+    rc = max(rc, patch_interrupt(wirepod_root / INTERRUPT_RELATIVE))
+    sys.exit(rc)
