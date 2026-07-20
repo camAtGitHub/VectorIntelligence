@@ -260,11 +260,25 @@ mkdir -p "$HOME/vector-pod"
 cp "$SHARED_DIR/vector-ai/service.py"       "$VECTORAI_DIR/service.py"
 cp "$SHARED_DIR/vector-ai/memory.py"        "$VECTORAI_DIR/memory.py"
 cp "$SHARED_DIR/vector-ai/requirements.txt" "$VECTORAI_DIR/requirements.txt"
+# Modular service helpers (split from service.py; required at import).
+for _va_mod in paths.py logging_util.py debug_log.py llm.py persona.py \
+               process_state.py deps.py vision.py prompt_assembly.py \
+               response_cleanup.py chat_flow.py; do
+    if [ -f "$SHARED_DIR/vector-ai/$_va_mod" ]; then
+        cp "$SHARED_DIR/vector-ai/$_va_mod" "$VECTORAI_DIR/$_va_mod"
+    fi
+done
 # Work Day / behavior FSMs (required by service.py import).
 if [ -d "$SHARED_DIR/vector-ai/behaviors" ]; then
     rm -rf "$VECTORAI_DIR/behaviors"
     cp -a "$SHARED_DIR/vector-ai/behaviors" "$VECTORAI_DIR/behaviors"
 fi
+# HTTP route package (FastAPI APIRouters).
+if [ -d "$SHARED_DIR/vector-ai/routes" ]; then
+    rm -rf "$VECTORAI_DIR/routes"
+    cp -a "$SHARED_DIR/vector-ai/routes" "$VECTORAI_DIR/routes"
+fi
+
 cp "$SHARED_DIR/supervisor.py"              "$HOME/vector-pod/supervisor.py"
 
 # pod.conf - single source of truth for the web UI port (WEB_PORT) and

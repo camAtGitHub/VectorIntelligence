@@ -147,13 +147,26 @@ to “make room”; coordinate via quiet / voice / speech gap. See
 windows/                 setup-companion, install, start/stop, apply-config
 linux/                   install + start/stop + apply-config
 shared/
-  vector-ai/             FastAPI brain
-    service.py           HTTP surface, chat proxy, ambient/sensor/behavior hooks
+  vector-ai/             FastAPI brain (uvicorn service:app)
+    service.py           Composition root only: deps, startup loops, register_routes
+    paths.py             ROOT install dir (memory.db / persona.txt / debug log)
+    logging_util.py      Timestamped print + access-log filter
+    debug_log.py         DEBUG flag, redaction, debug()
+    llm.py               OpenRouter/OpenAI-compatible transport + llm_chat_once
+    persona.py           persona.txt load
+    process_state.py     Face / ambient quiet / mood / voice / filler state
+    deps.py              MEMORY / BEHAVIOR_RUNTIME singletons (set by service)
+    vision.py            Vision-intent regex + getImage payload
+    prompt_assembly.py   prepare_messages + memory/context sections
+    response_cleanup.py  strip_markdown, remember/forget/work tags
+    chat_flow.py         generate() SSE stream + fillers + convo summary
+    routes/              Thin FastAPI APIRouters (chat, ambient, sensor, …)
     memory.py            SQLite memories, face_meta, observations, mood state
     persona.txt          Personality prose (not commands, not API keys)
     env-default          Template for runtime .env
     requirements.txt
     test_behaviors.py    Behavior/Work Day unit tests (no robot)
+    test_service_modules.py  Import/route/pure-helper smoke tests
     behaviors/
       types.py           Protocols + PresenceSnapshot / TickResult / SpeechRequest
       runtime.py         Registration, tick orchestration, clock_tick

@@ -446,10 +446,29 @@ New-Item -ItemType Directory -Force $VectorAIDir | Out-Null
 Copy-Item "$SharedDir\vector-ai\service.py"       (Join-Path $VectorAIDir "service.py")       -Force
 Copy-Item "$SharedDir\vector-ai\memory.py"        (Join-Path $VectorAIDir "memory.py")        -Force
 Copy-Item "$SharedDir\vector-ai\requirements.txt" (Join-Path $VectorAIDir "requirements.txt") -Force
+# Modular service helpers (split from service.py; required at import).
+$VectorAiModules = @(
+    "paths.py", "logging_util.py", "debug_log.py", "llm.py", "persona.py",
+    "process_state.py", "deps.py", "vision.py", "prompt_assembly.py",
+    "response_cleanup.py", "chat_flow.py"
+)
+foreach ($mod in $VectorAiModules) {
+    $src = Join-Path $SharedDir "vector-ai\$mod"
+    if (Test-Path $src) {
+        Copy-Item $src (Join-Path $VectorAIDir $mod) -Force
+    }
+}
 # Work Day / behavior FSMs (required by service.py import).
 if (Test-Path "$SharedDir\vector-ai\behaviors") {
     Copy-Item "$SharedDir\vector-ai\behaviors" (Join-Path $VectorAIDir "behaviors") -Recurse -Force
 }
+# HTTP route package (FastAPI APIRouters).
+if (Test-Path "$SharedDir\vector-ai\routes") {
+    $routesDest = Join-Path $VectorAIDir "routes"
+    if (Test-Path $routesDest) { Remove-Item $routesDest -Recurse -Force }
+    Copy-Item "$SharedDir\vector-ai\routes" $routesDest -Recurse -Force
+}
+
 # persona.txt holds Vector's editable personality - copy only if absent so a
 # re-run never clobbers a customized character.
 if (-not (Test-Path (Join-Path $VectorAIDir "persona.txt"))) {

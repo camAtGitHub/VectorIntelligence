@@ -26,8 +26,9 @@ presence tick loop               BehaviorRuntime
 | **Chipper behavior-tick** | Occupancy signals, rare face probes, actually speaking | Policy, schedules, persona lines, day state |
 | **BehaviorRuntime** | Registration, shared presence, who may speak, OR of `need_identity` | Individual FSM logic |
 | **One Behavior (FSM)** | Its modes, timers, templates/LLM, its config | Private camera loops, bypassing the arbiter |
-| **service.py** | HTTP `/v1/behaviors/*`, quiet/voice hooks, chat command wiring | Fat business logic (keep it thin) |
-| **Ambient / greeting / sensor** | Their own loops (legacy, not plugins yet) | Work Day; they must not be “replaced” by a new FSM |
+| **service.py** | Composition root: deps, startup loops, `register_routes` (`uvicorn service:app`) | Fat business logic (keep it thin) |
+| **routes/* + chat_flow** | Thin HTTP for chat / ambient / sensor / greeting / behaviors tick | FSMs (those stay under `behaviors/`) |
+| **Ambient / greeting / sensor** | Their own loops (legacy, not plugins yet; handlers in `routes/`) | Work Day; they must not be “replaced” by a new FSM |
 
 **Work Day is the first plugin.** Ambient, greeting, and sensors still run as separate chipper loops. Future work may migrate them onto the runtime; until then, **coordinate** via shared speech manners (quiet, voice activity, min gap), do not delete them to “make room.”
 
@@ -242,7 +243,7 @@ Only add chipper code if you need a **new sensor** the tick cannot express (and 
 | Call `/v1/ambient` or open camera every tick for “presence” | Heavy, wrong semantics, fights ambient design |
 | Advance “I already nagged” timers when arbiter denies speech | Silent state desync; user never heard the line |
 | Gate chipper ticks on ambient night hours for Work Day–like policy | Host TZ ≠ `WORKDAY_TZ` |
-| Put a second full FSM inside `service.py` | File already large; breaks multi-FSM modularity |
+| Put a second full FSM inside `service.py` or `routes/*` | FSMs belong under `behaviors/`; service is composition-only |
 | Replace ambient/greeting/sensor to “simplify” | Out of scope; additive architecture |
 | Use untyped unbounded tick payloads | Bound face name, validate types |
 | Let chat commands tear down unrelated modes | Mode guards on every mutating command |
@@ -405,10 +406,11 @@ Improvements that help **all** FSMs (registry, shared clock TZ, migrating ambien
 | New FSM logic | `shared/vector-ai/behaviors/<name>.py` |
 | Env parsing | `shared/vector-ai/behaviors/config.py` + knobs in `pod.conf` / `shared/config/pod.conf-default` (LLM stays in `.env`) |
 | Register plugin | `shared/vector-ai/behaviors/runtime.py` |
-| HTTP / chat only if needed | `shared/vector-ai/service.py` (wiring only) |
+| HTTP / chat only if needed | `shared/vector-ai/routes/*` + wire in `service.py` (composition only) |
 | Durable state | `continuity.py` or dedicated store |
 | Chipper (rare) | `shared/patches/…` + `linux/install.sh` / `windows/install.ps1` |
-| Tests | `shared/vector-ai/test_behaviors.py` |
+| Tests | `shared/vector-ai/test_behaviors.py`, `test_service_modules.py` |
+| Deploy modules | Install scripts must copy new `*.py` siblings + `routes/` package (like `behaviors/`) |
 | User docs | `docs/FSM-*.md`, README snippet |
 
 ---
