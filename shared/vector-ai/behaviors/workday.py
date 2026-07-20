@@ -7,12 +7,15 @@ from typing import List, Optional, Tuple
 
 from .config import WorkdayConfig, minutes_since_midnight, parse_hhmm
 from .continuity import ContinuityStore, WorkdayRecord
+from .logutil import blog, short
 from .types import (
     BehaviorContext,
     FaceIdentity,
     TickResult,
     WorkdayMode,
 )
+
+_TAG = "workday"
 
 # Strict tags (parsed as actions). Accept || or single | separators.
 _AFTERNOON_RE = re.compile(
@@ -118,6 +121,11 @@ class WorkDayBehavior:
         with self.store.fsm_lock:
             rec = self.store.load_workday(local_date)
             if rec.mode not in (WorkdayMode.LATE_CHECK, WorkdayMode.NO_SHOW):
+                blog(
+                    _TAG,
+                    f"afternoon YES ignored (mode={rec.mode.value})",
+                    verbose=True,
+                )
                 return
             # NO_SHOW without ever being asked: still allow explicit chat arm
             # only if late_check_done (declined/timeout) or late_check_asked_at
@@ -127,6 +135,7 @@ class WorkDayBehavior:
             ):
                 # Allow arming no_show via chat yes as convenience (user declared).
                 pass
+            prev = rec.mode.value
             rec.mode = WorkdayMode.LATE_WORKING
             rec.arm_source = "late_yes"
             rec.late_check_done = True  # won't re-ask if they pause etc.
@@ -136,18 +145,25 @@ class WorkDayBehavior:
             rec.pause_until = 0.0
             rec.paused_from = ""
             self.store.save_workday(rec)
+            blog(_TAG, f"afternoon YES: {prev} → late_working date={local_date}")
 
     def on_afternoon_no(self, local_date: str) -> None:
         """Only valid during LATE_CHECK — refuse to tear down an armed day."""
         with self.store.fsm_lock:
             rec = self.store.load_workday(local_date)
             if rec.mode != WorkdayMode.LATE_CHECK:
+                blog(
+                    _TAG,
+                    f"afternoon NO ignored (mode={rec.mode.value})",
+                    verbose=True,
+                )
                 return
             rec.mode = WorkdayMode.NO_SHOW
             rec.late_check_done = True
             rec.pause_until = 0.0
             rec.paused_from = ""
             self.store.save_workday(rec)
+            blog(_TAG, f"afternoon NO: late_check → no_show date={local_date}")
 
     def on_pause(self, local_date: str, until_ts: float) -> None:
         with self.store.fsm_lock:
@@ -157,9 +173,11 @@ class WorkDayBehavior:
                 rec.mode = WorkdayMode.PAUSED
                 rec.pause_until = until_ts
                 self.store.save_workday(rec)
+                blog(_TAG, f"pause until_ts={until_ts:.0f} from {rec.paused_from}")
             elif rec.mode == WorkdayMode.PAUSED:
                 rec.pause_until = until_ts
                 self.store.save_workday(rec)
+                blog(_TAG, f"pause extended until_ts={until_ts:.0f}")
 
     def on_resume(self, local_date: str) -> None:
         with self.store.fsm_lock:
@@ -174,6 +192,7 @@ class WorkDayBehavior:
             rec.pause_until = 0.0
             rec.paused_from = ""
             self.store.save_workday(rec)
+            blog(_TAG, f"resume → {rec.mode.value}")
 
     # -- speech templates -----------------------------------------------------
 
@@ -335,6 +354,10 @@ class WorkDayBehavior:
         self.store.save_workday(rec)
         result.debug["mode"] = WorkdayMode.WORKING.value
         result.debug["reason"] = "morning_start"
+        blog(
+            _TAG,
+            f"morning arm → working primary={face.name!r} id={face.face_id}",
+        )
         return result
 
     def _tick_no_show(
@@ -391,6 +414,11 @@ class WorkDayBehavior:
         result.debug["mode"] = WorkdayMode.LATE_CHECK.value
         result.debug["reason"] = "late_check"
         result.debug["pending_commit"] = "late_check"
+        blog(
+            _TAG,
+            f"want late_check ask to {face_name!r}: {short(line)!r} "
+            f"— waiting on speech arbiter",
+        )
         return result
 
     def _tick_armed(
@@ -469,6 +497,11 @@ class WorkDayBehavior:
                 result.on_speak_allowed = _commit_away
                 result.debug["reason"] = "away_scold"
                 result.debug["pending_commit"] = "away_scold"
+                blog(
+                    _TAG,
+                    f"want away_scold (away={away_s:.0f}s): {short(line)!r} "
+                    f"— waiting on speech arbiter",
+                )
                 return result
             result.debug["reason"] = "away"
             result.debug["away_s"] = away_s
@@ -511,6 +544,11 @@ class WorkDayBehavior:
             result.on_speak_allowed = _commit_poke
             result.debug["reason"] = "on_task_poke"
             result.debug["pending_commit"] = "on_task_poke"
+            blog(
+                _TAG,
+                f"want on_task_poke (elapsed={elapsed:.0f}s): {short(line)!r} "
+                f"— waiting on speech arbiter",
+            )
             return result
 
         result.debug["reason"] = "armed_idle"
@@ -525,9 +563,12 @@ class WorkDayBehavior:
             date = _local_date(local_dt)
             rec = self.store.load_workday(date)
             dirty = False
+            prev = rec.mode.value
+            note = ""
             if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
                 rec.mode = WorkdayMode.NO_SHOW
                 dirty = True
+                note = "morning window ended → no_show"
             if rec.mode in (
                 WorkdayMode.WORKING,
                 WorkdayMode.LATE_WORKING,
@@ -536,22 +577,26 @@ class WorkDayBehavior:
             ) and _past(local_dt, self.cfg.end):
                 rec.mode = WorkdayMode.OFF
                 dirty = True
+                note = "work end → off"
             if rec.mode == WorkdayMode.LATE_CHECK and rec.late_check_asked_at > 0:
                 if (now - rec.late_check_asked_at) >= self.cfg.late_check_timeout_s:
                     rec.mode = WorkdayMode.NO_SHOW
                     rec.late_check_done = True
                     dirty = True
+                    note = "late_check timeout → no_show"
             if rec.mode == WorkdayMode.PAUSED and rec.pause_until > 0 and now >= rec.pause_until:
-                prev = rec.paused_from or WorkdayMode.WORKING.value
+                prev_mode = rec.paused_from or WorkdayMode.WORKING.value
                 try:
-                    rec.mode = WorkdayMode(prev)
+                    rec.mode = WorkdayMode(prev_mode)
                 except ValueError:
                     rec.mode = WorkdayMode.WORKING
                 rec.pause_until = 0.0
                 rec.paused_from = ""
                 dirty = True
+                note = f"pause expired → {rec.mode.value}"
             if dirty:
                 self.store.save_workday(rec)
+                blog(_TAG, f"clock_tick: {prev} → {rec.mode.value} ({note}) date={date}")
 
 
 def pause_until_ts(local_dt: datetime, until_hhmm: str, tz: tzinfo) -> float:

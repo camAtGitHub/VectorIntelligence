@@ -17,7 +17,10 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from .logutil import blog, short
+
 _log = logging.getLogger("behaviors.joke_sources")
+_TAG = "joke_sources"
 
 # Per-refill generation bound — avoid runaway API spend if critic rejects everything.
 _MAX_GEN_BATCHES = 12
@@ -162,9 +165,16 @@ def pop_line(store: Any, cfg: Any, question_ratio_roll: float) -> Optional[dict]
         preferred, fallback = "joke", "question"
 
     row = store.joke_queue_pop(preferred)
+    used_fallback = False
     if row is None:
         row = store.joke_queue_pop(fallback)
+        used_fallback = row is not None
     if row is None:
+        blog(
+            _TAG,
+            f"pop_line: queue empty (wanted {preferred}, then {fallback})",
+            verbose=True,
+        )
         return None
 
     text = row["text"]
@@ -173,6 +183,12 @@ def pop_line(store: Any, cfg: Any, question_ratio_roll: float) -> Optional[dict]
     text_hash = row.get("text_hash") or joke_hash(text)
 
     store.joke_mark_served(text_hash, text, kind, time.time())
+    fb = " (fallback kind)" if used_fallback else ""
+    blog(
+        _TAG,
+        f"pop_line: served {kind}/{source}{fb}: {short(text)!r}",
+        verbose=True,
+    )
     return {"text": text, "kind": kind, "source": source}
 
 
@@ -378,10 +394,29 @@ def _push_if_novel(
     kind = (kind or "").strip().lower()
     if not text or kind not in _ALLOWED_KINDS:
         return False
-    if novelty(text, served_texts) < novelty_min:
+    nov = novelty(text, served_texts)
+    if nov < novelty_min:
+        blog(
+            _TAG,
+            f"reject (low novelty {nov:.2f}<{novelty_min}): {short(text)!r}",
+            verbose=True,
+        )
         return False
     h = joke_hash(text)
-    return bool(store.joke_queue_push(text, kind, source, float(score), h, now))
+    ok = bool(store.joke_queue_push(text, kind, source, float(score), h, now))
+    if ok:
+        blog(
+            _TAG,
+            f"banked {kind}/{source} score={score:.2f} nov={nov:.2f}: {short(text)!r}",
+            verbose=True,
+        )
+    else:
+        blog(
+            _TAG,
+            f"reject (dup hash): {short(text)!r}",
+            verbose=True,
+        )
+    return ok
 
 
 def _fill_curated(
@@ -442,12 +477,18 @@ async def _generate_batch(
 
     try:
         seeds = random_seeds(4)
+        blog(
+            _TAG,
+            f"generating batch: want jokes={want_jokes} questions={want_questions} "
+            f"seeds={seeds} model={gen_model or 'default'}",
+        )
         messages = build_generate_messages(seeds, want_jokes, want_questions)
         raw = await llm(
             messages, model=gen_model, temperature=1.0, tag="joke_gen"
         )
         cands = parse_json_array(raw if isinstance(raw, str) else "")
         if not cands:
+            blog(_TAG, "generate returned no parseable candidates")
             return 0, False
 
         # Ensure stable ids for critic matching (position if missing).
@@ -455,6 +496,7 @@ async def _generate_batch(
             if "id" not in c:
                 c["id"] = i
 
+        blog(_TAG, f"critic scoring {len(cands)} candidate(s) model={critic_model or 'default'}")
         scored_raw = await llm(
             build_critic_messages(cands),
             model=critic_model,
@@ -468,23 +510,40 @@ async def _generate_batch(
                 by_id[v["id"]] = v
 
         added = 0
+        skipped_score = 0
+        skipped_seen = 0
+        skipped_no_verdict = 0
         for c in cands:
             if store.joke_queue_len() >= target:
                 break
             cid = c.get("id")
             v = by_id.get(cid)
             if v is None:
+                skipped_no_verdict += 1
                 continue
             try:
                 score = float(v.get("score", 0.0))
             except (TypeError, ValueError):
+                skipped_no_verdict += 1
                 continue
             seen = v.get("seen_before", False)
             if seen is True or (
                 isinstance(seen, str) and seen.strip().lower() in ("true", "1", "yes")
             ):
+                skipped_seen += 1
+                blog(
+                    _TAG,
+                    f"critic rejected seen_before: {short(c.get('text'))!r}",
+                    verbose=True,
+                )
                 continue
             if score < min_score:
+                skipped_score += 1
+                blog(
+                    _TAG,
+                    f"critic score {score:.2f}<{min_score}: {short(c.get('text'))!r}",
+                    verbose=True,
+                )
                 continue
             text = c.get("text") or ""
             kind = (c.get("kind") or "joke").strip().lower()
@@ -492,9 +551,16 @@ async def _generate_batch(
                 store, text, kind, "generated", score, served_texts, novelty_min, now
             ):
                 added += 1
+        blog(
+            _TAG,
+            f"gen batch done: banked={added}/{len(cands)} "
+            f"(low_score={skipped_score}, seen={skipped_seen}, "
+            f"no_verdict={skipped_no_verdict})",
+        )
         return added, False
     except Exception as e:
         _log.warning("joke gen batch failed: %s", e)
+        blog(_TAG, f"gen batch hard-fail: {e}")
         return 0, True
 
 
@@ -517,10 +583,21 @@ async def refill_joke_queue(
         watermark = int(getattr(cfg, "refill_low_watermark", 30))
         target = int(getattr(cfg, "queue_target", 50))
         if current > watermark:
+            blog(
+                _TAG,
+                f"refill skip: queue={current} > watermark={watermark}",
+                verbose=True,
+            )
             return 0
         need = target - current
         if need <= 0:
             return 0
+
+        blog(
+            _TAG,
+            f"refill start: queue={current} watermark={watermark} "
+            f"target={target} need={need}",
+        )
 
         curated_ratio = float(getattr(cfg, "curated_ratio", 0.5))
         curated_ratio = max(0.0, min(1.0, curated_ratio))
@@ -531,6 +608,12 @@ async def refill_joke_queue(
         seed_path = _resolve_seed_path(str(getattr(cfg, "seed_file", "joke_seeds.txt")))
         curated = load_curated(seed_path)
         random.shuffle(curated)
+        blog(
+            _TAG,
+            f"curated pool={len(curated)} seed_file={seed_path} "
+            f"served_history={len(served_texts)}",
+            verbose=True,
+        )
 
         # Preference quota for curated; remainder preferred for generation.
         curated_quota = int(round(need * curated_ratio))
@@ -543,7 +626,7 @@ async def refill_joke_queue(
         added = 0
 
         # 1) Curated FIRST (LLM-down invariant — partial fill even if gen never runs).
-        added += _fill_curated(
+        n_cur = _fill_curated(
             store,
             curated,
             target=target,
@@ -552,13 +635,17 @@ async def refill_joke_queue(
             novelty_min=novelty_min,
             now=now,
         )
+        added += n_cur
+        if n_cur:
+            blog(_TAG, f"curated pass banked {n_cur} (quota={curated_quota})")
 
         # 2) Generated remainder (bounded batches).
         remaining = target - store.joke_queue_len()
         if remaining > 0:
             llm = _resolve_llm(llm_chat_once)
             if llm is not None:
-                for _ in range(_MAX_GEN_BATCHES):
+                blog(_TAG, f"LLM generate for remaining {remaining} slot(s)")
+                for batch_i in range(_MAX_GEN_BATCHES):
                     if store.joke_queue_len() >= target:
                         break
                     n, hard_fail = await _generate_batch(
@@ -572,14 +659,20 @@ async def refill_joke_queue(
                     added += n
                     # LLM raised: stop generation; curated top-up fills the rest.
                     if hard_fail:
+                        blog(
+                            _TAG,
+                            f"stopping LLM gen after batch {batch_i + 1} (hard fail)",
+                        )
                         break
                     # Soft empty (garbage / all rejected): keep trying up to cap
                     # with fresh seeds.
+            else:
+                blog(_TAG, "LLM unavailable — curated-only fill")
 
         # 3) Curated top-up to target (100% curated allowed when gen failed/short).
         remaining = target - store.joke_queue_len()
         if remaining > 0:
-            added += _fill_curated(
+            n_top = _fill_curated(
                 store,
                 curated,
                 target=target,
@@ -588,10 +681,18 @@ async def refill_joke_queue(
                 novelty_min=novelty_min,
                 now=now,
             )
+            added += n_top
+            if n_top:
+                blog(_TAG, f"curated top-up banked {n_top}")
 
+        blog(
+            _TAG,
+            f"refill done: added={added} queue_now={store.joke_queue_len()}/{target}",
+        )
         return added
     except Exception as e:
         _log.exception("refill_joke_queue failed: %s", e)
+        blog(_TAG, f"refill failed: {e}")
         return 0
 
 
@@ -601,15 +702,27 @@ async def _joke_refill_loop(store: Any, cfg: Any) -> None:
        except Exception: log, continue
        await asyncio.sleep(cfg.refill_interval_s)
     """
+    blog(_TAG, "refill loop starting (90s settle before first check)")
     await asyncio.sleep(90)
     while True:
         try:
             n = await refill_joke_queue(store, cfg)
             if n:
-                _log.info("joke refill banked %s line(s); queue=%s", n, store.joke_queue_len())
-        except Exception:
+                q = store.joke_queue_len()
+                _log.info("joke refill banked %s line(s); queue=%s", n, q)
+                blog(_TAG, f"refill loop: banked {n}; queue={q}")
+            else:
+                blog(
+                    _TAG,
+                    f"refill loop: nothing to add (queue={store.joke_queue_len()})",
+                    verbose=True,
+                )
+        except Exception as e:
             _log.exception("joke refill loop iteration failed")
+            blog(_TAG, f"refill loop error: {e}")
         interval = int(getattr(cfg, "refill_interval_s", 43200) or 43200)
         if interval < 1:
             interval = 1
+        blog(_TAG, f"refill loop sleep {interval}s", verbose=True)
         await asyncio.sleep(interval)
+

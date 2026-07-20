@@ -8,6 +8,7 @@ from .arbiter import SpeechArbiter
 from .config import JokeConfig, RuntimeConfig, WorkdayConfig
 from .continuity import ContinuityStore
 from .joke_idle import JokeIdleBehavior, JOKE_IDLE_ID
+from .logutil import blog, short
 from .presence import PresenceCache
 from .types import (
     FaceIdentity,
@@ -16,6 +17,8 @@ from .types import (
     TickResult,
 )
 from .workday import WorkDayBehavior
+
+_TAG = "runtime"
 
 
 class BehaviorRuntime:
@@ -51,8 +54,16 @@ class BehaviorRuntime:
         if "workday" in enabled and workday_cfg.enabled:
             self.workday = WorkDayBehavior(workday_cfg, store)
             self.behaviors.append(self.workday)
+            blog(_TAG, f"registered workday (priority={workday_cfg.priority})")
         if JOKE_IDLE_ID in enabled and joke_cfg is not None and joke_cfg.enabled:
             self.behaviors.append(JokeIdleBehavior(joke_cfg, store))
+            blog(
+                _TAG,
+                f"registered joke_idle (priority={joke_cfg.priority}, "
+                f"dwell={joke_cfg.min_dwell_s}s, cooldown={joke_cfg.cooldown_s}s)",
+            )
+        if not self.behaviors:
+            blog(_TAG, "no behaviors registered (all disabled or not in BEHAVIORS_ENABLED)")
 
     def ingest_tick_payload(
         self,
@@ -170,6 +181,22 @@ class BehaviorRuntime:
                 debug["mode"] = r.debug.get("mode")
             text = (r.speak or "").strip()
             if not text:
+                # Log interesting non-speech outcomes at verbose level only.
+                reason = (r.debug or {}).get("reason")
+                if reason and reason not in (
+                    "dwell_building",
+                    "cooldown",
+                    "empty",
+                    "armed_idle",
+                    "away",
+                    "paused",
+                ):
+                    blog(
+                        _TAG,
+                        f"{b.id}: no speech ({reason})",
+                        verbose=True,
+                        data=r.debug,
+                    )
                 continue
             req = SpeechRequest(
                 text=text,
@@ -188,12 +215,27 @@ class BehaviorRuntime:
                         r.on_speak_allowed()
                     except Exception as e:
                         debug["commit_error"] = str(e)
+                        blog(_TAG, f"{b.id}: on_speak_allowed failed: {e}")
                 self.arbiter.record_speech(now)
                 speak = text
                 debug["spoke_from"] = b.id
+                blog(
+                    _TAG,
+                    f"ALLOWED speech from {b.id} (prio={prio}, reason={req.reason}): "
+                    f"{short(text)!r}",
+                )
                 break
             debug["arbiter_deny"] = why
             # Denied: do NOT run on_speak_allowed — timers stay, late_check not entered.
+            blog(
+                _TAG,
+                f"DENIED {b.id} speech (arbiter={why}, prio={prio}, "
+                f"reason={req.reason}): {short(text)!r} — "
+                f"wanted to speak but did not",
+            )
+
+        if need_identity and not speak:
+            blog(_TAG, "tick result: need_identity (no speech this tick)", verbose=True)
 
         return TickResult(
             speak=speak,
