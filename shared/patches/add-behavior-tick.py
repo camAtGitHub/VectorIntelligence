@@ -7,6 +7,9 @@ Creates `behavior_tick.go` with a thin loop that:
   3. Speaks if vector-ai returns a non-empty speak line
   4. If need_identity, runs a short face probe and ticks again with face
 
+Uses robotsession: ProbeFace for occupancy/identity glances, ambientReact
+(Session.WithControl) for speech. No per-tick vector.New / Close.
+
 Does NOT replace ambient, greeting, or sensor loops — runs alongside them.
 
 Named-face probes run only when vector-ai sets need_identity (junctures),
@@ -34,9 +37,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fforchino/vector-go-sdk/pkg/vector"
-	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
 	"github.com/kercre123/wire-pod/chipper/pkg/vars"
+	"github.com/kercre123/wire-pod/chipper/pkg/wirepod/robotsession"
 )
 
 // Behavior tick loop: thin presence reporter for vector-ai's multi-behavior
@@ -44,6 +46,8 @@ import (
 // face sightings — and named-face ID runs only when vector-ai asks via
 // need_identity (morning start, late arm, optional long-absence re-ID).
 //
+// Face probes use Session.ProbeFace (≤ behaviorFaceProbeWindow, secondary
+// ConnectionId). Speech uses ambientReact → Session.WithControl.
 // Ambient / greeting / sensor loops are unchanged and continue in parallel.
 
 const (
@@ -87,12 +91,12 @@ func NoteDeskEmpty() {
 func StartBehaviorTickLoop() {
 	time.Sleep(45 * time.Second) // let ambient/sensor settle first
 	for _, bot := range vars.BotInfo.Robots {
-		go runBehaviorTickLoop(bot.Esn, bot.GUID, bot.IPAddress+":443")
+		go runBehaviorTickLoop(bot.Esn)
 	}
 }
 
-func runBehaviorTickLoop(esn, guid, target string) {
-	fmt.Printf("[behavior-tick] starting for %s @ %s\n", esn, target)
+func runBehaviorTickLoop(esn string) {
+	fmt.Printf("[behavior-tick] starting for %s (robotsession)\n", esn)
 	failStreak := 0
 	for {
 		sleep := behaviorTickInterval
@@ -112,7 +116,7 @@ func runBehaviorTickLoop(esn, guid, target string) {
 			continue
 		}
 
-		ok := behaviorTickOnce(esn, guid, target)
+		ok := behaviorTickOnce(esn)
 		if ok {
 			failStreak = 0
 		} else {
@@ -163,45 +167,45 @@ func behaviorOccupiedNow() bool {
 	return time.Now().Unix()-last < int64(behaviorOccupancySticky/time.Second)
 }
 
-// behaviorProbeAnyFace opens a short face stream; any face (named or not)
+// behaviorProbeAnyFace uses Session.ProbeFace; any face (named or not)
 // counts for occupancy. Named faces are returned for identity junctures.
-func behaviorProbeAnyFace(robot *vector.Vector) (faceID int32, name string, sawAny bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), behaviorFaceProbeWindow)
-	defer cancel()
-	strm, err := robot.Conn.EventStream(ctx, &vectorpb.EventRequest{
-		ListType: &vectorpb.EventRequest_WhiteList{
-			WhiteList: &vectorpb.FilterList{List: []string{"robot_observed_face"}},
-		},
-	})
-	if err != nil {
+func behaviorProbeAnyFace(esn string) (faceID int32, name string, sawAny bool) {
+	if robotsession.Default == nil {
 		return 0, "", false
 	}
-	for {
-		resp, err := strm.Recv()
-		if err != nil {
-			return faceID, name, sawAny
-		}
-		if rof := resp.Event.GetRobotObservedFace(); rof != nil {
-			sawAny = true
-			NoteAnyFaceSeen()
-			if rof.GetFaceId() > 0 && rof.GetName() != "" {
-				return rof.GetFaceId(), rof.GetName(), true
-			}
-			// Unnamed / stranger — still occupancy
-			if faceID == 0 {
-				faceID = rof.GetFaceId()
-			}
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), behaviorFaceProbeWindow+2*time.Second)
+	defer cancel()
+	sess, err := robotsession.Default.Get(ctx, esn)
+	if err != nil {
+		fmt.Printf("[behavior-tick] session get failed for %s: %v\n", esn, err)
+		return 0, "", false
 	}
+	fid, fname, saw, err := sess.ProbeFace(ctx, behaviorFaceProbeWindow)
+	if err != nil {
+		fmt.Printf("[behavior-tick] ProbeFace failed for %s: %v\n", esn, err)
+		return 0, "", false
+	}
+	if saw {
+		NoteAnyFaceSeen()
+	}
+	return fid, fname, saw
 }
 
-func behaviorTickOnce(esn, guid, target string) bool {
-	robot, err := vector.New(vector.WithSerialNo(esn), vector.WithToken(guid), vector.WithTarget(target))
-	if err != nil {
-		fmt.Printf("[behavior-tick] connect failed for %s: %v\n", esn, err)
+func behaviorTickOnce(esn string) bool {
+	if robotsession.Default == nil {
+		fmt.Printf("[behavior-tick] robotsession.Default nil for %s\n", esn)
 		return false
 	}
-	defer robot.Close()
+
+	// Light health: ensure session exists (BatteryState inside Get).
+	getCtx, getCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	sess, err := robotsession.Default.Get(getCtx, esn)
+	getCancel()
+	if err != nil {
+		fmt.Printf("[behavior-tick] session get failed for %s: %v\n", esn, err)
+		return false
+	}
+	_ = sess.StartStateStream(context.Background())
 
 	needID := lastBehaviorNeedIdentity.Load()
 	var facePayload map[string]interface{}
@@ -214,7 +218,7 @@ func behaviorTickOnce(esn, guid, target string) bool {
 	if needID || sparseDue {
 		lastSparseOccupancyProbe.Store(nowUnix)
 		probed = true
-		fid, fname, saw := behaviorProbeAnyFace(robot)
+		fid, fname, saw := behaviorProbeAnyFace(esn)
 		if saw {
 			if fname != "" && fid > 0 {
 				facePayload = map[string]interface{}{
@@ -240,7 +244,10 @@ func behaviorTickOnce(esn, guid, target string) bool {
 
 	occupied := behaviorOccupiedNow()
 	_ = probed
-	onCharger := IsOnCharger()
+	onCharger := sess.OnCharger()
+	if sess.LastRobotState() == nil {
+		onCharger = IsOnCharger()
+	}
 	voiceRecent := recentlyConversed()
 
 	result := askVectorAIBehaviorTick(occupied, facePayload, onCharger, voiceRecent)
@@ -260,7 +267,7 @@ func behaviorTickOnce(esn, guid, target string) bool {
 	// Keep ambient/greeting clear of our proactive line.
 	MarkVoiceActivity()
 	lastAmbientReaction.Store(time.Now().Unix())
-	ambientReact(robot, line, false)
+	ambientReact(esn, line, false)
 	return true
 }
 '''
@@ -321,17 +328,43 @@ def patch_ambient_face_hook(ttr_dir: Path) -> bool:
     if "NoteAnyFaceSeen()" in src:
         print("[behavior-tick] ambient.go already hooks NoteAnyFaceSeen.")
         return False
-    # After a successful known-face return in probeForKnownFace
-    old = """\t\t\tif rof.GetFaceId() > 0 && rof.GetName() != "" {
+    # robotsession ProbeFace path in probeForKnownFace
+    old = """\tfaceID, name, _, err := sess.ProbeFace(ctx, 6*time.Second)
+\tif err != nil {
+\t\tfmt.Printf("[greeting] ProbeFace failed for %s: %v\\n", esn, err)
+\t\treturn 0, ""
+\t}
+\tif faceID > 0 && name != "" {
+\t\treturn faceID, name
+\t}
+\treturn 0, ""
+}"""
+    new = """\tfaceID, name, _, err := sess.ProbeFace(ctx, 6*time.Second)
+\tif err != nil {
+\t\tfmt.Printf("[greeting] ProbeFace failed for %s: %v\\n", esn, err)
+\t\treturn 0, ""
+\t}
+\tif faceID > 0 && name != "" {
+\t\tNoteAnyFaceSeen()
+\t\treturn faceID, name
+\t}
+\treturn 0, ""
+}"""
+    if old not in src:
+        # Fallback: older raw EventStream probe body
+        old_legacy = """\t\t\tif rof.GetFaceId() > 0 && rof.GetName() != "" {
 \t\t\t\treturn rof.GetFaceId(), rof.GetName()
 \t\t\t}"""
-    new = """\t\t\tif rof.GetFaceId() > 0 && rof.GetName() != "" {
+        new_legacy = """\t\t\tif rof.GetFaceId() > 0 && rof.GetName() != "" {
 \t\t\t\tNoteAnyFaceSeen()
 \t\t\t\treturn rof.GetFaceId(), rof.GetName()
 \t\t\t}"""
-    if old not in src:
-        print("[behavior-tick] probeForKnownFace pattern not found - skip hook.")
-        return False
+        if old_legacy not in src:
+            print("[behavior-tick] probeForKnownFace pattern not found - skip hook.")
+            return False
+        path.write_text(src.replace(old_legacy, new_legacy, 1), encoding="utf-8", newline="\n")
+        print("[behavior-tick] ambient.go hooked NoteAnyFaceSeen on known face (legacy).")
+        return True
     path.write_text(src.replace(old, new, 1), encoding="utf-8", newline="\n")
     print("[behavior-tick] ambient.go hooked NoteAnyFaceSeen on known face.")
     return True

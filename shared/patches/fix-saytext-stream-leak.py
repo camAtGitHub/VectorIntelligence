@@ -1,35 +1,26 @@
 #!/usr/bin/env python3
 """Fix the BehaviorControl stream leak in Wire-Pod's sayText helper.
 
-Upstream sayText (chipper/pkg/wirepod/ttr/bcontrol.go) opens a
-BehaviorControl stream with context.Background() and never cancels it.
-Sending ControlRelease ends the control reservation but NOT the stream -
-the robot's vic-gateway keeps it open until the underlying gRPC connection
-closes. Callers on short-lived connections get away with that; the sensor
-reaction loop (add-sensor-reactions.py) calls sayText on a connection that
-stays up for days, so every pickup/putdown/pet reaction permanently leaks
-one server-side stream on the robot. Enough of them and vic-gateway stops
-serving new requests: TCP still connects, new RPCs hang to deadline, Vector
-shows the wifi-exclamation icon (issue #8's "works for a few commands then
-dies" - and its background twin, wedging with no interaction at all).
+HISTORICAL: Upstream sayText opened BehaviorControl with context.Background()
+and never cancelled it, busy-waited on grant, and leaked streams on long-lived
+connections. The replacement was a synchronous acquire-speak-release under a
+30s cancelled context.
 
-Two further upstream bugs in the same function go with it:
-  - the inner goroutine busy-waits on `select { default: continue }`,
-    burning a CPU core for the whole utterance;
-  - the outer goroutine ends with `for range start` on a channel nobody
-    closes, so it blocks forever - one leaked goroutine per call, and on
-    the no-grant path the leak happens before the robot even speaks.
+Superseded by robotsession (TASK-05): bcontrol.go now exposes SayText(esn, text)
+via Session.Say / WithControl with cancel+timeout. The old sayText(robot, text)
+path is a deprecated no-op stub.
 
-The replacement does the acquire-speak-release cycle synchronously in one
-goroutine under a 30s context that is cancelled on exit - the cancel is
-what actually tears the stream down robot-side. No channels, no spin.
+This patch is a no-op when bcontrol is session-based. It still applies the
+legacy REPLACE_FUNC if the old busy-wait sayText body is present (rollout
+safety for unmigrated trees).
 
-Idempotent. Modifies chipper/pkg/wirepod/ttr/bcontrol.go.
+Idempotent. Modifies chipper/pkg/wirepod/ttr/bcontrol.go only if needed.
 """
 import sys
 from pathlib import Path
 
 SENTINEL = "acquire-speak-release"
+SENTINEL_SESSION = "robotsession.Default"
 
 ANCHOR_IMPORTS = (
     "import (\n"
@@ -175,17 +166,28 @@ REPLACE_FUNC = (
 
 def patch(path: Path) -> bool:
     src = path.read_text(encoding="utf-8")
-    if SENTINEL in src:
-        print(f"[saytext-leak] {path.name} already patched.")
+
+    # Preferred path: bcontrol already uses robotsession.SayText(esn, text).
+    if SENTINEL_SESSION in src and "func SayText(esn" in src:
+        print(f"[saytext-leak] {path.name}: superseded by robotsession.SayText; no-op.")
         return False
-    for anchor in (ANCHOR_IMPORTS, ANCHOR_FUNC):
-        if anchor not in src:
-            print(f"[saytext-leak] anchor not found in {path}", file=sys.stderr)
-            sys.exit(1)
-    src = src.replace(ANCHOR_IMPORTS, REPLACE_IMPORTS, 1)
+
+    if SENTINEL in src:
+        print(f"[saytext-leak] {path.name} already patched (legacy acquire-speak-release).")
+        return False
+
+    if ANCHOR_FUNC not in src:
+        print(
+            f"[saytext-leak] {path.name}: legacy sayText anchors not found; "
+            "superseded by robotsession or already transformed. no-op.",
+        )
+        return False
+
+    if ANCHOR_IMPORTS in src:
+        src = src.replace(ANCHOR_IMPORTS, REPLACE_IMPORTS, 1)
     src = src.replace(ANCHOR_FUNC, REPLACE_FUNC, 1)
     path.write_text(src, encoding="utf-8", newline="\n")
-    print(f"[saytext-leak] {path.name} patched.")
+    print(f"[saytext-leak] {path.name} patched (legacy path).")
     return True
 
 

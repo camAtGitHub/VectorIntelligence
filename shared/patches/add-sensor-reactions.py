@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Add background sensor reactions to Wire-Pod.
 
-Creates a new Go file `sensor_reactions.go` that subscribes to each enrolled
-robot's event stream and reacts to:
+Creates a new Go file `sensor_reactions.go` that uses robotsession for each
+enrolled robot: StartStateStream + SubscribeState, and reacts to:
   - Pickup (IS_PICKED_UP status bit rising)
   - Putdown (IS_PICKED_UP falling)
   - Pet (TouchData.IsBeingTouched rising)
 
 Each reaction speaks a short phrase from a pool with per-event cooldowns
-(20s) to prevent spam. Behaviour control is acquired briefly via the
-existing sayText helper.
+(20s) via SayText(esn, phrase) / robotsession.Session.Say. Does NOT open
+its own vector.New EventStream (session owns the long robot_state stream).
+Never opens a continuous face stream.
 
 Also patches startserver.go to launch the reaction loops at chipper boot.
 
@@ -37,17 +38,18 @@ import (
 \t"sync/atomic"
 \t"time"
 
-\t"github.com/fforchino/vector-go-sdk/pkg/vector"
 \t"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
 \t"github.com/kercre123/wire-pod/chipper/pkg/vars"
+\t"github.com/kercre123/wire-pod/chipper/pkg/wirepod/robotsession"
 )
 
 // Sensor reactions: Vector reacts to pickup, putdown, and pet/touch events
-// even when no voice interaction is in flight. A persistent event stream is
-// maintained per enrolled robot; rising edges of the relevant state bits
-// trigger a short spoken phrase via the bcontrol sayText helper. Per-event
-// cooldowns prevent spam (e.g. continuous petting only triggers once per
-// window).
+// even when no voice interaction is in flight. robot_state is delivered via
+// robotsession's long EventStream (StartStateStream + SubscribeState) — this
+// loop never calls vector.New or opens its own stream. Rising edges of the
+// relevant state bits trigger a short spoken phrase via SayText(esn, …).
+// Per-event cooldowns prevent spam. Face identity is never subscribed here
+// (AGENTS.md: no continuous robot_observed_face).
 
 const sensorCooldownDuration = 20 * time.Second
 
@@ -66,13 +68,13 @@ var vectorAIBase = func() string {
 var sensorCooldowns sync.Map // key: "<esn>:<event>", value: time.Time
 
 // onChargerFlag tracks whether Vector is docked - updated live from the
-// robot_state stream in runSensorReactionLoop.
+// robotsession robot_state fan-out in runSensorReactionLoop.
 var onChargerFlag atomic.Bool
 
 // calmPowerFlag tracks ROBOT_STATUS_CALM_POWER_MODE (sleep / low-power).
 // In calm mode Vector's vision stack is powered down; camera RPCs hang until
 // the client deadline, which is the main source of ambient DeadlineExceeded
-// noise. Updated live from the robot_state stream.
+// noise. Updated live from robot_state.
 var calmPowerFlag atomic.Bool
 
 // lastRobotStateUnix is the unix time of the most recent robot_state event.
@@ -221,7 +223,7 @@ func askVectorAIForReaction(event string) string {
 \treturn result.Text
 }
 
-func sensorReact(robot *vector.Vector, esn, event string, fallback []string) {
+func sensorReact(esn, event string, fallback []string) {
 \tif sensorOnCooldown(esn, event) {
 \t\treturn
 \t}
@@ -233,7 +235,8 @@ func sensorReact(robot *vector.Vector, esn, event string, fallback []string) {
 \t\tfmt.Printf("[sensor] %s (llm) -> %q\\n", event, phrase)
 \t\trememberSensorPhrase(event, phrase)
 \t}
-\tsayText(robot, phrase)
+\t// Session-backed speak (WithControl + cancel); never open BC here.
+\tSayText(esn, phrase)
 }
 
 // notifyFaceSeen POSTs an observed-face event to vector-ai. Rate-limited
@@ -274,55 +277,77 @@ func StartSensorReactionsForAllBots() {
 \t// Give chipper a moment to finish init and bots to be loaded.
 \ttime.Sleep(5 * time.Second)
 \tfor _, bot := range vars.BotInfo.Robots {
-\t\tgo runSensorReactionLoop(bot.Esn, bot.GUID, bot.IPAddress+":443")
+\t\tgo runSensorReactionLoop(bot.Esn)
 \t}
 }
 
-func runSensorReactionLoop(esn, guid, target string) {
-\tfmt.Printf("[sensor] starting reaction loop for %s @ %s\\n", esn, target)
+// runSensorReactionLoop obtains the shared robotsession for esn, starts the
+// long robot_state stream once, and reacts to rising edges from SubscribeState.
+// On fatal session errors: Drop + backoff, then retry. Never continuous face.
+func runSensorReactionLoop(esn string) {
+\tfmt.Printf("[sensor] starting reaction loop for %s (robotsession)\\n", esn)
+\tbackoff := 2 * time.Second
+\tconst maxBackoff = 30 * time.Second
 \tfor {
-\t\trobot, err := vector.New(vector.WithSerialNo(esn), vector.WithToken(guid), vector.WithTarget(target))
-\t\tif err != nil {
-\t\t\tfmt.Printf("[sensor] connect failed for %s: %v\\n", esn, err)
-\t\t\ttime.Sleep(30 * time.Second)
+\t\tif robotsession.Default == nil {
+\t\t\tfmt.Printf("[sensor] robotsession.Default not ready for %s; waiting\\n", esn)
+\t\t\ttime.Sleep(5 * time.Second)
 \t\t\tcontinue
 \t\t}
-\t\tctx, cancel := context.WithCancel(context.Background())
-\t\t// Subscribe to robot_state ONLY. We deliberately do NOT subscribe to
-\t\t// robot_observed_face - Vector streams a face event every frame he
-\t\t// sees a face, a continuous firehose that overloads his firmware and
-\t\t// degrades his whole network stack over time. Face/identity is
-\t\t// handled separately, on-demand.
-\t\tstrm, err := robot.Conn.EventStream(
-\t\t\tctx,
-\t\t\t&vectorpb.EventRequest{
-\t\t\t\tListType: &vectorpb.EventRequest_WhiteList{
-\t\t\t\t\tWhiteList: &vectorpb.FilterList{List: []string{"robot_state"}},
-\t\t\t\t},
-\t\t\t},
-\t\t)
+
+\t\tgetCtx, getCancel := context.WithTimeout(context.Background(), 15*time.Second)
+\t\tsess, err := robotsession.Default.Get(getCtx, esn)
+\t\tgetCancel()
 \t\tif err != nil {
-\t\t\tfmt.Printf("[sensor] event stream failed for %s: %v\\n", esn, err)
-\t\t\tcancel()
-\t\t\trobot.Close()
-\t\t\ttime.Sleep(30 * time.Second)
+\t\t\tfmt.Printf("[sensor] session get failed for %s: %v\\n", esn, err)
+\t\t\ttime.Sleep(backoff)
+\t\t\tif backoff < maxBackoff {
+\t\t\t\tbackoff *= 2
+\t\t\t\tif backoff > maxBackoff {
+\t\t\t\t\tbackoff = maxBackoff
+\t\t\t\t}
+\t\t\t}
 \t\t\tcontinue
 \t\t}
+
+\t\tstartCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
+\t\terr = sess.StartStateStream(startCtx)
+\t\tstartCancel()
+\t\tif err != nil {
+\t\t\tfmt.Printf("[sensor] StartStateStream failed for %s: %v\\n", esn, err)
+\t\t\trobotsession.Default.Drop(esn)
+\t\t\ttime.Sleep(backoff)
+\t\t\tif backoff < maxBackoff {
+\t\t\t\tbackoff *= 2
+\t\t\t\tif backoff > maxBackoff {
+\t\t\t\t\tbackoff = maxBackoff
+\t\t\t\t}
+\t\t\t}
+\t\t\tcontinue
+\t\t}
+
+\t\t// Subscribe for session lifetime. Channel closes on session Close/Drop.
+\t\tsubCtx, subCancel := context.WithCancel(context.Background())
+\t\tevents := sess.SubscribeState(subCtx)
 \t\tvar prevPickedUp, prevTouched bool
 \t\tvar initialized bool
-\t\tfor {
-\t\t\tresp, err := strm.Recv()
-\t\t\tif err != nil {
-\t\t\t\tfmt.Printf("[sensor] recv error for %s: %v\\n", esn, err)
-\t\t\t\tbreak
+\t\tfmt.Printf("[sensor] subscribed to state for %s @ %s\\n", esn, sess.Target)
+
+\t\tfor ev := range events {
+\t\t\tif ev == nil {
+\t\t\t\tcontinue
 \t\t\t}
-\t\t\trs := resp.Event.GetRobotState()
+\t\t\trs := ev.GetRobotState()
 \t\t\tif rs == nil {
 \t\t\t\tcontinue
 \t\t\t}
+\t\t\t// Fresh events: reset reconnect backoff.
+\t\t\tbackoff = 2 * time.Second
+
 \t\t\tonChargerFlag.Store((rs.Status & uint32(vectorpb.RobotStatus_ROBOT_STATUS_IS_ON_CHARGER)) != 0)
 \t\t\tcalmPowerFlag.Store((rs.Status & uint32(vectorpb.RobotStatus_ROBOT_STATUS_CALM_POWER_MODE)) != 0)
 \t\t\tlastRobotStateUnix.Store(time.Now().Unix())
+
 \t\t\tpickedUp := (rs.Status & uint32(vectorpb.RobotStatus_ROBOT_STATUS_IS_PICKED_UP)) != 0
 \t\t\ttouched := rs.TouchData != nil && rs.TouchData.GetIsBeingTouched()
 \t\t\tif !initialized {
@@ -332,22 +357,30 @@ func runSensorReactionLoop(esn, guid, target string) {
 \t\t\t\tcontinue
 \t\t\t}
 \t\t\tif pickedUp && !prevPickedUp {
-\t\t\t\tsensorReact(robot, esn, "pickup", pickupPhrases)
+\t\t\t\tsensorReact(esn, "pickup", pickupPhrases)
 \t\t\t} else if !pickedUp && prevPickedUp {
-\t\t\t\tsensorReact(robot, esn, "putdown", putdownPhrases)
+\t\t\t\tsensorReact(esn, "putdown", putdownPhrases)
 \t\t\t}
 \t\t\tif touched && !prevTouched {
-\t\t\t\tsensorReact(robot, esn, "pet", petPhrases)
+\t\t\t\tsensorReact(esn, "pet", petPhrases)
 \t\t\t}
 \t\t\tprevPickedUp = pickedUp
 \t\t\tprevTouched = touched
 \t\t}
-\t\t// Inner loop exited (recv error). Cancel the stream context and close
-\t\t// the connection - otherwise every reconnect leaks a gRPC connection
-\t\t// to the robot, eventually wedging its SDK.
-\t\tcancel()
-\t\trobot.Close()
-\t\ttime.Sleep(10 * time.Second)
+
+\t\t// Subscription ended (session closed). Drop + backoff then re-Get.
+\t\tsubCancel()
+\t\tfmt.Printf("[sensor] state subscription ended for %s; Drop + backoff\\n", esn)
+\t\tif robotsession.Default != nil {
+\t\t\trobotsession.Default.Drop(esn)
+\t\t}
+\t\ttime.Sleep(backoff)
+\t\tif backoff < maxBackoff {
+\t\t\tbackoff *= 2
+\t\t\tif backoff > maxBackoff {
+\t\t\t\tbackoff = maxBackoff
+\t\t\t}
+\t\t}
 \t}
 }
 '''

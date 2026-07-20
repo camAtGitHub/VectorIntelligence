@@ -11,6 +11,9 @@ of a voice request - it runs concurrently with speech-to-text, so by the
 time the LLM request fires vector-ai already knows the current speaker.
 Zero added latency: it overlaps the user speaking.
 
+Uses robotsession.Session.ProbeFace (≤6s secondary face stream) — never
+vector.New and never a continuous face subscription.
+
 Creates chipper/pkg/wirepod/ttr/face_probe.go and patches intent_graph.go.
 Idempotent.
 """
@@ -24,65 +27,41 @@ FACE_PROBE_GO = '''package wirepod_ttr
 import (
 \t"context"
 \t"fmt"
-\t"strings"
 \t"time"
 
-\t"github.com/fforchino/vector-go-sdk/pkg/vector"
-\t"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
-\t"github.com/kercre123/wire-pod/chipper/pkg/vars"
+\t"github.com/kercre123/wire-pod/chipper/pkg/wirepod/robotsession"
 )
 
-// ObserveFaceBriefly opens a short-lived robot_observed_face stream and
-// reports who Vector is looking at to vector-ai (via notifyFaceSeen). It is
-// launched as a goroutine at the START of a voice request, so it runs
-// concurrently with speech-to-text - by the time the LLM request fires,
-// vector-ai already knows the current speaker, with no one-turn lag and no
-// added latency. Self-terminating: closes after the timeout or stream end.
+// ObserveFaceBriefly briefly probes for who Vector is looking at and reports
+// to vector-ai (via notifyFaceSeen). Launched as a goroutine at the START of
+// a voice request so it runs concurrently with speech-to-text - by the time
+// the LLM request fires, vector-ai already knows the current speaker, with no
+// one-turn lag and no added latency.
+//
+// Uses Session.ProbeFace (≤6s, secondary ConnectionId wirepod-face-<esn>).
+// Never continuous robot_observed_face; never vector.New.
 //
 // It also marks voice activity so the ambient awareness loop knows a
 // conversation is in progress and stays out of the way.
 func ObserveFaceBriefly(esn string) {
 \tMarkVoiceActivity()
-\tvar guid, target string
-\tfor _, bot := range vars.BotInfo.Robots {
-\t\tif strings.EqualFold(strings.TrimSpace(bot.Esn), strings.TrimSpace(esn)) {
-\t\t\tguid = bot.GUID
-\t\t\ttarget = bot.IPAddress + ":443"
-\t\t\tbreak
-\t\t}
-\t}
-\tif target == "" {
+\tif robotsession.Default == nil {
 \t\treturn
 \t}
-\trobot, err := vector.New(vector.WithSerialNo(esn), vector.WithToken(guid), vector.WithTarget(target))
-\tif err != nil {
-\t\tfmt.Printf("[face-probe] connect failed for %s: %v\\n", esn, err)
-\t\treturn
-\t}
-\t// Release the gRPC connection when the probe ends - otherwise it leaks.
-\tdefer robot.Close()
 \tctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 \tdefer cancel()
-\tstrm, err := robot.Conn.EventStream(
-\t\tctx,
-\t\t&vectorpb.EventRequest{
-\t\t\tListType: &vectorpb.EventRequest_WhiteList{
-\t\t\t\tWhiteList: &vectorpb.FilterList{List: []string{"robot_observed_face"}},
-\t\t\t},
-\t\t},
-\t)
+\tsess, err := robotsession.Default.Get(ctx, esn)
 \tif err != nil {
-\t\tfmt.Printf("[face-probe] event stream failed for %s: %v\\n", esn, err)
+\t\tfmt.Printf("[face-probe] session get failed for %s: %v\\n", esn, err)
 \t\treturn
 \t}
-\tfor {
-\t\tresp, err := strm.Recv()
-\t\tif err != nil {
-\t\t\treturn // context timeout or stream closed - probe done
-\t\t}
-\t\tif rof := resp.Event.GetRobotObservedFace(); rof != nil {
-\t\t\tnotifyFaceSeen(rof.GetFaceId(), rof.GetName())
-\t\t}
+\tfaceID, name, sawAny, err := sess.ProbeFace(ctx, 6*time.Second)
+\tif err != nil {
+\t\tfmt.Printf("[face-probe] ProbeFace failed for %s: %v\\n", esn, err)
+\t\treturn
+\t}
+\tif sawAny || faceID != 0 || name != "" {
+\t\tnotifyFaceSeen(faceID, name)
 \t}
 }
 '''

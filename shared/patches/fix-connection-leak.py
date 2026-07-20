@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """Fix the gRPC connection leak in Wire-Pod's LLM response path.
 
-The fforchino vector-go-sdk opens a gRPC connection to the robot on every
-vector.New() but never closes it. Wire-Pod's kgsim.go calls vector.New()
-once per voice query (and once per speak-goroutine), so each query leaks a
-connection. The robot's on-board SDK has a small connection budget; once it
-fills up Vector stops responding and shows the wifi-exclamation icon - the
-classic "drops after a question or two" failure.
+HISTORICAL: Added defer robot.Close() at vector.New leak sites in kgsim.go and
+a 5s BatteryState timeout. That approach is superseded by robotsession
+(TASK-05/06): StreamingKGSim / KGSim use robotsession.Default.Get and never
+vector.New per query, so Close-on-query would tear down the shared session.
 
-This patch adds `defer robot.Close()` at the two leak sites in kgsim.go and
-gives the opening BatteryState probe a 5s timeout, so a wedged robot fails
-fast instead of hanging on context.Background() forever.
+This patch is now a no-op when kgsim is session-based. It remains idempotent
+and still applies the old Close-based fix only if legacy anchors are present
+(unmigrated trees).
 
-Requires the SDK Close() method - see add-sdk-close.py, which must run first.
+Requires the SDK Close() method when the legacy path still applies — see
+add-sdk-close.py.
 
-Idempotent. Modifies chipper/pkg/wirepod/ttr/kgsim.go.
+Idempotent. Modifies chipper/pkg/wirepod/ttr/kgsim.go only if needed.
 """
 import sys
 from pathlib import Path
 
-SENTINEL = "defer robot.Close()"
+SENTINEL_LEGACY = "defer robot.Close()"
+SENTINEL_SESSION = "robotsession.Default"
 
 # Leak site 1: the per-request robot created in the `if matched` block, plus
 # the unbounded BatteryState probe right after it.
@@ -64,17 +64,28 @@ REPLACE_GO = (
 
 def patch(path: Path) -> bool:
     src = path.read_text(encoding="utf-8")
-    if SENTINEL in src:
-        print(f"[connection-leak] {path.name} already patched.")
+
+    # Preferred path: kgsim already uses robotsession (TASK-06+).
+    if SENTINEL_SESSION in src and "vector.New(" not in src:
+        print(f"[connection-leak] {path.name}: superseded by robotsession (no vector.New); no-op.")
         return False
-    for anchor in (ANCHOR_BAT, ANCHOR_GO):
-        if anchor not in src:
-            print(f"[connection-leak] anchor not found in {path}", file=sys.stderr)
-            sys.exit(1)
+
+    if SENTINEL_LEGACY in src and ANCHOR_BAT not in src:
+        print(f"[connection-leak] {path.name} already patched (legacy Close).")
+        return False
+
+    if ANCHOR_BAT not in src or ANCHOR_GO not in src:
+        # Migrated or differently structured — do not fail install.
+        print(
+            f"[connection-leak] {path.name}: legacy anchors not found; "
+            "superseded by robotsession or already transformed. no-op.",
+        )
+        return False
+
     src = src.replace(ANCHOR_BAT, REPLACE_BAT, 1)
     src = src.replace(ANCHOR_GO, REPLACE_GO, 1)
     path.write_text(src, encoding="utf-8", newline="\n")
-    print(f"[connection-leak] {path.name} patched.")
+    print(f"[connection-leak] {path.name} patched (legacy Close path).")
     return True
 
 

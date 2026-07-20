@@ -6,11 +6,11 @@ idle (awake, off the charger, not mid-conversation, not in night hours),
 periodically takes a SILENT camera frame and asks vector-ai's /v1/ambient
 endpoint whether anything is genuinely new.
 
-The whole design is built around restraint: a desk barely changes, so the
-model's default answer is "nothing", glances are minutes apart, and a
-post-reaction cooldown stops Vector from remarking again straight away. Only on
-genuine novelty does he speak a short line - and vector-ai stores the new thing
-as a visual observation so he can talk about it later when asked.
+Uses robotsession for all robot I/O:
+  - ambientObserveOnce → Session.Unary (CaptureSingleImage)
+  - ambientReact → Session.WithControl (investigate + SayText)
+  - probeForKnownFace / greeting → Session.ProbeFace + WithControl
+Never per-cycle vector.New / Close.
 
 Also exposes MarkVoiceActivity(), which the face probe calls at the start of
 every voice request so the ambient loop knows to stay out of the way.
@@ -41,6 +41,7 @@ import (
 \t"github.com/fforchino/vector-go-sdk/pkg/vector"
 \t"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
 \t"github.com/kercre123/wire-pod/chipper/pkg/vars"
+\t"github.com/kercre123/wire-pod/chipper/pkg/wirepod/robotsession"
 )
 
 // Ambient awareness: whenever Vector is awake and free - not mid-conversation
@@ -54,6 +55,8 @@ import (
 // Restraint is the whole point: a desk barely changes, so the model is told
 // its default answer is "nothing", a multi-minute interval keeps glances
 // rare, and a post-reaction cooldown stops him remarking again straight away.
+//
+// All robot I/O goes through robotsession (shared channel per ESN).
 
 const (
 \t// How often Vector glances around when idle. He only SPEAKS on genuine
@@ -78,8 +81,8 @@ const (
 \tambientNightEnd   = 7  // 7am
 
 \t// How often, when idle, Vector briefly probes for a known face to greet.
-\t// Each probe opens a short face-event stream, which is heavy on Vector's
-\t// firmware - so keep these windows brief and infrequent.
+\t// Each probe is a short secondary face EventStream via Session.ProbeFace
+\t// (≤6s) — never continuous.
 \tgreetingInterval = 2 * time.Minute
 )
 
@@ -119,19 +122,17 @@ func ambientReactionOnCooldown() bool {
 func StartAmbientLoop() {
 \ttime.Sleep(30 * time.Second) // let chipper finish init and bots load
 \tfor _, bot := range vars.BotInfo.Robots {
-\t\tgo runAmbientLoop(bot.Esn, bot.GUID, bot.IPAddress+":443")
-\t\tgo runGreetingLoop(bot.Esn, bot.GUID, bot.IPAddress+":443")
+\t\tgo runAmbientLoop(bot.Esn)
+\t\tgo runGreetingLoop(bot.Esn)
 \t}
 }
 
-func runAmbientLoop(esn, guid, target string) {
-\tfmt.Printf("[ambient] starting ambient loop for %s @ %s\\n", esn, target)
+func runAmbientLoop(esn string) {
+\tfmt.Printf("[ambient] starting ambient loop for %s (robotsession)\\n", esn)
 \tfailStreak := 0
 \tfor {
 \t\t// Failure backoff: when glances keep failing (robot asleep, link down,
-\t\t// gateway wedged) poke him less often - opening a fresh connection and
-\t\t// leaving a hanging RPC on a struggling gateway every cycle makes
-\t\t// things worse and floods the log. 3m -> 6m -> 12m -> 24m, reset on
+\t\t// gateway wedged) poke him less often. 3m -> 6m -> 12m -> 24m, reset on
 \t\t// the first success.
 \t\tsleep := ambientInterval
 \t\tif failStreak > 0 {
@@ -154,7 +155,7 @@ func runAmbientLoop(esn, guid, target string) {
 \t\tif ambientReactionOnCooldown() {
 \t\t\tcontinue
 \t\t}
-\t\tif ambientObserveOnce(esn, guid, target) {
+\t\tif ambientObserveOnce(esn) {
 \t\t\tfailStreak = 0
 \t\t} else {
 \t\t\tfailStreak++
@@ -191,56 +192,56 @@ func askVectorAIAmbient(jpeg []byte) string {
 \treturn result.Text
 }
 
-// ambientObserveOnce takes one silent photo, asks vector-ai whether anything
-// is new, and speaks the reaction if there is one. Returns false when the
-// robot couldn't be reached or photographed, so the caller can back off.
-// Returns true (no backoff) when we deliberately skip - e.g. Vector is in
-// calm/sleep power mode where camera RPCs hang to deadline.
-func ambientObserveOnce(esn, guid, target string) bool {
-\t// Calm/sleep: vision stack is powered down. EnableImageStreaming and
-\t// CaptureSingleImage both hang until the client context dies, which used
-\t// to flood chipper.log with DeadlineExceeded. Sensor loop tracks this
-\t// bit live; only trust it when robot_state is fresh.
+// ambientObserveOnce takes one silent photo via Session.Unary, asks vector-ai
+// whether anything is new, and speaks the reaction if there is one. Returns
+// false when the robot couldn't be reached or photographed, so the caller can
+// back off. Returns true (no backoff) when we deliberately skip - e.g. Vector
+// is in calm/sleep power mode where camera RPCs hang to deadline.
+func ambientObserveOnce(esn string) bool {
+\t// Calm/sleep: vision stack is powered down. Sensor loop tracks this bit
+\t// live; only trust it when robot_state is fresh.
 \tif IsCalmPowerMode() {
 \t\treturn true
 \t}
-
-\trobot, err := vector.New(vector.WithSerialNo(esn), vector.WithToken(guid), vector.WithTarget(target))
-\tif err != nil {
-\t\tfmt.Printf("[ambient] connect failed for %s: %v\\n", esn, err)
-\t\treturn false
-\t}
-\t// Release the gRPC connection when done - otherwise every cycle leaks one.
-\tdefer robot.Close()
-
-\t// Fail-fast health check. vector.New does not dial; the first RPC is when
-\t// we discover a wedged gateway (TCP up, gRPC hangs). A short BatteryState
-\t// probe fails in ~3s instead of burning a 30s camera timeout.
-\tpingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
-\t_, pingErr := robot.Conn.BatteryState(pingCtx, &vectorpb.BatteryStateRequest{})
-\tpingCancel()
-\tif pingErr != nil {
-\t\tfmt.Printf("[ambient] robot unreachable for %s: %v\\n", esn, pingErr)
+\tif robotsession.Default == nil {
+\t\tfmt.Printf("[ambient] robotsession.Default nil for %s\\n", esn)
 \t\treturn false
 \t}
 
-\t// CaptureSingleImage on Vector's gateway already: enables streaming,
-\t// waits for one full JPEG, then disables. The old path pre-enabled,
-\t// slept 1.5s, then captured under the SAME 25s context - a slow enable
-\t// left capture with almost no budget, so we logged both
-\t// "enable camera feed failed" and "image capture failed" DeadlineExceeded
-\t// for the same hang. One RPC, one dedicated budget, cold-camera-friendly.
-\tctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+\tctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 \tdefer cancel()
-\timg, err := robot.Conn.CaptureSingleImage(ctx, &vectorpb.CaptureSingleImageRequest{
-\t\tEnableHighResolution: false,
+\tsess, err := robotsession.Default.Get(ctx, esn)
+\tif err != nil {
+\t\tfmt.Printf("[ambient] session get failed for %s: %v\\n", esn, err)
+\t\treturn false
+\t}
+\t// Ensure state stream is up so IsOnCharger / calm flags stay fresh.
+\t_ = sess.StartStateStream(ctx)
+
+\tvar jpeg []byte
+\terr = sess.Unary(ctx, func(ctx context.Context, robot *vector.Vector) error {
+\t\t// CaptureSingleImage on Vector's gateway: enables streaming, waits for
+\t\t// one full JPEG, then disables. One RPC, one dedicated budget.
+\t\timgCtx, imgCancel := context.WithTimeout(ctx, 30*time.Second)
+\t\tdefer imgCancel()
+\t\timg, capErr := robot.Conn.CaptureSingleImage(imgCtx, &vectorpb.CaptureSingleImageRequest{
+\t\t\tEnableHighResolution: false,
+\t\t})
+\t\tif capErr != nil || img == nil || len(img.Data) == 0 {
+\t\t\tif capErr == nil {
+\t\t\t\tcapErr = fmt.Errorf("empty image")
+\t\t\t}
+\t\t\treturn capErr
+\t\t}
+\t\tjpeg = img.Data
+\t\treturn nil
 \t})
-\tif err != nil || img == nil || len(img.Data) == 0 {
+\tif err != nil {
 \t\tfmt.Printf("[ambient] image capture failed for %s: %v\\n", esn, err)
 \t\treturn false
 \t}
 
-\tline := askVectorAIAmbient(img.Data)
+\tline := askVectorAIAmbient(jpeg)
 \tif line == "" {
 \t\treturn true // nothing novel - the overwhelmingly common case
 \t}
@@ -255,65 +256,57 @@ func ambientObserveOnce(esn, guid, target string) bool {
 
 \tfmt.Printf("[ambient] reaction: %q\\n", line)
 \tlastAmbientReaction.Store(time.Now().Unix())
-\t// Off the charger, Vector physically investigates the new thing before
-\t// commenting; docked, he simply speaks (we never drive him off his pod).
-\tambientReact(robot, line, !IsOnCharger())
+\t// Off the charger, Vector physically investigates before commenting;
+\t// docked, he simply speaks (we never drive him off his pod).
+\tonCharger := sess.OnCharger()
+\tif sess.LastRobotState() == nil {
+\t\tonCharger = IsOnCharger()
+\t}
+\tambientReact(esn, line, !onCharger)
 \treturn true
 }
 
-// ambientReact makes Vector react to something synchronously: it acquires
-// behavior control, optionally performs a brief investigative move, speaks the
-// line, then releases - all before returning, so the caller's deferred Close
-// never cuts the moment off. The shared fire-and-forget sayText helper is
-// unsafe here: the ambient loop's connection is short-lived.
-func ambientReact(robot *vector.Vector, text string, investigate bool) {
+// ambientReact makes Vector react via Session.WithControl: optionally a brief
+// investigative move, then SayText, all under one cancelable lease.
+func ambientReact(esn, text string, investigate bool) {
+\tif robotsession.Default == nil {
+\t\tfmt.Printf("[ambient] robotsession.Default nil; cannot speak\\n")
+\t\treturn
+\t}
 \tctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 \tdefer cancel()
-\tbc, err := robot.Conn.BehaviorControl(ctx)
+\tsess, err := robotsession.Default.Get(ctx, esn)
 \tif err != nil {
-\t\tfmt.Printf("[ambient] behavior control failed: %v\\n", err)
+\t\tfmt.Printf("[ambient] session get failed: %v\\n", err)
 \t\treturn
 \t}
-\tif err := bc.Send(&vectorpb.BehaviorControlRequest{
-\t\tRequestType: &vectorpb.BehaviorControlRequest_ControlRequest{
-\t\t\tControlRequest: &vectorpb.ControlRequest{
-\t\t\t\tPriority: vectorpb.ControlRequest_OVERRIDE_BEHAVIORS,
-\t\t\t},
-\t\t},
-\t}); err != nil {
-\t\tfmt.Printf("[ambient] control request failed: %v\\n", err)
+\terr = sess.WithControl(ctx, robotsession.ControlOptions{Timeout: 40 * time.Second},
+\t\tfunc(ctx context.Context, robot *vector.Vector) error {
+\t\t\tif investigate {
+\t\t\t\tambientInvestigateMove(ctx, robot)
+\t\t\t}
+\t\t\t_, sayErr := robot.Conn.SayText(ctx, &vectorpb.SayTextRequest{
+\t\t\t\tText:           text,
+\t\t\t\tUseVectorVoice: true,
+\t\t\t\tDurationScalar: 1.0,
+\t\t\t})
+\t\t\tif sayErr != nil {
+\t\t\t\treturn sayErr
+\t\t\t}
+\t\t\t// Brief pause so audio tail is not cut by control release.
+\t\t\tselect {
+\t\t\tcase <-ctx.Done():
+\t\t\tcase <-time.After(500 * time.Millisecond):
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\tif err != nil {
+\t\tfmt.Printf("[ambient] react failed: %v\\n", err)
 \t\treturn
 \t}
-\tfor {
-\t\tresp, err := bc.Recv()
-\t\tif err != nil {
-\t\t\tfmt.Printf("[ambient] control grant failed: %v\\n", err)
-\t\t\treturn
-\t\t}
-\t\tif resp.GetControlGrantedResponse() != nil {
-\t\t\tbreak
-\t\t}
-\t}
-\tif investigate {
-\t\tambientInvestigateMove(ctx, robot)
-\t}
-\tif _, err := robot.Conn.SayText(ctx, &vectorpb.SayTextRequest{
-\t\tText:           text,
-\t\tUseVectorVoice: true,
-\t\tDurationScalar: 1.0,
-\t}); err != nil {
-\t\tfmt.Printf("[ambient] SayText failed: %v\\n", err)
-\t} else {
-\t\t// Count ambient speech as voice activity so workday/greeting suppress
-\t\t// windows and other loops stay clear (avoids ambient→workday double-speak).
-\t\tMarkVoiceActivity()
-\t}
-\ttime.Sleep(500 * time.Millisecond) // let the audio tail finish
-\tbc.Send(&vectorpb.BehaviorControlRequest{
-\t\tRequestType: &vectorpb.BehaviorControlRequest_ControlRelease{
-\t\t\tControlRelease: &vectorpb.ControlRelease{},
-\t\t},
-\t})
+\t// Count ambient speech as voice activity so workday/greeting suppress
+\t// windows and other loops stay clear (avoids ambient→workday double-speak).
+\tMarkVoiceActivity()
 }
 
 // ambientInvestigateMove is a brief, modest "I noticed something" beat - a
@@ -335,10 +328,9 @@ func ambientInvestigateMove(ctx context.Context, robot *vector.Vector) {
 }
 
 // runGreetingLoop periodically, when Vector is idle, briefly probes for a known
-// face. If someone he knows has come into view, vector-ai decides whether a
-// greeting is warranted (it won't greet someone seen recently); if so, Vector
-// says it unprompted.
-func runGreetingLoop(esn, guid, target string) {
+// face via Session.ProbeFace. If someone he knows has come into view, vector-ai
+// decides whether a greeting is warranted; if so, Vector says it unprompted.
+func runGreetingLoop(esn string) {
 \tfmt.Printf("[greeting] starting proactive-greeting loop for %s\\n", esn)
 \tfailStreak := 0
 \tfor {
@@ -356,55 +348,50 @@ func runGreetingLoop(esn, guid, target string) {
 \t\tif recentlyConversed() || ambientInNightHours() {
 \t\t\tcontinue
 \t\t}
-\t\trobot, err := vector.New(vector.WithSerialNo(esn), vector.WithToken(guid), vector.WithTarget(target))
-\t\tif err != nil {
-\t\t\tfailStreak++
-\t\t\tfmt.Printf("[greeting] connect failed for %s: %v\\n", esn, err)
+\t\tfaceID, name := probeForKnownFace(esn)
+\t\tif faceID <= 0 {
+\t\t\t// Probe completed (possibly empty) — count as success for backoff
+\t\t\t// only when robotsession is ready; nil registry keeps failing.
+\t\t\tif robotsession.Default == nil {
+\t\t\t\tfailStreak++
+\t\t\t} else {
+\t\t\t\tfailStreak = 0
+\t\t\t}
 \t\t\tcontinue
 \t\t}
 \t\tfailStreak = 0
-\t\tfaceID, name := probeForKnownFace(robot)
-\t\tif faceID <= 0 {
-\t\t\trobot.Close()
-\t\t\tcontinue
-\t\t}
 \t\tline := askVectorAIGreeting(faceID, name)
 \t\tif line == "" || recentlyConversed() {
-\t\t\trobot.Close()
 \t\t\tcontinue
 \t\t}
 \t\tfmt.Printf("[greeting] %s -> %q\\n", name, line)
 \t\tMarkVoiceActivity() // a greeting counts as an interaction - keep loops clear
-\t\tambientReact(robot, line, false)
-\t\trobot.Close()
+\t\tambientReact(esn, line, false)
 \t}
 }
 
-// probeForKnownFace opens a short robot_observed_face stream and returns the
-// first enrolled (named) face Vector sees, or (0, "") if none. That stream is
-// firmware-heavy, so the window is deliberately brief.
-func probeForKnownFace(robot *vector.Vector) (int32, string) {
-\tctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-\tdefer cancel()
-\tstrm, err := robot.Conn.EventStream(ctx, &vectorpb.EventRequest{
-\t\tListType: &vectorpb.EventRequest_WhiteList{
-\t\t\tWhiteList: &vectorpb.FilterList{List: []string{"robot_observed_face"}},
-\t\t},
-\t})
-\tif err != nil {
+// probeForKnownFace uses Session.ProbeFace (≤6s secondary face stream) and
+// returns the first enrolled (named) face, or (0, "") if none.
+func probeForKnownFace(esn string) (int32, string) {
+\tif robotsession.Default == nil {
 \t\treturn 0, ""
 \t}
-\tfor {
-\t\tresp, err := strm.Recv()
-\t\tif err != nil {
-\t\t\treturn 0, ""
-\t\t}
-\t\tif rof := resp.Event.GetRobotObservedFace(); rof != nil {
-\t\t\tif rof.GetFaceId() > 0 && rof.GetName() != "" {
-\t\t\t\treturn rof.GetFaceId(), rof.GetName()
-\t\t\t}
-\t\t}
+\tctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+\tdefer cancel()
+\tsess, err := robotsession.Default.Get(ctx, esn)
+\tif err != nil {
+\t\tfmt.Printf("[greeting] session get failed for %s: %v\\n", esn, err)
+\t\treturn 0, ""
 \t}
+\tfaceID, name, _, err := sess.ProbeFace(ctx, 6*time.Second)
+\tif err != nil {
+\t\tfmt.Printf("[greeting] ProbeFace failed for %s: %v\\n", esn, err)
+\t\treturn 0, ""
+\t}
+\tif faceID > 0 && name != "" {
+\t\treturn faceID, name
+\t}
+\treturn 0, ""
 }
 
 // askVectorAIGreeting asks vector-ai whether to greet this person and for the
