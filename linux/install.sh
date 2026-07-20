@@ -261,23 +261,30 @@ cp "$SHARED_DIR/vector-ai/service.py"       "$VECTORAI_DIR/service.py"
 cp "$SHARED_DIR/vector-ai/memory.py"        "$VECTORAI_DIR/memory.py"
 cp "$SHARED_DIR/vector-ai/requirements.txt" "$VECTORAI_DIR/requirements.txt"
 # Modular service helpers (split from service.py; required at import).
+# Fail hard if any module is missing — a partial tree crash-loops at import.
 for _va_mod in paths.py logging_util.py debug_log.py llm.py persona.py \
                process_state.py deps.py vision.py prompt_assembly.py \
                response_cleanup.py chat_flow.py; do
-    if [ -f "$SHARED_DIR/vector-ai/$_va_mod" ]; then
-        cp "$SHARED_DIR/vector-ai/$_va_mod" "$VECTORAI_DIR/$_va_mod"
+    if [ ! -f "$SHARED_DIR/vector-ai/$_va_mod" ]; then
+        die "missing required vector-ai module: $_va_mod (incomplete checkout?)"
     fi
+    cp "$SHARED_DIR/vector-ai/$_va_mod" "$VECTORAI_DIR/$_va_mod"
 done
 # Work Day / behavior FSMs (required by service.py import).
 if [ -d "$SHARED_DIR/vector-ai/behaviors" ]; then
     rm -rf "$VECTORAI_DIR/behaviors"
     cp -a "$SHARED_DIR/vector-ai/behaviors" "$VECTORAI_DIR/behaviors"
+    # Drop bytecode so deploy tree stays clean (same for routes below).
+    find "$VECTORAI_DIR/behaviors" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
 fi
-# HTTP route package (FastAPI APIRouters).
-if [ -d "$SHARED_DIR/vector-ai/routes" ]; then
-    rm -rf "$VECTORAI_DIR/routes"
-    cp -a "$SHARED_DIR/vector-ai/routes" "$VECTORAI_DIR/routes"
+# HTTP route package (FastAPI APIRouters) — required.
+if [ ! -d "$SHARED_DIR/vector-ai/routes" ]; then
+    die "missing required vector-ai routes/ package (incomplete checkout?)"
 fi
+rm -rf "$VECTORAI_DIR/routes"
+cp -a "$SHARED_DIR/vector-ai/routes" "$VECTORAI_DIR/routes"
+find "$VECTORAI_DIR/routes" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+
 
 cp "$SHARED_DIR/supervisor.py"              "$HOME/vector-pod/supervisor.py"
 

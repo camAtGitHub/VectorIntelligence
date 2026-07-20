@@ -447,6 +447,7 @@ Copy-Item "$SharedDir\vector-ai\service.py"       (Join-Path $VectorAIDir "servi
 Copy-Item "$SharedDir\vector-ai\memory.py"        (Join-Path $VectorAIDir "memory.py")        -Force
 Copy-Item "$SharedDir\vector-ai\requirements.txt" (Join-Path $VectorAIDir "requirements.txt") -Force
 # Modular service helpers (split from service.py; required at import).
+# Fail hard if any module is missing — a partial tree crash-loops at import.
 $VectorAiModules = @(
     "paths.py", "logging_util.py", "debug_log.py", "llm.py", "persona.py",
     "process_state.py", "deps.py", "vision.py", "prompt_assembly.py",
@@ -454,20 +455,30 @@ $VectorAiModules = @(
 )
 foreach ($mod in $VectorAiModules) {
     $src = Join-Path $SharedDir "vector-ai\$mod"
-    if (Test-Path $src) {
-        Copy-Item $src (Join-Path $VectorAIDir $mod) -Force
+    if (-not (Test-Path $src)) {
+        Fail "missing required vector-ai module: $mod (incomplete checkout?)"
     }
+    Copy-Item $src (Join-Path $VectorAIDir $mod) -Force
 }
 # Work Day / behavior FSMs (required by service.py import).
 if (Test-Path "$SharedDir\vector-ai\behaviors") {
-    Copy-Item "$SharedDir\vector-ai\behaviors" (Join-Path $VectorAIDir "behaviors") -Recurse -Force
+    $behaviorsDest = Join-Path $VectorAIDir "behaviors"
+    if (Test-Path $behaviorsDest) { Remove-Item $behaviorsDest -Recurse -Force }
+    Copy-Item "$SharedDir\vector-ai\behaviors" $behaviorsDest -Recurse -Force
+    Get-ChildItem -Path $behaviorsDest -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
-# HTTP route package (FastAPI APIRouters).
-if (Test-Path "$SharedDir\vector-ai\routes") {
-    $routesDest = Join-Path $VectorAIDir "routes"
-    if (Test-Path $routesDest) { Remove-Item $routesDest -Recurse -Force }
-    Copy-Item "$SharedDir\vector-ai\routes" $routesDest -Recurse -Force
+# HTTP route package (FastAPI APIRouters) — required.
+$routesSrc = Join-Path $SharedDir "vector-ai\routes"
+if (-not (Test-Path $routesSrc)) {
+    Fail "missing required vector-ai routes/ package (incomplete checkout?)"
 }
+$routesDest = Join-Path $VectorAIDir "routes"
+if (Test-Path $routesDest) { Remove-Item $routesDest -Recurse -Force }
+Copy-Item $routesSrc $routesDest -Recurse -Force
+Get-ChildItem -Path $routesDest -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
 
 # persona.txt holds Vector's editable personality - copy only if absent so a
 # re-run never clobbers a customized character.
