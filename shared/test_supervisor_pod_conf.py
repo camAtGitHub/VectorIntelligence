@@ -83,6 +83,8 @@ def test_apply_typed_supervisor_keys() -> None:
         "AI_PORT": "not-a-port",
         "VOLUME_DROP": "3",
         "VOLUME_HANG_MS": "3000",
+        "VECTOR_VOLUME_TURN_MS": "12000",
+        "VECTOR_VOLUME_SESSION_MS": "60000",
         "USE_LOCAL_OLLAMA": "yes",
         "EXTERNAL_CHIPPER": "true",
         "WIREPOD_DIR": "/opt/wire-pod",
@@ -92,6 +94,8 @@ def test_apply_typed_supervisor_keys() -> None:
     assert applied["AI_PORT"] != "not-a-port"
     assert applied["VOLUME_DROP"] == 3 and isinstance(applied["VOLUME_DROP"], int)
     assert applied["VOLUME_HANG_MS"] == 3000
+    assert applied["VECTOR_VOLUME_TURN_MS"] == 12000
+    assert applied["VECTOR_VOLUME_SESSION_MS"] == 60000
     assert applied["USE_LOCAL_OLLAMA"] is True
     assert applied["EXTERNAL_CHIPPER"] is True
     assert applied["WIREPOD_DIR"] == "/opt/wire-pod"
@@ -104,10 +108,20 @@ def test_apply_vector_volume_aliases_win() -> None:
         "VOLUME_HANG_MS": "1000",
         "VECTOR_VOLUME_HANG_MS": "5000",
         "VECTOR_VOLUME_MS_PER_WORD": "350",
+        "VECTOR_VOLUME_TURN_MS": "20000",
+        "VECTOR_VOLUME_SESSION_MS": "90000",
     })
     assert applied["VOLUME_DROP"] == 4
     assert applied["VOLUME_HANG_MS"] == 5000
     assert applied["VECTOR_VOLUME_MS_PER_WORD"] == 350
+    assert applied["VECTOR_VOLUME_TURN_MS"] == 20000
+    assert applied["VECTOR_VOLUME_SESSION_MS"] == 90000
+
+
+def test_apply_volume_turn_session_defaults() -> None:
+    applied = apply_supervisor_pod_conf({})
+    assert applied["VECTOR_VOLUME_TURN_MS"] == 15000
+    assert applied["VECTOR_VOLUME_SESSION_MS"] == 45000
 
 
 def test_apply_falsey_bools_and_bad_int() -> None:

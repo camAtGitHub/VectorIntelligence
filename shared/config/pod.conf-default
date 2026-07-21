@@ -23,9 +23,15 @@
 # WIREPOD_DIR=C:\Program Files\wire-pod
 # WIREPOD_DATA_DIR=%APPDATA%\wire-pod
 # USE_LOCAL_OLLAMA=0
+# -- Speech volume (full install + add-speech-volume-bump.py; chipper env) ----
+# Desired speak level lives in jdoc wirepod.SpeechVolume (desired_speech_volume).
+# Idle = desired − DROP; duck/raise never rewrite desired (creep fix).
+# VOLUME_DROP / VOLUME_HANG_MS short aliases OK; VECTOR_VOLUME_* wins if both set.
 # VOLUME_DROP=2
 # VOLUME_HANG_MS=2500
 # VECTOR_VOLUME_MS_PER_WORD=400
+# VECTOR_VOLUME_TURN_MS=15000
+# VECTOR_VOLUME_SESSION_MS=45000
 
 # -- Runtime / shared speech (multi-behavior) ----------------------------------
 # BEHAVIORS_ENABLED=workday

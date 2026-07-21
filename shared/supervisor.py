@@ -48,7 +48,7 @@ VECTORAI_LOG = POD_DIR / "vector-ai.log"
 
 # -- Tunables (the few things worth changing live here, not scattered) ---------
 # STT_SERVICE   = "whisper.cpp"  # whisper.cpp | vosk (must match Wire-Pod's STT names)
-STT_SERVICE   = "vosk"  # whisper.cpp | vosk (must match Wire-Pod's STT names)
+STT_SERVICE   = "whisper.cpp":waitvosk (must match Wire-Pod's STT names)
 WHISPER_MODEL = "base.en"
 HEALTH_PERIOD = 30            # seconds between health checks (raised in companion mode)
 SLEEP_GAP     = 60            # a tick gap longer than this == PC slept
@@ -63,6 +63,8 @@ AI_PORT       = "8090"        # vector-ai service port (localhost only). NOT
 VOLUME_HANG_MS = 2500
 VOLUME_DROP = 2
 VECTOR_VOLUME_MS_PER_WORD = 400
+VECTOR_VOLUME_TURN_MS = 15000
+VECTOR_VOLUME_SESSION_MS = 45000
 
 # Local Ollama is optional/legacy. Default is OpenRouter via vector-ai/.env.
 # Set USE_LOCAL_OLLAMA=1 in the environment or pod.conf to start/watch Ollama.
@@ -184,12 +186,22 @@ def apply_supervisor_pod_conf(conf: dict[str, str]) -> dict:
         conf, "VECTOR_VOLUME_MS_PER_WORD",
         VECTOR_VOLUME_MS_PER_WORD,
     )
+    volume_turn = _pod_int(
+        conf, "VECTOR_VOLUME_TURN_MS",
+        VECTOR_VOLUME_TURN_MS,
+    )
+    volume_session = _pod_int(
+        conf, "VECTOR_VOLUME_SESSION_MS",
+        VECTOR_VOLUME_SESSION_MS,
+    )
     return {
         "WEB_PORT": _pod_digit_str(conf, "WEB_PORT", WEB_PORT),
         "AI_PORT": _pod_digit_str(conf, "AI_PORT", AI_PORT),
         "VOLUME_DROP": volume_drop,
         "VOLUME_HANG_MS": volume_hang,
         "VECTOR_VOLUME_MS_PER_WORD": volume_ms_word,
+        "VECTOR_VOLUME_TURN_MS": volume_turn,
+        "VECTOR_VOLUME_SESSION_MS": volume_session,
         "USE_LOCAL_OLLAMA": _pod_bool(conf, "USE_LOCAL_OLLAMA", USE_LOCAL_OLLAMA),
         "EXTERNAL_CHIPPER": _pod_bool(conf, "EXTERNAL_CHIPPER", EXTERNAL_CHIPPER),
         "WIREPOD_DIR": _pod_str(conf, "WIREPOD_DIR", ""),
@@ -222,6 +234,8 @@ AI_PORT = _applied["AI_PORT"]
 VOLUME_DROP = _applied["VOLUME_DROP"]
 VOLUME_HANG_MS = _applied["VOLUME_HANG_MS"]
 VECTOR_VOLUME_MS_PER_WORD = _applied["VECTOR_VOLUME_MS_PER_WORD"]
+VECTOR_VOLUME_TURN_MS = _applied["VECTOR_VOLUME_TURN_MS"]
+VECTOR_VOLUME_SESSION_MS = _applied["VECTOR_VOLUME_SESSION_MS"]
 USE_LOCAL_OLLAMA = _applied["USE_LOCAL_OLLAMA"]
 EXTERNAL_CHIPPER = _applied["EXTERNAL_CHIPPER"]
 if _applied["WIREPOD_DIR"]:
@@ -868,6 +882,8 @@ class Supervisor:
         env["VECTOR_VOLUME_DROP"] = str(VOLUME_DROP)
         env["VECTOR_VOLUME_HANG_MS"] = str(VOLUME_HANG_MS)
         env["VECTOR_VOLUME_MS_PER_WORD"] = str(VECTOR_VOLUME_MS_PER_WORD)
+        env["VECTOR_VOLUME_TURN_MS"] = str(VECTOR_VOLUME_TURN_MS)
+        env["VECTOR_VOLUME_SESSION_MS"] = str(VECTOR_VOLUME_SESSION_MS)
         return env
 
     def _vectorai_env(self) -> dict:

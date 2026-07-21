@@ -255,35 +255,67 @@ one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
 | `VOLUME_DROP` / `VECTOR_VOLUME_DROP` | Speech-volume duck levels (see below) |
 | `VOLUME_HANG_MS` / `VECTOR_VOLUME_HANG_MS` | Extra hold after estimated speech |
 | `VECTOR_VOLUME_MS_PER_WORD` | Assumed TTS rate for hold sizing |
+| `VECTOR_VOLUME_TURN_MS` | Default turn hold (multi-sentence reply) |
+| `VECTOR_VOLUME_SESSION_MS` | Default session hold (blackjack / listen) |
 | `WORKDAY_*`, `JOKE_*`, `BEHAVIORS_ENABLED`, `SPEECH_*` | Behavior FSMs — preferred here, not `.env` |
 
 Format: one `KEY=value` per line, `#` full-line comments, blank lines OK.
 UTF-8 (BOM stripped if present). Unknown keys are preserved and forwarded.
 
-**Speech volume bump** (full install + `add-speech-volume-bump.py` patch only):
+**Speech volume** (full install + `add-speech-volume-bump.py` patch only):
 
-Keeps Vector quiet at idle and bumps master volume only while he speaks. The
-**speaking** level is whatever a human last set (web UI, “Vector, volume 4”,
-official app). The patch only chooses how far to duck **between** utterances.
+Keeps Vector quiet at idle and raises master volume only while he speaks (or
+during a turn/session hold). **Desired speech volume** is the user’s preferred
+speak level — durable in wire-pod jdoc `wirepod.SpeechVolume`
+(`{"desired_speech_volume": N}` under thing `vic:<ESN>`). It updates only on
+user intent (web UI volume, absolute volume intents where wired). Duck/raise
+never rewrite desired.
+
+**Runtime loop:**
+
+1. Before speech / hold entry: if `master_volume != desired` → set to desired.
+2. Hold at desired for the active mode (see below).
+3. After hold expires: set `master_volume = clamp(desired − VOLUME_DROP)`.
+
+**Creep fix:** idle (`desired − DROP`) is **never** adopted as a new desired.
+Only a live level that is neither desired nor idle is treated as a human
+change (then persisted to jdoc).
+
+**Hold modes** (all only move `loudUntil` forward; transition-only writes):
+
+| Mode | Typical use | Duck when |
+|------|-------------|-----------|
+| **utterance** | Single line / pre-arm bump | `estimate(text) + HANG` (or hang alone for bare bump) |
+| **turn** | One LLM reply cycle | `TURN_MS` (or caller duration) |
+| **session** | Blackjack hand, listen windows | `SESSION_MS` (refreshed on hit/stand); or after leave |
+
+Hold sizing note: gRPC SayText returns when the robot **accepts** the request,
+not when speech finishes — there is no end-of-speech callback, so utterance
+holds are always estimated from text length + hang margin.
 
 Chipper reads these process env vars (defaults match the Go in the patch):
 
 | Chipper env | Default | Meaning |
 |-------------|---------|---------|
-| `VECTOR_VOLUME_DROP` | `2` | How many master_volume presets below the speaking level to idle. Presets: `0` Mute … `5` High. Example: speaking at 4 → idle at 2. **`0` disables the patch** (no reads/writes; volume left where the human put it). |
+| `VECTOR_VOLUME_DROP` | `2` | How many master_volume presets below **desired** to idle. Presets: `0` Mute … `5` High. Example: desired 4 → idle 2. **`0` disables the patch** (no volume reads/writes from the duck path). |
 | `VECTOR_VOLUME_HANG_MS` | `2500` | Extra hold (ms) after the **estimated** speech length before dropping back to idle. Absorbs estimate error **and** gaps between consecutive sentence chunks of one LLM reply. Too short → level pumps mid-answer. |
-| `VECTOR_VOLUME_MS_PER_WORD` | `400` | Assumed TTS rate (ms/word) used to size the hold. Vector speaks slowly; erring long only costs a little idle delay, erring short ducks him mid-sentence. |
-
-Hold sizing note: gRPC SayText returns when the robot **accepts** the request,
-not when speech finishes — there is no end-of-speech callback, so the hold is
-always estimated from text length + hang margin.
+| `VECTOR_VOLUME_MS_PER_WORD` | `400` | Assumed TTS rate (ms/word) used to size utterance holds. Vector speaks slowly; erring long only costs a little idle delay, erring short ducks him mid-sentence. |
+| `VECTOR_VOLUME_TURN_MS` | `15000` | Default **turn** hold when caller omits duration. |
+| `VECTOR_VOLUME_SESSION_MS` | `45000` | Default **session** hold (blackjack / multi-turn listen). Hit/stand refresh extends; raise if slow players get mid-listen chirps. |
 
 **If Vector ducks mid-reply:** raise `VECTOR_VOLUME_MS_PER_WORD` and/or
-`VECTOR_VOLUME_HANG_MS` until he doesn’t.
+`VECTOR_VOLUME_HANG_MS` (utterance) or `VECTOR_VOLUME_TURN_MS` /
+`VECTOR_VOLUME_SESSION_MS` for multi-turn.
 
-**Where to set them:** prefer **`pod.conf`** (not `.env`). Supervisor reads
-`VOLUME_DROP` / `VOLUME_HANG_MS` (or the `VECTOR_VOLUME_*` names) from pod.conf
-and always injects `VECTOR_VOLUME_*` into the chipper child env. Do not park
+**First boot after upgrade:** if no jdoc yet, the first live `master_volume`
+is seeded as desired and persisted. If the robot was already **ducked** at
+that moment, desired can be wrong once — set volume once via the web UI
+(or “Vector, volume N”) so jdoc stores the real preference.
+
+**Where to set env knobs:** prefer **`pod.conf`** (not `.env`). Supervisor
+reads `VOLUME_DROP` / `VOLUME_HANG_MS` (or the `VECTOR_VOLUME_*` names) plus
+`VECTOR_VOLUME_MS_PER_WORD` / `TURN_MS` / `SESSION_MS` from pod.conf and
+always injects `VECTOR_VOLUME_*` into the chipper child env. Do not park
 these next to the OpenRouter key.
 
 **Work Day / Joke idle** (default off; needs full install + behavior-tick).

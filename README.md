@@ -43,7 +43,7 @@ These loops ship as install-time Go patches; stock packaged Wire-Pod does not ru
 | **Sensors** | Pickup / pet / fall-style reactions with LLM quips |
 | **Proactive greetings** | Notice you arriving without a wake word |
 | **Face probe** | Concurrent identity while you talk |
-| **Speech volume duck** | Idle audio quieter; volume bumps only while speaking |
+| **Speech volume duck** | Desired level in jdoc; idle quieter; raise only while speaking/hold |
 | **Behavior tick** | Thin presence loop for Work Day Mode and future FSMs |
 
 **Companion mode** (packaged Wire-Pod + this brain) still gets OpenRouter chat,
@@ -316,7 +316,8 @@ Chipper patches of note (full install):
 
 - Ambient loop, sensor reactions, face probe, proactive greeting hooks  
 - **Behavior tick** (`add-behavior-tick.py`) — presence → `/v1/behaviors/tick`  
-- **Speech volume bump** (`add-speech-volume-bump.py`) — quiet idle, loud speech  
+- **Speech volume** (`add-speech-volume-bump.py`) — desired in `wirepod.SpeechVolume` jdoc; quiet idle, loud speech/hold  
+
 - Connection / stream leak fixes, wake-word mute during camera, etc.
 
 ---
