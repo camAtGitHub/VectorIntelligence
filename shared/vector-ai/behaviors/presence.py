@@ -12,6 +12,10 @@ class PresenceCache:
     consecutive empty evidence reaches ``empty_streak_clear``, the sticky TTL
     expires, or a sleep gap clears the session. Tick/chipper empty alone does
     not wipe a warm sticky hold.
+
+    Concurrency: owned by the single vector-ai asyncio event loop (HTTP handlers
+    and background tasks run cooperatively). Not lock-protected; do not share
+    across threads without external synchronization.
     """
 
     def __init__(
@@ -66,6 +70,52 @@ class PresenceCache:
     def _sync_occupied(self, now: float) -> None:
         self._snap.occupied = self.occupied_effective(now)
 
+    def _enrolled_fresh(self, now: float) -> bool:
+        s = self._snap
+        return (
+            self.identity_fresh(now)
+            and s.face is not None
+            and not s.face.is_stranger
+        )
+
+    def _apply_face(
+        self,
+        now: float,
+        face: FaceIdentity,
+        *,
+        source: str,
+    ) -> None:
+        """Apply face identity with firmware-wins rules for ambient soft faces.
+
+        When a still-fresh enrolled face is present:
+        - ambient soft faces never replace it (even soft-matched enrolled names);
+          same face_id may refresh face_ts only.
+        - face_seen / tick hard sources may replace (multi-user handoff).
+        Soft strangers never replace a fresh enrolled face.
+        """
+        s = self._snap
+        enrolled_fresh = self._enrolled_fresh(now)
+
+        if enrolled_fresh and source == "ambient":
+            if (
+                not face.is_stranger
+                and s.face is not None
+                and face.face_id > 0
+                and face.face_id == s.face.face_id
+            ):
+                # Same enrolled person via ambient soft-match: refresh age only.
+                s.face_ts = now
+            # Different enrolled soft-match or stranger: keep firmware primary.
+            return
+
+        if face.is_stranger and enrolled_fresh:
+            return
+
+        s.face = face
+        s.face_ts = now
+        if face.name:
+            self._soft_name = face.name
+
     def note_person_evidence(
         self,
         now: float,
@@ -77,7 +127,7 @@ class PresenceCache:
         voice_recent: Optional[bool] = None,
         image_b64: Optional[str] = None,
     ) -> PresenceSnapshot:
-        """Record positive person evidence (ambient, face_seen, or tick)."""
+        """Record positive person evidence (ambient, face_seen, or tick occupied)."""
         s = self._snap
         self._last_person_at = now
         self._empty_streak = 0
@@ -92,35 +142,52 @@ class PresenceCache:
             s.image_ts = now
 
         if face is not None:
-            # Firmware enrolled face is authoritative; soft stranger must not
-            # replace a still-fresh enrolled identity.
-            enrolled_fresh = (
-                self.identity_fresh(now)
-                and s.face is not None
-                and not s.face.is_stranger
-            )
-            if face.is_stranger and enrolled_fresh:
-                pass
-            else:
-                s.face = face
-                s.face_ts = now
-                if face.name:
-                    self._soft_name = face.name
+            self._apply_face(now, face, source=source)
         elif name_hint:
             hint = str(name_hint).strip()[:64]
             if hint:
                 self._soft_name = hint
-                enrolled_fresh = (
-                    self.identity_fresh(now)
-                    and s.face is not None
-                    and not s.face.is_stranger
-                )
-                if not enrolled_fresh:
+                if not self._enrolled_fresh(now):
                     s.face = FaceIdentity(
                         face_id=0, name=hint, is_stranger=True
                     )
                     s.face_ts = now
 
+        self._sync_occupied(now)
+        return s
+
+    def note_identity_reuse(
+        self,
+        now: float,
+        *,
+        face: Optional[FaceIdentity] = None,
+        on_charger: Optional[bool] = None,
+        voice_recent: Optional[bool] = None,
+        image_b64: Optional[str] = None,
+    ) -> PresenceSnapshot:
+        """Seed identity from chat face cache without refreshing sticky occupancy.
+
+        Used when chipper reports occupied=false but current_face() is still
+        live for FSM arming. Does **not** set last_person_at, clear empty
+        streak, or force occupied=True. Does not refresh face_ts every tick
+        when identity is already fresh (avoids immortal identity).
+        """
+        s = self._snap
+        s.updated_at = now
+        if on_charger is not None:
+            s.on_charger = bool(on_charger)
+        if voice_recent is not None:
+            s.voice_recent = bool(voice_recent)
+        if image_b64 is not None:
+            s.image_b64 = image_b64
+            s.image_ts = now
+        if face is not None and not self.identity_fresh(now):
+            # Seed only when cache empty/stale; never stomp sticky.
+            if not (self._enrolled_fresh(now) and face.is_stranger):
+                s.face = face
+                s.face_ts = now
+                if face.name:
+                    self._soft_name = face.name
         self._sync_occupied(now)
         return s
 
@@ -156,9 +223,12 @@ class PresenceCache:
         s = self._snap
         s.occupied = False
         s.updated_at = now
+        s.face = None
+        s.face_ts = 0.0
         self._last_person_at = 0.0
         self._empty_streak = 0
         self._last_source = "sleep"
+        self._soft_name = ""
         return s
 
     def update(

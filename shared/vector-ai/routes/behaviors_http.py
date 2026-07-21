@@ -30,7 +30,9 @@ async def behaviors_tick(req: BehaviorTickRequest):
         }
     occupied = bool(req.occupied)
     # If chipper did not attach a face this tick but a recent voice-start
-    # face_seen is still current, reuse it for identity (morning/late arm).
+    # face_seen is still current, reuse it for **identity only** (morning/late
+    # arm). Do NOT force occupied=True — long FACE_RECENT_WINDOW would otherwise
+    # re-arm sticky after ambient empty×2 and break workday away.
     if face_dict is None:
         live = process_state.current_face()
         if live is not None:
@@ -39,16 +41,8 @@ async def behaviors_tick(req: BehaviorTickRequest):
                 "name": str(live.get("name") or "")[:64],
                 "is_stranger": bool(live.get("is_stranger")),
             }
-            # Voice face implies someone is at the desk even if sticky occupancy
-            # was cleared by a flaky empty probe.
-            occupied = True
-    # occupied_effective = sticky OR req.occupied OR current_face live.
-    # ingest_tick_payload treats chipper occupied=False as weak (does not
-    # stomp warm sticky); ambient empty is the strong clear path.
-    if not occupied and face_dict is None:
-        if deps.BEHAVIOR_RUNTIME.presence.occupied_effective(now):
-            # Keep sticky warm; still refresh sensors via weak path.
-            pass
+    # ingest: occupied=True → person evidence; occupied=False + face →
+    # identity-only (no last_person_at refresh); occupied=False alone is weak.
     deps.BEHAVIOR_RUNTIME.ingest_tick_payload(
         now=now,
         occupied=occupied,

@@ -22,15 +22,26 @@ from logging_util import print  # noqa: F401
 # lower FACE_RECENT_WINDOW_S via pod.conf if needed.
 
 
-def _load_face_recent_window() -> int:
+def _load_face_recent_window(env: Optional[dict] = None) -> int:
+    """Load chat face window seconds. Invalid / non-positive → default 1800."""
+    mapping = env if env is not None else os.environ
     for key in ("FACE_RECENT_WINDOW_S", "FACE_RECENT_WINDOW"):
-        raw = os.environ.get(key)
+        raw = mapping.get(key) if hasattr(mapping, "get") else None
         if raw is None or str(raw).strip() == "":
             continue
         try:
-            return int(raw)
+            val = int(raw)
         except (TypeError, ValueError):
-            pass
+            print(
+                f"[face] invalid int for {key}={raw!r}; using default 1800"
+            )
+            return 1800
+        if val < 1:
+            print(
+                f"[face] non-positive {key}={val}; using default 1800"
+            )
+            return 1800
+        return val
     return 1800
 
 

@@ -428,8 +428,16 @@ machine `PRESENCE:` line independent of novelty speech. Partial people count
 `PRESENCE_EMPTY_STREAK` ambient empties (default **2**), `PRESENCE_STICKY_S`
 (default **1800s**), or an ambient sleep gap (`AMBIENT_SLEEP_GAP` ~4h). Chipper
 tick `occupied=false` alone does **not** clear warm sticky; ambient empty is the
-strong clear. Soft ambient `name_hint` may match enrolled `MEMORY.distinct_faces()`;
-firmware `face_seen` enrolled identity still wins when fresh.
+strong clear. Soft ambient `name_hint` may match enrolled `MEMORY.distinct_faces()`
+(only faces that already have at least one memory row — enrolled profiles with
+zero memories will not soft-match until remembered). Firmware `face_seen` enrolled
+identity still wins when fresh; ambient soft-matched enrolled names do **not**
+replace a still-fresh firmware face.
+
+**Long face window vs occupancy:** `FACE_RECENT_WINDOW_S` keeps chat identity for
+~30m, but `/v1/behaviors/tick` reuses `current_face()` for **identity only** —
+it does **not** force `occupied=True` or refresh sticky `last_person_at`. Ambient
+empty×2 can clear the desk even while chat still knows who you are.
 
 **Face caches (defaults, single-user desk):**
 

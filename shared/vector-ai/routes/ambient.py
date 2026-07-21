@@ -286,6 +286,7 @@ async def ambient(req: AmbientRequest):
     presence_kind, name_hint, spoken = parse_ambient_llm_raw(raw)
 
     # Sticky presence write (only for known empty/person).
+    occupied_out = presence_kind == "person"
     try:
         rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
         if rt is not None and presence_kind in ("person", "empty"):
@@ -300,6 +301,7 @@ async def ambient(req: AmbientRequest):
             else:
                 rt.presence.note_empty_evidence(now, source="ambient")
             eff = rt.presence.occupied_effective(now)
+            occupied_out = eff  # sticky effective, not raw glance only
             streak = rt.presence.empty_streak
             clear_n = rt.presence.empty_streak_clear
             if presence_kind == "person":
@@ -312,6 +314,8 @@ async def ambient(req: AmbientRequest):
                     f"[ambient] presence=empty streak={streak}/{clear_n} "
                     f"occupied_effective={eff}"
                 )
+        elif rt is not None:
+            occupied_out = rt.presence.occupied_effective(now)
     except Exception as e:
         print(f"[ambient] presence update failed: {e}")
 
@@ -320,13 +324,12 @@ async def ambient(req: AmbientRequest):
         debug("HTTP SEND /v1/ambient", {
             "text": "", "raw": raw, "presence": presence_kind,
         })
-        out = {
+        return {
             "text": "",
             "presence": presence_kind,
             "name_hint": name_hint,
-            "occupied": presence_kind == "person",
+            "occupied": occupied_out,
         }
-        return out
 
     note = _novelty_note_from_raw(raw)
     if not note:
@@ -338,7 +341,7 @@ async def ambient(req: AmbientRequest):
         "text": spoken,
         "presence": presence_kind,
         "name_hint": name_hint,
-        "occupied": presence_kind == "person",
+        "occupied": occupied_out,
     }
 
 

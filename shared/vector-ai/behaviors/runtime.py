@@ -37,13 +37,14 @@ class BehaviorRuntime:
         self.quiet_fn = quiet_fn or (lambda: False)
         self.voice_ts_fn = voice_ts_fn or (lambda: 0.0)
 
+        # Use defaults only when attribute missing; allow intentional 0.
+        _sticky = getattr(runtime_cfg, "presence_sticky_s", None)
+        _streak = getattr(runtime_cfg, "presence_empty_streak", None)
         self.presence = PresenceCache(
             face_max_age_s=runtime_cfg.face_cache_max_age_s,
             image_max_age_s=runtime_cfg.image_cache_max_age_s,
-            sticky_s=int(getattr(runtime_cfg, "presence_sticky_s", 1800) or 1800),
-            empty_streak_clear=int(
-                getattr(runtime_cfg, "presence_empty_streak", 2) or 2
-            ),
+            sticky_s=int(1800 if _sticky is None else _sticky),
+            empty_streak_clear=int(2 if _streak is None else _streak),
         )
         self.arbiter = SpeechArbiter(
             min_gap_s=runtime_cfg.speech_min_gap_s,
@@ -105,13 +106,23 @@ class BehaviorRuntime:
                     )
             except (TypeError, ValueError):
                 face_obj = None
-        # Binding: chipper occupied=True or any face → person evidence.
-        # Chipper occupied=False is weak — do not clear warm sticky (only ambient
-        # empty increments streak). Still refresh charger/voice on the snapshot.
-        if occupied or face_obj is not None:
+        # Binding:
+        # - chipper occupied=True → person evidence (may include face).
+        # - chipper occupied=False + face (e.g. chat current_face reuse) →
+        #   identity-only: do NOT refresh last_person_at / sticky.
+        # - chipper occupied=False alone is weak empty (no sticky clear).
+        if occupied:
             return self.presence.note_person_evidence(
                 now,
                 source="tick",
+                face=face_obj,
+                on_charger=on_charger,
+                voice_recent=voice_recent,
+                image_b64=image_b64,
+            )
+        if face_obj is not None:
+            return self.presence.note_identity_reuse(
+                now,
                 face=face_obj,
                 on_charger=on_charger,
                 voice_recent=voice_recent,
