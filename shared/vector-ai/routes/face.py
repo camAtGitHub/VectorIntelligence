@@ -3,6 +3,7 @@ import time as _time
 
 from fastapi import APIRouter
 
+import deps
 from debug_log import debug
 from logging_util import print  # noqa: F401
 from process_state import FACE_RECENT_WINDOW, _face_state, current_face
@@ -27,6 +28,27 @@ async def state_face_seen(req: FaceSeenRequest):
     debug("HTTP RECV POST /v1/state/face_seen", {
         "face_id": req.face_id, "name": name, "is_stranger": is_stranger,
     })
+    # Work Day / joke presence used to only update from /v1/behaviors/tick.
+    # Voice-start face probes POST here and never set PresenceCache.occupied,
+    # so the desk stayed "empty" and Work Day stuck in no_show. Mirror the
+    # sighting into the behavior presence cache as occupied + face.
+    try:
+        rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
+        if rt is not None:
+            prev = rt.presence.snapshot
+            rt.ingest_tick_payload(
+                now=now,
+                occupied=True,
+                face={
+                    "face_id": int(req.face_id),
+                    "name": name[:64],
+                    "is_stranger": is_stranger,
+                },
+                on_charger=bool(prev.on_charger),
+                voice_recent=bool(prev.voice_recent),
+            )
+    except Exception as e:
+        print(f"[face] presence mirror failed: {e}")
     return {"ok": True, "is_stranger": is_stranger}
 
 

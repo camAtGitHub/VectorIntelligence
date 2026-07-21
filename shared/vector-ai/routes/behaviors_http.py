@@ -28,9 +28,23 @@ async def behaviors_tick(req: BehaviorTickRequest):
             "name": (req.face.name or "")[:64],
             "is_stranger": bool(req.face.is_stranger),
         }
+    occupied = bool(req.occupied)
+    # If chipper did not attach a face this tick but a recent voice-start
+    # face_seen is still current, reuse it for identity (morning/late arm).
+    if face_dict is None:
+        live = process_state.current_face()
+        if live is not None:
+            face_dict = {
+                "face_id": int(live.get("face_id") or 0),
+                "name": str(live.get("name") or "")[:64],
+                "is_stranger": bool(live.get("is_stranger")),
+            }
+            # Voice face implies someone is at the desk even if sticky occupancy
+            # was cleared by a flaky empty probe.
+            occupied = True
     deps.BEHAVIOR_RUNTIME.ingest_tick_payload(
         now=now,
-        occupied=bool(req.occupied),
+        occupied=occupied,
         face=face_dict,
         on_charger=bool(req.on_charger),
         voice_recent=bool(req.voice_recent),
