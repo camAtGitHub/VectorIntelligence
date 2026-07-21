@@ -336,6 +336,9 @@ def test_ambient_quiet_short_circuits_without_llm(tmp_path, monkeypatch):
     assert result.get("quiet") is True
     assert result.get("text", "") == ""
     assert called["n"] == 0
+    # Quiet short-circuit must not invent presence / occupied.
+    assert "presence" not in result
+    assert "occupied" not in result
 
 
 def test_ambient_quiet_expires_on_sleep_gap(tmp_path, monkeypatch):

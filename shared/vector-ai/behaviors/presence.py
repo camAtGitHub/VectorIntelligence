@@ -28,7 +28,8 @@ class PresenceCache:
         self.face_max_age_s = face_max_age_s
         self.image_max_age_s = image_max_age_s
         self.sticky_s = sticky_s
-        self.empty_streak_clear = empty_streak_clear
+        # Minimum 1: 0 would never hold occupancy (empty_streak < 0 is impossible).
+        self.empty_streak_clear = max(1, int(empty_streak_clear))
         self._snap = PresenceSnapshot()
         self._last_person_at: float = 0.0
         self._empty_streak: int = 0
@@ -181,13 +182,12 @@ class PresenceCache:
         if image_b64 is not None:
             s.image_b64 = image_b64
             s.image_ts = now
+        # Seed only when cache empty/stale; never refresh face_ts every tick.
         if face is not None and not self.identity_fresh(now):
-            # Seed only when cache empty/stale; never stomp sticky.
-            if not (self._enrolled_fresh(now) and face.is_stranger):
-                s.face = face
-                s.face_ts = now
-                if face.name:
-                    self._soft_name = face.name
+            s.face = face
+            s.face_ts = now
+            if face.name:
+                self._soft_name = face.name
         self._sync_occupied(now)
         return s
 

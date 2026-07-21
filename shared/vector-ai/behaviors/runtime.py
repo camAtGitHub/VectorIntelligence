@@ -78,7 +78,14 @@ class BehaviorRuntime:
         on_charger: bool = False,
         voice_recent: bool = False,
         image_b64: Optional[str] = None,
+        hard_face: bool = False,
     ) -> PresenceSnapshot:
+        """Ingest chipper tick sensors.
+
+        hard_face=True: face came from chipper req.face (probe) — counts as
+        person evidence even when occupied=false.
+        hard_face=False with face: soft current_face() reuse for identity only.
+        """
         face_obj: Optional[FaceIdentity] = None
         if face and isinstance(face, dict):
             try:
@@ -107,11 +114,11 @@ class BehaviorRuntime:
             except (TypeError, ValueError):
                 face_obj = None
         # Binding:
-        # - chipper occupied=True → person evidence (may include face).
-        # - chipper occupied=False + face (e.g. chat current_face reuse) →
-        #   identity-only: do NOT refresh last_person_at / sticky.
-        # - chipper occupied=False alone is weak empty (no sticky clear).
-        if occupied:
+        # - occupied=True → person evidence (may include face).
+        # - hard chipper face (probe) → person evidence even if occupied=false.
+        # - soft current_face reuse → identity-only (no last_person_at refresh).
+        # - occupied=False alone is weak empty (no sticky clear).
+        if occupied or (face_obj is not None and hard_face):
             return self.presence.note_person_evidence(
                 now,
                 source="tick",

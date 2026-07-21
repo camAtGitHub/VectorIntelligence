@@ -110,9 +110,11 @@ def parse_ambient_llm_raw(raw: str) -> Tuple[str, Optional[str], str]:
     body_start = 0
 
     # Prefer first line; also scan if model put PRESENCE later.
+    found_presence = False
     for i, ln in enumerate(lines):
         m = _PRESENCE_RE.match(ln)
         if m:
+            found_presence = True
             kind_raw = (m.group(1) or "").strip().lower()
             if kind_raw.startswith("person"):
                 presence_kind = "person"
@@ -126,6 +128,10 @@ def parse_ambient_llm_raw(raw: str) -> Tuple[str, Optional[str], str]:
         # Bare first-line NOTHING with no PRESENCE → unknown (no update).
         if i == 0 and ln.upper().rstrip(".!").startswith("NOTHING"):
             return "unknown", None, ""
+
+    # No PRESENCE line → unknown occupancy; do not treat free text as novelty.
+    if not found_presence:
+        return "unknown", None, ""
 
     rest = lines[body_start:]
     if not rest:

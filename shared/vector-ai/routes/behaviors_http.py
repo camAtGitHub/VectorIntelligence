@@ -22,7 +22,11 @@ async def behaviors_tick(req: BehaviorTickRequest):
     """
     now = time.time()
     face_dict = None
+    # Chipper-attached face is hard evidence (behavior probe); current_face
+    # reuse below is soft identity-only.
+    hard_face = False
     if req.face is not None:
+        hard_face = True
         face_dict = {
             "face_id": int(req.face.face_id),
             "name": (req.face.name or "")[:64],
@@ -41,14 +45,16 @@ async def behaviors_tick(req: BehaviorTickRequest):
                 "name": str(live.get("name") or "")[:64],
                 "is_stranger": bool(live.get("is_stranger")),
             }
-    # ingest: occupied=True → person evidence; occupied=False + face →
-    # identity-only (no last_person_at refresh); occupied=False alone is weak.
+            hard_face = False  # soft cache reuse only
+    # ingest: occupied or hard_face → person evidence; soft face → identity-only;
+    # occupied=False alone is weak empty.
     deps.BEHAVIOR_RUNTIME.ingest_tick_payload(
         now=now,
         occupied=occupied,
         face=face_dict,
         on_charger=bool(req.on_charger),
         voice_recent=bool(req.voice_recent),
+        hard_face=hard_face,
     )
     # Chipper may flag recent voice; also honor our chat-side timestamp.
     if req.voice_recent:

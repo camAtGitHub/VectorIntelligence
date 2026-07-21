@@ -79,6 +79,8 @@ def test_parse_missing_presence_free_text_unknown():
     kind, hint, spoken = parse_ambient_llm_raw(raw)
     # No PRESENCE line → unknown (do not force empty).
     assert kind == "unknown"
+    assert hint is None
+    assert spoken == ""  # free text is not novelty without PRESENCE
 
 
 def test_parse_person_name_with_spaces():
@@ -598,10 +600,12 @@ def test_presence_debug_dict_fields():
     assert d["empty_streak"] == 0
     assert d["presence_source"] == "ambient"
     assert d["sticky_s"] == 100
+    assert d["soft_name"] == "Cam"
+    assert cache.soft_name == "Cam"
 
 
 def test_runtime_zero_sticky_config_allowed():
-    """presence_sticky_s=0 must not be masked by `or 1800`."""
+    """presence_sticky_s=0 must not be masked by `or 1800`; streak 0 clamps to 1."""
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "w.db")
         rt = BehaviorRuntime(
@@ -610,7 +614,7 @@ def test_runtime_zero_sticky_config_allowed():
             store,
         )
         assert rt.presence.sticky_s == 0
-        assert rt.presence.empty_streak_clear == 0
+        assert rt.presence.empty_streak_clear == 1  # min clamp
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +640,11 @@ def test_ambient_unknown_presence_no_sticky_write(tmp_path, monkeypatch):
         monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
         process_state._set_quiet(False)
         process_state._ambient_state["last_ambient_call"] = time.time()
+        # Seed warm sticky first; unknown must not clear or refresh.
+        t_seed = time.time()
+        rt.presence.note_person_evidence(t_seed, source="ambient")
         before = rt.presence.last_person_at
+        assert before > 0
 
         async def _bare(*a, **k):
             return "NOTHING"
@@ -646,6 +654,7 @@ def test_ambient_unknown_presence_no_sticky_write(tmp_path, monkeypatch):
         assert result["presence"] == "unknown"
         assert result["text"] == ""
         assert rt.presence.last_person_at == before
+        assert rt.presence.occupied_effective(time.time()) is True
 
 
 def test_ambient_first_empty_occupied_effective_true(tmp_path, monkeypatch):
@@ -862,3 +871,112 @@ def test_face_seen_http_notes_person(tmp_path, monkeypatch):
         assert rt.presence.snapshot.face is not None
         assert rt.presence.snapshot.face.name == "Cam"
         assert rt.presence.last_source == "face_seen"
+
+
+def test_hard_face_occupied_false_still_person_evidence():
+    """Chipper-attached face (hard) with occupied=false still notes person."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rt = BehaviorRuntime(
+            RuntimeConfig(behaviors_enabled=()),
+            WorkdayConfig(enabled=False, tz=ZoneInfo("UTC")),
+            store,
+        )
+        t0 = 11_000.0
+        snap = rt.ingest_tick_payload(
+            now=t0,
+            occupied=False,
+            face={"face_id": 1, "name": "Cam", "is_stranger": False},
+            hard_face=True,
+        )
+        assert snap.occupied is True
+        assert rt.presence.occupied_effective(t0) is True
+        assert rt.presence.last_person_at == t0
+        assert rt.presence.snapshot.face is not None
+        assert rt.presence.snapshot.face.name == "Cam"
+
+
+def test_soft_face_occupied_false_identity_only():
+    """Soft current_face reuse must not note person evidence."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rt = BehaviorRuntime(
+            RuntimeConfig(behaviors_enabled=()),
+            WorkdayConfig(enabled=False, tz=ZoneInfo("UTC")),
+            store,
+        )
+        t0 = 12_000.0
+        snap = rt.ingest_tick_payload(
+            now=t0,
+            occupied=False,
+            face={"face_id": 1, "name": "Cam", "is_stranger": False},
+            hard_face=False,
+        )
+        assert snap.occupied is False
+        assert rt.presence.occupied_effective(t0) is False
+        assert rt.presence.last_person_at == 0.0
+
+
+def test_behaviors_tick_http_current_face_does_not_reoccupy(monkeypatch):
+    """HTTP behaviors_tick: soft current_face + occupied=false stays empty after clear."""
+    import deps
+    import process_state
+    from routes.behaviors_http import behaviors_tick
+    from routes.models import BehaviorTickRequest
+
+    with tempfile.TemporaryDirectory() as td:
+        cont = ContinuityStore(Path(td) / "w.db")
+        rt = BehaviorRuntime(
+            RuntimeConfig(presence_empty_streak=2, behaviors_enabled=()),
+            WorkdayConfig(enabled=False, tz=ZoneInfo("UTC")),
+            cont,
+        )
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        t0 = time.time()
+        rt.presence.note_person_evidence(t0, source="ambient")
+        rt.presence.note_empty_evidence(t0 + 1, source="ambient")
+        rt.presence.note_empty_evidence(t0 + 2, source="ambient")
+        assert rt.presence.occupied_effective(t0 + 2) is False
+
+        monkeypatch.setattr(process_state, "FACE_RECENT_WINDOW", 1800)
+        process_state._face_state["enrolled_id"] = 1
+        process_state._face_state["enrolled_name"] = "Cam"
+        process_state._face_state["enrolled_seen"] = time.time()
+        process_state._face_state["stranger_seen"] = 0.0
+        assert process_state.current_face() is not None
+
+        asyncio.run(
+            behaviors_tick(
+                BehaviorTickRequest(occupied=False, face=None)
+            )
+        )
+        assert rt.presence.occupied_effective(time.time()) is False
+        assert rt.presence.last_person_at == 0.0
+
+
+def test_behaviors_tick_http_hard_face_occupies(monkeypatch):
+    """HTTP behaviors_tick: chipper req.face is hard person evidence."""
+    import deps
+    from routes.behaviors_http import behaviors_tick
+    from routes.models import BehaviorTickRequest, FaceIn
+
+    with tempfile.TemporaryDirectory() as td:
+        cont = ContinuityStore(Path(td) / "w.db")
+        rt = BehaviorRuntime(
+            RuntimeConfig(behaviors_enabled=()),
+            WorkdayConfig(enabled=False, tz=ZoneInfo("UTC")),
+            cont,
+        )
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        asyncio.run(
+            behaviors_tick(
+                BehaviorTickRequest(
+                    occupied=False,
+                    face=FaceIn(face_id=1, name="Cam", is_stranger=False),
+                )
+            )
+        )
+        assert rt.presence.occupied_effective(time.time()) is True
+        assert rt.presence.last_person_at > 0
+        assert rt.presence.snapshot.face is not None
+        assert rt.presence.snapshot.face.name == "Cam"

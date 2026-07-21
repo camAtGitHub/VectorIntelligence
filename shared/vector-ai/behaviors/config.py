@@ -94,6 +94,8 @@ class RuntimeConfig:
     behaviors_enabled: tuple[str, ...] = ("workday",)
     # Sticky desk occupancy: person until empty streak / sticky TTL / sleep.
     presence_sticky_s: int = 1800
+    # Consecutive ambient empties to clear; clamped to ≥1 in PresenceCache
+    # (0 would never hold occupancy).
     presence_empty_streak: int = 2
 
 
