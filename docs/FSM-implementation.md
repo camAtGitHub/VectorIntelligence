@@ -141,7 +141,11 @@ Before any proactive line is returned as the tick’s winner:
 | **Occupancy** | “Desk not empty,” away timers, sticky presence | “This is Cam” |
 | **Identity** | Arming a day, personal greetings, binding state to a person | Every 60s confirmation |
 
-Cache ages: `FACE_CACHE_MAX_AGE_S`, `IMAGE_CACHE_MAX_AGE_S`.  
+Cache ages: `FACE_CACHE_MAX_AGE_S` (default **1800s**), `IMAGE_CACHE_MAX_AGE_S`.  
+Sticky occupancy: `PRESENCE_STICKY_S` (default 1800s), `PRESENCE_EMPTY_STREAK` (default 2).
+Ambient feeds person/empty every glance (partial body counts); chipper tick empty is
+weak and does not clear warm sticky. Sleep gap on ambient clears the desk session.
+Chat face window `FACE_RECENT_WINDOW_S` (default 1800s) is separate from FSM face age.
 If another behavior already refreshed face/image, **reuse**—do not force a new capture.
 
 ### 3.5 Enable list

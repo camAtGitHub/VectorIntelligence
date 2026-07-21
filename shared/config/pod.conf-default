@@ -35,10 +35,20 @@
 
 # -- Runtime / shared speech (multi-behavior) ----------------------------------
 # BEHAVIORS_ENABLED=workday
-# FACE_CACHE_MAX_AGE_S=120
+# FSM soft/hard face identity TTL while at desk (default 30m single-user desk).
+# FACE_CACHE_MAX_AGE_S=1800
 # IMAGE_CACHE_MAX_AGE_S=45
 # SPEECH_MIN_GAP_S=90
 # SPEECH_SUPPRESS_AFTER_VOICE_S=120
+#
+# -- Desk occupancy sticky + chat face cache (single-user desk defaults) ------
+# Ambient every glance reports PRESENCE (person/empty); partial body counts.
+# Occupancy sticks until empty streak, sticky TTL, or ambient sleep gap (~4h).
+# PRESENCE_STICKY_S=1800
+# PRESENCE_EMPTY_STREAK=2
+# Chat /v1/state/face window (enrolled wins over stranger blips within window).
+# FACE_RECENT_WINDOW_S=1800
+# FACE_RECENT_WINDOW=1800
 
 # -- Work Day Mode (accountability; default OFF) -------------------------------
 # Requires full patched chipper with behavior-tick loop.

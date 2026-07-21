@@ -1,4 +1,5 @@
 """Mutable process-global state: face, ambient quiet, mood, voice, fillers, greeting."""
+import os
 import random
 import time as _time
 from typing import Optional
@@ -12,14 +13,28 @@ from logging_util import print  # noqa: F401
 # last STRANGER sighting separately, and let an enrolled match win: a single
 # stranger blip must not wipe a recent confident recognition (which would
 # drop all of that person's memories from the LLM's context).
-FACE_RECENT_WINDOW = 15  # seconds - how long a face sighting stays "current".
-                         # Deliberately short: the face probe re-detects who is
-                         # present on every voice request, so this only has to
-                         # span the few seconds from that detection to the LLM
-                         # request within the same query. Anything older is
-                         # from a previous turn and must NOT leak forward - a
-                         # long window made Vector keep treating a speaker who
-                         # had already handed off (e.g. Sarah -> G) as present.
+#
+# Default window is long (~30m) for a single-user desk: chat and proactive
+# speech keep treating the last known person as present after they look away.
+# Multi-user handoff still works when a new enrolled face_seen arrives
+# (enrolled_seen updates; enrolled always wins over stranger blips within the
+# window). Without a new face_seen, multi-user handoff remains a known limit —
+# lower FACE_RECENT_WINDOW_S via pod.conf if needed.
+
+
+def _load_face_recent_window() -> int:
+    for key in ("FACE_RECENT_WINDOW_S", "FACE_RECENT_WINDOW"):
+        raw = os.environ.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    return 1800
+
+
+FACE_RECENT_WINDOW = _load_face_recent_window()
 
 # A gap at least this long since last speaking with a person counts as a
 # fresh encounter - Vector opens his reply by greeting them by name.

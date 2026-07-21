@@ -258,6 +258,7 @@ one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
 | `VECTOR_VOLUME_TURN_MS` | Default turn hold (multi-sentence reply) |
 | `VECTOR_VOLUME_SESSION_MS` | Default session hold (blackjack / listen) |
 | `WORKDAY_*`, `JOKE_*`, `BEHAVIORS_ENABLED`, `SPEECH_*` | Behavior FSMs — preferred here, not `.env` |
+| `FACE_CACHE_MAX_AGE_S`, `FACE_RECENT_WINDOW_S`, `PRESENCE_STICKY_S`, `PRESENCE_EMPTY_STREAK` | Face cache + sticky desk occupancy |
 
 Format: one `KEY=value` per line, `#` full-line comments, blank lines OK.
 UTF-8 (BOM stripped if present). Unknown keys are preserved and forwarded.
@@ -354,11 +355,11 @@ the patched process re-reads env.
 | `GET /health` | Supervisor poll; access log suppressed |
 | `GET /v1/mood`, `POST /v1/mood/reflect` | Persistent mood |
 | `GET/POST /v1/memory/*` | List / remember / forget / clear |
-| `POST /v1/state/face_seen`, `GET /v1/state/face` | Identity continuity |
-| `POST /v1/ambient`, quiet/state | Ambient commentary + quiet mode |
+| `POST /v1/state/face_seen`, `GET /v1/state/face` | Identity continuity (long default face window) |
+| `POST /v1/ambient`, quiet/state | Novelty speech + **PRESENCE every glance** |
 | `POST /v1/sensor_reaction` | Pickup / pet / fall quips |
-| `POST /v1/behaviors/tick` | Presence → BehaviorRuntime |
-| `GET /v1/behaviors/state` | Debug FSM / arbiter state |
+| `POST /v1/behaviors/tick` | Presence → BehaviorRuntime (weak chipper empty) |
+| `GET /v1/behaviors/state` | Debug FSM / sticky presence fields |
 | `POST /v1/proactive_greeting` | Arrival greeting |
 
 Localhost trust model: same class as other chipper→brain loops. Still validate
@@ -421,9 +422,27 @@ Chipper must **deliver** non-empty `speak` from `/v1/behaviors/tick` without a s
 | **Occupancy** | Desk not empty, away timers | “This is Cam” |
 | **Identity** | Arming a day, personal lines | Every 60s confirmation |
 
+**Sticky desk occupancy (vector-ai PresenceCache):** ambient every glance returns a
+machine `PRESENCE:` line independent of novelty speech. Partial people count
+(torso / arms / hoodie / legs — face not required). Person sticks until
+`PRESENCE_EMPTY_STREAK` ambient empties (default **2**), `PRESENCE_STICKY_S`
+(default **1800s**), or an ambient sleep gap (`AMBIENT_SLEEP_GAP` ~4h). Chipper
+tick `occupied=false` alone does **not** clear warm sticky; ambient empty is the
+strong clear. Soft ambient `name_hint` may match enrolled `MEMORY.distinct_faces()`;
+firmware `face_seen` enrolled identity still wins when fresh.
+
+**Face caches (defaults, single-user desk):**
+
+| Knob | Default | Role |
+|------|---------|------|
+| `FACE_RECENT_WINDOW_S` / `FACE_RECENT_WINDOW` | **1800s** | Chat `GET /v1/state/face` / `current_face()` |
+| `FACE_CACHE_MAX_AGE_S` | **1800s** | FSM identity freshness (`PresenceCache`) |
+| `PRESENCE_STICKY_S` | **1800s** | Occupancy hold after last person evidence |
+| `PRESENCE_EMPTY_STREAK` | **2** | Ambient empties to clear before sticky expires |
+
 Identity is expensive (firmware face streams). Request only at **junctures** via
 `need_identity`. Negative `face_id` values are stranger-style IDs — do not drop them
-as invalid.
+as invalid. Do **not** open continuous `robot_observed_face` streams for occupancy.
 
 ### Patches (Go / chipper)
 

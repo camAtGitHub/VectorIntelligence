@@ -40,6 +40,10 @@ class BehaviorRuntime:
         self.presence = PresenceCache(
             face_max_age_s=runtime_cfg.face_cache_max_age_s,
             image_max_age_s=runtime_cfg.image_cache_max_age_s,
+            sticky_s=int(getattr(runtime_cfg, "presence_sticky_s", 1800) or 1800),
+            empty_streak_clear=int(
+                getattr(runtime_cfg, "presence_empty_streak", 2) or 2
+            ),
         )
         self.arbiter = SpeechArbiter(
             min_gap_s=runtime_cfg.speech_min_gap_s,
@@ -101,10 +105,23 @@ class BehaviorRuntime:
                     )
             except (TypeError, ValueError):
                 face_obj = None
+        # Binding: chipper occupied=True or any face → person evidence.
+        # Chipper occupied=False is weak — do not clear warm sticky (only ambient
+        # empty increments streak). Still refresh charger/voice on the snapshot.
+        if occupied or face_obj is not None:
+            return self.presence.note_person_evidence(
+                now,
+                source="tick",
+                face=face_obj,
+                on_charger=on_charger,
+                voice_recent=voice_recent,
+                image_b64=image_b64,
+            )
+        # Weak empty: refresh sensors without clearing warm sticky occupancy.
         return self.presence.update(
             now=now,
-            occupied=occupied,
-            face=face_obj,
+            occupied=False,
+            face=None,
             image_b64=image_b64,
             on_charger=on_charger,
             voice_recent=voice_recent,
@@ -128,6 +145,8 @@ class BehaviorRuntime:
 
         quiet = bool(self.quiet_fn())
         voice_ts = float(self.voice_ts_fn() or 0.0)
+        # Re-evaluate sticky occupancy (TTL may expire between ticks).
+        self.presence._sync_occupied(now)
         snap = self.presence.snapshot
         identity_fresh = self.presence.identity_fresh(now)
 

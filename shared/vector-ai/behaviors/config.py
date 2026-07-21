@@ -86,11 +86,15 @@ def _hhmm(env: Mapping[str, str], key: str, default: str) -> tuple[int, int]:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    face_cache_max_age_s: int = 120
+    # Long face/identity cache: single-user desk holds soft/hard ID for ~30m.
+    face_cache_max_age_s: int = 1800
     image_cache_max_age_s: int = 45
     speech_min_gap_s: int = 90
     speech_suppress_after_voice_s: int = 120
     behaviors_enabled: tuple[str, ...] = ("workday",)
+    # Sticky desk occupancy: person until empty streak / sticky TTL / sleep.
+    presence_sticky_s: int = 1800
+    presence_empty_streak: int = 2
 
 
 @dataclass(frozen=True)
@@ -119,11 +123,13 @@ def load_runtime_config(env: Optional[Mapping[str, str]] = None) -> RuntimeConfi
         raw = (env.get("BEHAVIORS_ENABLED") or "workday").strip()
         behaviors = tuple(b.strip() for b in raw.split(",") if b.strip())
         return RuntimeConfig(
-            face_cache_max_age_s=_int(env, "FACE_CACHE_MAX_AGE_S", 120),
+            face_cache_max_age_s=_int(env, "FACE_CACHE_MAX_AGE_S", 1800),
             image_cache_max_age_s=_int(env, "IMAGE_CACHE_MAX_AGE_S", 45),
             speech_min_gap_s=_int(env, "SPEECH_MIN_GAP_S", 90),
             speech_suppress_after_voice_s=_int(env, "SPEECH_SUPPRESS_AFTER_VOICE_S", 120),
             behaviors_enabled=behaviors or ("workday",),
+            presence_sticky_s=_int(env, "PRESENCE_STICKY_S", 1800),
+            presence_empty_streak=_int(env, "PRESENCE_EMPTY_STREAK", 2),
         )
     except Exception as e:
         _log.warning("load_runtime_config failed (%s); using defaults", e)

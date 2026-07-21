@@ -42,6 +42,13 @@ async def behaviors_tick(req: BehaviorTickRequest):
             # Voice face implies someone is at the desk even if sticky occupancy
             # was cleared by a flaky empty probe.
             occupied = True
+    # occupied_effective = sticky OR req.occupied OR current_face live.
+    # ingest_tick_payload treats chipper occupied=False as weak (does not
+    # stomp warm sticky); ambient empty is the strong clear path.
+    if not occupied and face_dict is None:
+        if deps.BEHAVIOR_RUNTIME.presence.occupied_effective(now):
+            # Keep sticky warm; still refresh sensors via weak path.
+            pass
     deps.BEHAVIOR_RUNTIME.ingest_tick_payload(
         now=now,
         occupied=occupied,
@@ -83,18 +90,28 @@ async def behaviors_state():
         strip = _continuity.day_strip(date_s)
     except Exception as e:
         mode, strip, date_s = "error", str(e), ""
-    snap = BEHAVIOR_RUNTIME.presence.snapshot
+    presence = BEHAVIOR_RUNTIME.presence
+    snap = presence.snapshot
+    # Ensure snapshot.occupied reflects sticky evaluation for ops.
+    occupied = presence.occupied_effective(now)
+    snap.occupied = occupied
+    sticky = presence.debug_dict(now)
     return {
         "workday_enabled": _workday_cfg.enabled,
         "date": date_s,
         "mode": mode,
         "day_strip": strip,
-        "occupied": snap.occupied,
-        "identity_fresh": BEHAVIOR_RUNTIME.presence.identity_fresh(now),
+        "occupied": occupied,
+        "identity_fresh": presence.identity_fresh(now),
         "face": (
             {"face_id": snap.face.face_id, "name": snap.face.name,
              "is_stranger": snap.face.is_stranger}
             if snap.face else None
         ),
         "behaviors": [b.id for b in BEHAVIOR_RUNTIME.behaviors],
+        "last_person_at": sticky["last_person_at"],
+        "empty_streak": sticky["empty_streak"],
+        "presence_source": sticky["presence_source"],
+        "soft_name": sticky.get("soft_name") or "",
+        "presence_sticky_s": sticky["sticky_s"],
     }

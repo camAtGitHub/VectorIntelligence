@@ -457,8 +457,10 @@ def test_simulated_workday() -> None:
         r = rt.tick(t_poke)
         check("sim: poke at 90m", len(r.speak) > 0)
 
-        # Away 30m
+        # Away 30m — chipper empty is weak; clear sticky via ambient empty streak.
         t_away_start = t_poke + 100
+        rt.presence.note_empty_evidence(t_away_start - 2, source="ambient")
+        rt.presence.note_empty_evidence(t_away_start - 1, source="ambient")
         rt.ingest_tick_payload(now=t_away_start, occupied=False)
         rt.tick(t_away_start)
         t_away = t_away_start + 1800

@@ -31,19 +31,21 @@ async def state_face_seen(req: FaceSeenRequest):
     # Work Day / joke presence used to only update from /v1/behaviors/tick.
     # Voice-start face probes POST here and never set PresenceCache.occupied,
     # so the desk stayed "empty" and Work Day stuck in no_show. Mirror the
-    # sighting into the behavior presence cache as occupied + face.
+    # sighting into the behavior presence cache as person evidence + face.
     try:
+        from behaviors.types import FaceIdentity
+
         rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
         if rt is not None:
             prev = rt.presence.snapshot
-            rt.ingest_tick_payload(
-                now=now,
-                occupied=True,
-                face={
-                    "face_id": int(req.face_id),
-                    "name": name[:64],
-                    "is_stranger": is_stranger,
-                },
+            rt.presence.note_person_evidence(
+                now,
+                source="face_seen",
+                face=FaceIdentity(
+                    face_id=int(req.face_id),
+                    name=name[:64],
+                    is_stranger=is_stranger,
+                ),
                 on_charger=bool(prev.on_charger),
                 voice_recent=bool(prev.voice_recent),
             )
