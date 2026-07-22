@@ -147,7 +147,7 @@ _face_last_seen: dict = {}       # face_id -> unix ts the greeting probe last sa
 # first sentence, so the pause feels like Vector considering the question.
 # Every entry is a SINGLE sentence: llm_sentence_stream yields one sentence per
 # chunk on purpose (Wire-Pod's stream parser can drop multi-sentence tails).
-THINKING_DELAY = 2.0  # seconds before first-sentence filler (cloud TTFT varies)
+THINKING_DELAY = 4.0  # seconds before first-sentence filler (cloud TTFT varies)
 
 _THINKING_PHRASES = [
     "Hmm, let me think.",

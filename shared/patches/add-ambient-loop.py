@@ -285,6 +285,9 @@ func ambientReact(esn, text string, investigate bool) {
 \t\t\tif investigate {
 \t\t\t\tambientInvestigateMove(ctx, robot)
 \t\t\t}
+\t\t\t// Raise to desired speech volume for this phrase (same as SayText(esn)).
+\t\t\t// After investigate so motion does not burn the hold window.
+\t\t\tSpeechVolumeHoldFor(esn, EstimateSpeechDuration(text))
 \t\t\t_, sayErr := robot.Conn.SayText(ctx, &vectorpb.SayTextRequest{
 \t\t\t\tText:           text,
 \t\t\t\tUseVectorVoice: true,
