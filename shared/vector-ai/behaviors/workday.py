@@ -114,13 +114,14 @@ class WorkDayBehavior:
     def enabled(self) -> bool:
         return bool(self.cfg.enabled)
 
-    def status_summary(self, now: float) -> str:
+    def status_summary(self, now: float, **_kwargs) -> str:
         """One-line card text for GET /v1/behaviors/state (mode value)."""
         try:
             date_s = datetime.fromtimestamp(now, tz=self.cfg.tz).strftime("%Y-%m-%d")
             rec = self.store.load_workday(date_s)
             return rec.mode.value
-        except Exception:
+        except Exception as e:
+            blog(_TAG, f"status_summary failed: {e}")
             return "error"
 
     def status(self, now: float, **_kwargs) -> dict:
@@ -132,6 +133,7 @@ class WorkDayBehavior:
             strip = self.store.day_strip(date_s)
             mode = rec.mode.value
         except Exception as e:
+            blog(_TAG, f"status failed: {e}")
             return {
                 "id": self.id,
                 "schema_version": 1,
@@ -140,6 +142,10 @@ class WorkDayBehavior:
                 "mode": "error",
                 "day_strip": str(e),
             }
+
+        def _epoch_or_none(v: float) -> Optional[float]:
+            return float(v) if v and float(v) > 0 else None
+
         return {
             "id": self.id,
             "schema_version": 1,
@@ -150,16 +156,14 @@ class WorkDayBehavior:
             "primary_face_id": rec.primary_face_id,
             "primary_face_name": rec.primary_face_name or "",
             "arm_source": rec.arm_source or "",
-            "started_at": rec.started_at,
-            "last_poke_at": rec.last_poke_at,
-            "pause_until": rec.pause_until if rec.pause_until > 0 else None,
+            "started_at": _epoch_or_none(rec.started_at),
+            "last_poke_at": _epoch_or_none(rec.last_poke_at),
+            "pause_until": _epoch_or_none(rec.pause_until),
             "paused_from": rec.paused_from or "",
             "absence_count": rec.absence_count,
             "total_away_s": rec.total_away_s,
             "late_check_done": rec.late_check_done,
-            "late_check_asked_at": (
-                rec.late_check_asked_at if rec.late_check_asked_at > 0 else None
-            ),
+            "late_check_asked_at": _epoch_or_none(rec.late_check_asked_at),
         }
 
     # -- chat / command hooks -------------------------------------------------

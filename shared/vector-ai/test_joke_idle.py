@@ -648,6 +648,24 @@ def test_joke_status_dwell_queue_cap() -> None:
         check("daily_count 4", st4["daily_count"] == 4)
 
 
+def test_joke_status_no_line_available() -> None:
+    """Empty queue + dwell met → reason no_line_available."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        cfg = _joke_cfg(min_dwell_s=100, cooldown_s=9000, max_per_day=4)
+        b = JokeIdleBehavior(cfg, store)
+        now = datetime(2026, 7, 18, 16, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        check("queue empty", store.joke_queue_len() == 0)
+        st = b.status(
+            now,
+            presence_updated_at=now - 500.0,
+            occupied=True,
+        )
+        check("no_line_available", st["reason"] == "no_line_available")
+        check("queue_len 0", st["queue_len"] == 0)
+        check("reason_scope", st.get("reason_scope") == "ops_subset")
+
+
 def test_joke_status_cooldown_remaining() -> None:
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "joke.db")

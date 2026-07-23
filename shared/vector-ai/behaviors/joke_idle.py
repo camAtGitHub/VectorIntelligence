@@ -58,7 +58,10 @@ class JokeIdleBehavior:
         except Exception:
             queue_len = 0
 
-        # Gate order mirrors tick() (cheap ops view; skips identity probe path).
+        # Cheap ops gate (subset of tick). Intentionally does NOT model
+        # voice_recent, identity probe, or stranger suppress — those only
+        # exist on the speak path. ``idle_ready`` means dwell/cooldown/cap/
+        # queue look clear for ops; tick may still skip. See FSM-jokes-at-idle.
         if daily["count"] >= cfg.max_per_day:
             reason = "capped"
         elif last_spoke > 0 and (now - last_spoke) < cfg.cooldown_s:
@@ -92,6 +95,8 @@ class JokeIdleBehavior:
             "occupied": bool(occupied),
             "presence_updated_at": float(presence_updated_at or 0.0),
             "reason": reason,
+            # Ops reason is a cheap subset of tick gates (not identity/voice).
+            "reason_scope": "ops_subset",
         }
 
     def status_summary(self, now: float, **kwargs) -> str:

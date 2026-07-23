@@ -771,7 +771,10 @@ def test_build_state_index_envelope_v1() -> None:
             {"BEHAVIORS_ENABLED": "workday", "SPEECH_MIN_GAP_S": "90"}
         )
         wcfg = _wd_cfg(enabled=True)
-        rt = BehaviorRuntime(rcfg, wcfg, store, quiet_fn=lambda: False)
+        quiet_flag = {"on": False}
+        rt = BehaviorRuntime(
+            rcfg, wcfg, store, quiet_fn=lambda: bool(quiet_flag["on"])
+        )
         now = datetime(2026, 7, 18, 11, 0, tzinfo=ZoneInfo("UTC")).timestamp()
         rt.presence.note_person_evidence(
             now,
@@ -789,8 +792,10 @@ def test_build_state_index_envelope_v1() -> None:
         check("presence occupied", idx["presence"]["occupied"] is True)
         check("arbiter nested", isinstance(idx.get("arbiter"), dict))
         check("arbiter last_speech null", idx["arbiter"]["last_speech_at"] is None)
+        check("arbiter quiet false", idx["arbiter"]["quiet"] is False)
         check("behaviors object not list", isinstance(idx["behaviors"], dict))
         check("workday card", "workday" in idx["behaviors"])
+        check("card enabled true", idx["behaviors"]["workday"]["enabled"] is True)
         check("card summary mode", idx["behaviors"]["workday"]["summary"] == "working")
         check(
             "card href",
@@ -800,6 +805,13 @@ def test_build_state_index_envelope_v1() -> None:
         for forbidden in ("mode", "day_strip", "occupied", "workday_enabled", "face"):
             check(f"no flat {forbidden}", forbidden not in idx)
 
+        # quiet + last_speech_at after proactive speech
+        quiet_flag["on"] = True
+        rt.arbiter.record_speech(now - 10.0)
+        idx2 = rt.build_state_index(now)
+        check("arbiter quiet true", idx2["arbiter"]["quiet"] is True)
+        check("arbiter last_speech set", idx2["arbiter"]["last_speech_at"] == now - 10.0)
+
 
 def test_behavior_status_workday_and_404() -> None:
     with tempfile.TemporaryDirectory() as td:
@@ -808,14 +820,28 @@ def test_behavior_status_workday_and_404() -> None:
         wcfg = _wd_cfg(enabled=True)
         rt = BehaviorRuntime(rcfg, wcfg, store)
         now = datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        pause_at = now + 600
         store.save_workday(
-            WorkdayRecord(date="2026-07-18", mode=WorkdayMode.PAUSED, pause_until=now + 600)
+            WorkdayRecord(
+                date="2026-07-18",
+                mode=WorkdayMode.PAUSED,
+                pause_until=pause_at,
+                started_at=now - 7200,
+                last_poke_at=now - 3600,
+            )
         )
         detail = rt.behavior_status("workday", now)
         check("detail present", detail is not None)
         assert detail is not None
         check("detail mode paused", detail["mode"] == "paused")
         check("detail id", detail["id"] == "workday")
+        check("detail pause_until", detail["pause_until"] == pause_at)
+        check("detail workday_enabled", detail["workday_enabled"] is True)
+        check(
+            "detail day_strip paused",
+            "paused" in (detail.get("day_strip") or "").lower(),
+        )
+        check("detail started_at set", detail["started_at"] == now - 7200)
         check("unknown id None", rt.behavior_status("nope", now) is None)
         check("joke not registered", rt.behavior_status("joke_idle", now) is None)
 
@@ -832,6 +858,93 @@ def test_build_state_index_does_not_call_tick() -> None:
         rt.build_state_index(now)
         check("no tick times advanced", rt._last_behavior_tick == ticks_before)
         check("arbiter still never spoke", rt.arbiter.last_speech_at is None)
+
+
+def test_build_state_index_multi_plugin_cards() -> None:
+    """workday + joke_idle both appear under behaviors when registered."""
+    from behaviors.config import JokeConfig
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rcfg = load_runtime_config(
+            {"BEHAVIORS_ENABLED": "workday,joke_idle"}
+        )
+        wcfg = _wd_cfg(enabled=True)
+        jcfg = JokeConfig(
+            enabled=True,
+            audience="anyone",
+            priority=15,
+            min_dwell_s=1200,
+            cooldown_s=9000,
+            max_per_day=4,
+            tz=ZoneInfo("UTC"),
+        )
+        rt = BehaviorRuntime(rcfg, wcfg, store, joke_cfg=jcfg)
+        now = datetime(2026, 7, 18, 14, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        store.save_workday(
+            WorkdayRecord(date="2026-07-18", mode=WorkdayMode.WORKING)
+        )
+        idx = rt.build_state_index(now)
+        check("workday card", "workday" in idx["behaviors"])
+        check("joke_idle card", "joke_idle" in idx["behaviors"])
+        check("workday enabled", idx["behaviors"]["workday"]["enabled"] is True)
+        check("joke enabled", idx["behaviors"]["joke_idle"]["enabled"] is True)
+        check(
+            "joke href",
+            idx["behaviors"]["joke_idle"]["href"] == "/v1/behaviors/joke_idle",
+        )
+
+
+def test_behavior_status_duck_type_fallbacks() -> None:
+    """Plugins without status hooks / raising status are still safe."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rcfg = load_runtime_config({"BEHAVIORS_ENABLED": "workday"})
+        wcfg = _wd_cfg(enabled=False)  # no real plugins
+        rt = BehaviorRuntime(rcfg, wcfg, store)
+        now = 1_800_000_000.0
+
+        class BareOk:
+            id = "bare_ok"
+            priority = 1
+
+            def enabled(self) -> bool:
+                return True
+
+            def tick(self, ctx):
+                from behaviors.types import TickResult
+                return TickResult()
+
+        class RaisingStatus:
+            id = "raise_status"
+            priority = 1
+
+            def enabled(self) -> bool:
+                return True
+
+            def tick(self, ctx):
+                from behaviors.types import TickResult
+                return TickResult()
+
+            def status(self, now: float, **kwargs):
+                raise RuntimeError("boom")
+
+        rt.behaviors.append(BareOk())
+        rt.behaviors.append(RaisingStatus())
+
+        idx = rt.build_state_index(now)
+        check("bare card ok", idx["behaviors"]["bare_ok"]["summary"] == "ok")
+        check("bare enabled", idx["behaviors"]["bare_ok"]["enabled"] is True)
+
+        detail_ok = rt.behavior_status("bare_ok", now)
+        assert detail_ok is not None
+        check("bare detail summary", detail_ok.get("summary") == "ok")
+        check("bare detail schema", detail_ok.get("schema_version") == 1)
+
+        detail_err = rt.behavior_status("raise_status", now)
+        assert detail_err is not None
+        check("raise id", detail_err.get("id") == "raise_status")
+        check("raise error field", "boom" in str(detail_err.get("error", "")))
 
 
 if __name__ == "__main__":

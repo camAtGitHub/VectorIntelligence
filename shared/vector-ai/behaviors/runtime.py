@@ -71,7 +71,12 @@ class BehaviorRuntime:
             blog(_TAG, "no behaviors registered (all disabled or not in BEHAVIORS_ENABLED)")
 
     def build_state_index(self, now: float) -> dict:
-        """Envelope v1 for GET /v1/behaviors/state (cards only; no private dumps)."""
+        """Envelope v1 for GET /v1/behaviors/state (cards only; no private dumps).
+
+        ``date`` is the brain calendar day in the runtime workday TZ
+        (``WorkdayConfig.tz``), even when only non-workday plugins are
+        registered. See docs/FSM-implementation.md §3.3 / §13.
+        """
         self.presence._sync_occupied(now)
         snap = self.presence.snapshot
         sticky = self.presence.debug_dict(now)

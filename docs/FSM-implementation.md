@@ -138,7 +138,7 @@ Optional but recommended:
 
 `GET /v1/behaviors/state` is a **stable overview**, not a kitchen sink. As FSMs are added, **do not** bolt private fields onto a flat top-level object (the pre-envelope shape already did this for workday: `mode`, `day_strip`, …).
 
-**Envelope v1 (target shape):**
+**Envelope v1 (current shape):**
 
 ```json
 {
@@ -176,7 +176,7 @@ Optional but recommended:
 
 | Layer | Holds |
 |--------|--------|
-| **Top** | `schema_version`, `now`, `date` (brain calendar day for the runtime TZ) |
+| **Top** | `schema_version`, `now`, `date` (brain calendar day in **workday/runtime TZ** — same clock as `_local_dt`, even if only non-workday plugins are registered) |
 | **`presence`** | Shared desk occupancy + identity snapshot only |
 | **`arbiter`** | Shared speech gate summary only |
 | **`behaviors.<id>`** | **Card only:** `enabled`, short `summary`, optional `href` — no private dumps |
@@ -502,10 +502,10 @@ Documented so you do not reinvent or get surprised:
 - Registration is an explicit if-ladder in `BehaviorRuntime`, not a plugin discovery system.  
 - Ambient/greeting are **not** plugins yet; double-speak mitigation is partial and cooperative.  
 - Occupancy heuristics in Go are approximate (sticky window, sparse empty probes).  
-- Pre-envelope `GET /v1/behaviors/state` was a flat workday-skewed bag; migrate to **envelope v1** (cards + detail GETs) and stop growing the flat form.  
+- `GET /v1/behaviors/state` is **envelope v1** (cards + detail GETs). Do not reintroduce flat workday-only top-level dumps.  
 - No hot-reload of env without process restart.
 
-Improvements that help **all** FSMs (registry, shared clock TZ, migrating ambient, envelope rollout) are welcome as focused refactors—do not block a single new FSM on a perfect platform.
+Improvements that help **all** FSMs (registry, shared clock TZ, migrating ambient) are welcome as focused refactors—do not block a single new FSM on a perfect platform.
 
 ---
 

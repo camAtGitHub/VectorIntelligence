@@ -132,6 +132,52 @@ def test_route_registry():
         assert want <= got, f"{path}: expected methods {want}, got {got}"
 
 
+def test_behavior_detail_http_404_and_200(tmp_path, monkeypatch):
+    """Thin HTTP: unknown id → 404; registered plugin → 200 + id/schema_version."""
+    from datetime import datetime, timezone
+
+    import deps
+    from behaviors.config import RuntimeConfig, WorkdayConfig
+    from behaviors.continuity import ContinuityStore, WorkdayRecord
+    from behaviors.runtime import BehaviorRuntime
+    from behaviors.types import WorkdayMode
+    from fastapi.testclient import TestClient
+    from zoneinfo import ZoneInfo
+
+    import service
+
+    cont = ContinuityStore(tmp_path / "w.db")
+    wcfg = WorkdayConfig(enabled=True, tz=ZoneInfo("UTC"))
+    rt = BehaviorRuntime(
+        RuntimeConfig(behaviors_enabled=("workday",)),
+        wcfg,
+        cont,
+    )
+    # Seed today's UTC date so status() (uses wall clock) sees WORKING.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cont.save_workday(WorkdayRecord(date=today, mode=WorkdayMode.WORKING))
+    monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+
+    client = TestClient(service.app)
+    r404 = client.get("/v1/behaviors/nope")
+    assert r404.status_code == 404
+    assert "not registered" in r404.json().get("detail", "")
+
+    r200 = client.get("/v1/behaviors/workday")
+    assert r200.status_code == 200
+    body = r200.json()
+    assert body.get("id") == "workday"
+    assert body.get("schema_version") == 1
+    assert body.get("mode") == "working"
+
+    r_state = client.get("/v1/behaviors/state")
+    assert r_state.status_code == 200
+    st = r_state.json()
+    assert st.get("schema_version") == 1
+    assert "presence" in st and "behaviors" in st
+    assert "occupied" not in st  # flat key gone
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [

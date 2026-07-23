@@ -281,7 +281,15 @@ curl -s http://127.0.0.1:8090/v1/behaviors/joke_idle | jq
 
 On the index, `behaviors.joke_idle` should appear when both gates are on
 (`JOKE_ENABLED=1` and `joke_idle` in `BEHAVIORS_ENABLED`); `summary` is a
-gate reason such as `dwell_building`, `cooldown`, `capped`, or `idle_ready`.  
+gate reason such as `dwell_building`, `cooldown`, `capped`, `no_line_available`,
+or `idle_ready`.
+
+**Ops reason scope:** detail `reason` / card `summary` are a **cheap subset**
+of tick gates (cap, cooldown, empty, dwell, queue). They do **not** include
+`voice_recent`, identity probe, or stranger suppress — those only exist on the
+speak path. So `idle_ready` means dwell/cooldown/cap/queue look clear for ops;
+a later tick may still skip. Detail JSON includes `"reason_scope": "ops_subset"`.
+
 `/health` should still be healthy for normal chat.
 
 Logs on enable typically include a short `[behaviors]` / joke status line at startup; when disabled, the refill task is not started.

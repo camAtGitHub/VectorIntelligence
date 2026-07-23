@@ -845,12 +845,17 @@ def test_behaviors_state_sticky_fields(tmp_path, monkeypatch):
         t0 = time.time()
         rt.presence.note_person_evidence(t0, source="ambient", name_hint="Cam")
         st = asyncio.run(behaviors_state())
-        assert st["occupied"] is True
-        assert st["last_person_at"] == t0
-        assert st["empty_streak"] == 0
-        assert st["presence_source"] == "ambient"
-        assert st["presence_sticky_s"] == 1234
-        assert st.get("soft_name") == "Cam"
+        assert st["schema_version"] == 1
+        pres = st["presence"]
+        assert pres["occupied"] is True
+        assert pres["last_person_at"] == t0
+        assert pres["empty_streak"] == 0
+        assert pres["presence_source"] == "ambient"
+        assert pres["presence_sticky_s"] == 1234
+        assert pres.get("soft_name") == "Cam"
+        # Flat legacy keys removed in envelope v1
+        assert "occupied" not in st
+        assert "last_person_at" not in st
 
 
 def test_face_seen_http_notes_person(tmp_path, monkeypatch):
