@@ -356,8 +356,9 @@ Defaults if `d <= 0`: use env `VECTOR_VOLUME_TURN_MS` / `VECTOR_VOLUME_SESSION_M
 |------|--------|
 | `ttr/bcontrol.go` `SayText(esn, text)` | Before `Session.Say`: `SpeechVolumeHoldFor(esn, EstimateSpeechDuration(text))` |
 | Keep `DoSayText` HoldFor | Already correct |
+| `ttr/ambient.go` `ambientReact` | **Done:** after investigate, before `Conn.SayText`: `SpeechVolumeHoldFor(esn, EstimateSpeechDuration(text))`. Covers ambient novelty, greetings, and behavior-tick (all use `ambientReact`). Mirrored in `shared/patches/add-ambient-loop.py`. Regression: `ttr/ambient_volume_test.go` + `shared/test_ambient_volume_hold.py`. |
 
-Optional (P2, same task if cheap): `ambient.go` speak path HoldFor; `kgsim.go` `KGSim` error path HoldFor.
+Still optional (P2): `kgsim.go` `KGSim` error-path HoldFor (direct `Conn.SayText` without hold).
 
 #### 4b. Blackjack / multi-turn firmware games (P0)
 
@@ -408,6 +409,7 @@ Volume intents (P1): after matching `intent_imperative_volumelevel_extend` with 
 - [ ] Grep `SpeechVolumeEnterSession` near blackjack.
 - [ ] Grep `SpeechVolumeSetDesired` near `/api-sdk/volume`.
 - [ ] Grep `SpeechVolumeHoldFor` in `SayText` (bcontrol live path).
+- [x] Grep / test `SpeechVolumeHoldFor` in `ambientReact` (live `ambient.go` + install patch); see `ambient_volume_test.go` and `test_ambient_volume_hold.py`.
 - [ ] Manual / log: play blackjack → no `anim_volume_stage_*` during first ~session ms of listening (device test if available).
 
 ### Anti-pattern guards
