@@ -131,11 +131,17 @@ async def llm_chat_once(
             raise
         data = resp.json()
         text = _message_content(data)
-        debug(
-            f"UPSTREAM RECV [{tag}] {time.monotonic() - t0:.2f}s "
-            f"status={resp.status_code} chars={len(text)}",
-            {"content": _redact_content(text), "usage": data.get("usage")},
-        )
+        # Debug after we already hold `text`. Never let logging/encoding kill
+        # a successful completion (Windows charmap + non-ASCII model output
+        # previously aborted sensor_reaction and forced chipper fallbacks).
+        try:
+            debug(
+                f"UPSTREAM RECV [{tag}] {time.monotonic() - t0:.2f}s "
+                f"status={resp.status_code} chars={len(text)}",
+                {"content": _redact_content(text), "usage": data.get("usage")},
+            )
+        except Exception:
+            pass
         return text
 
 

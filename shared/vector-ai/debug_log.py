@@ -93,23 +93,32 @@ def _debug_rotate() -> None:
 
 
 def debug(msg: str, data: Any = None) -> None:
-    """Write a debug line to stdout and vector-ai-debug.log when DEBUG is on."""
+    """Write a debug line to stdout and vector-ai-debug.log when DEBUG is on.
+
+    Must never raise: callers (llm_chat_once, sensor_reaction, …) invoke this
+    on the hot path after a successful upstream reply. A Windows charmap
+    failure here used to surface as sensor_reaction error and drop the line.
+    """
     if not DEBUG:
         return
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"{ts} [debug] {msg}"
-    if data is not None:
-        try:
-            payload = json.dumps(data, ensure_ascii=False, default=str, indent=2)
-        except Exception:
-            payload = repr(data)
-        if len(payload) > DEBUG_MAX_CHARS * 4:
-            payload = payload[: DEBUG_MAX_CHARS * 4] + f"\n... <truncated>"
-        line = f"{line}\n{payload}"
-    print(line)
     try:
-        _debug_rotate()
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except OSError:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{ts} [debug] {msg}"
+        if data is not None:
+            try:
+                payload = json.dumps(data, ensure_ascii=False, default=str, indent=2)
+            except Exception:
+                payload = repr(data)
+            if len(payload) > DEBUG_MAX_CHARS * 4:
+                payload = payload[: DEBUG_MAX_CHARS * 4] + f"\n... <truncated>"
+            line = f"{line}\n{payload}"
+        print(line)
+        try:
+            _debug_rotate()
+            with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+    except Exception:
+        # Last-resort: debug must never abort a request handler.
         pass

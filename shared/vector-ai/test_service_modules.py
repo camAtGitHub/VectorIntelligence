@@ -412,6 +412,117 @@ def test_ambient_quiet_expires_on_sleep_gap(tmp_path, monkeypatch):
     assert result.get("text", "") == ""
 
 
+def test_print_survives_charmap_stream():
+    """Windows cp1252/charmap must not raise when printing Hangul (sensor path)."""
+    import io
+
+    from logging_util import print as vprint
+
+    class CharmapStream(io.TextIOBase):
+        encoding = "cp1252"
+
+        def __init__(self):
+            self.buf = []
+
+        def write(self, s):
+            # Simulate Windows stdout: encode with charmap, raise on Hangul.
+            s.encode("cp1252")
+            self.buf.append(s)
+            return len(s)
+
+        def flush(self):
+            pass
+
+    sink = CharmapStream()
+    hangul = "reply with \uba7f in it"  # same class of char as production error
+    # Must not raise UnicodeEncodeError
+    vprint(hangul, file=sink)
+    joined = "".join(sink.buf)
+    assert "reply" in joined
+    # Backslash-escaped for cp1252 (raw Hangul cannot be encoded)
+    assert "\\uba7f" in joined or "\\u" in joined
+
+
+def test_llm_chat_once_returns_non_ascii_despite_debug_print(monkeypatch):
+    """Regression: Hangul in model reply used to die inside debug() print.
+
+    Production error:
+      'charmap' codec can't encode character '\\uba7f' in position 121
+    which aborted /v1/sensor_reaction and forced chipper fallbacks.
+    """
+    import httpx
+    import llm as llm_mod
+
+    hangul_reply = "Slightly better than \uba7f elevator music."
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": hangul_reply}}],
+                "usage": {},
+            }
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def post(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _Client)
+    # Force DEBUG path that previously printed the reply and crashed.
+    monkeypatch.setattr(llm_mod, "debug", llm_mod.debug)
+    import debug_log
+
+    monkeypatch.setattr(debug_log, "DEBUG", True)
+
+    # Make print explode if it ever tries to encode Hangul as charmap — if
+    # llm_chat_once still returns the text, the request path is safe.
+    def _boom_print(*a, **k):
+        msg = " ".join(str(x) for x in a)
+        if "\uba7f" in msg:
+            raise UnicodeEncodeError("charmap", msg, 0, 1, "maps to undefined")
+
+    monkeypatch.setattr(debug_log, "print", _boom_print)
+
+    text = asyncio.run(
+        llm_mod.llm_chat_once(
+            [{"role": "user", "content": "hi"}],
+            tag="sensor_reaction",
+        )
+    )
+    assert text == hangul_reply
+
+
+def test_sensor_reaction_returns_text_with_non_ascii(monkeypatch):
+    """/v1/sensor_reaction must return LLM text even when it contains non-ASCII."""
+    from routes.models import SensorReactionRequest
+    from routes.sensor import sensor_reaction
+
+    hangul_reply = "Pet protocol \uba7f engaged."
+
+    async def _fake_llm(*a, **k):
+        return hangul_reply
+
+    monkeypatch.setattr("routes.sensor.llm_chat_once", _fake_llm)
+    out = asyncio.run(sensor_reaction(SensorReactionRequest(event="pet")))
+    assert out.get("error") in (None, "")
+    assert "error" not in out or not out["error"]
+    assert "Pet protocol" in out.get("text", "")
+
+
 def test_install_scripts_list_required_modules():
     """Deploy-by-copy installers must mention every new module and routes/."""
     root = Path(__file__).resolve().parents[2]  # VectorIntelligence/

@@ -895,7 +895,12 @@ class Supervisor:
         dotenv does not override keys already present, so pod.conf wins when
         both define the same non-secret knob.
         """
-        return merge_pod_conf_into_env(POD_CONF)
+        env = merge_pod_conf_into_env(POD_CONF)
+        # Windows defaults stdio to cp1252/charmap; non-ASCII LLM text then
+        # raises UnicodeEncodeError mid-request. Prefer UTF-8 for the child.
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUTF8", "1")
+        return env
 
     def start_ollama(self):
         """Legacy: only used when USE_LOCAL_OLLAMA is enabled."""
