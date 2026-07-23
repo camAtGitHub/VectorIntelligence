@@ -17,14 +17,14 @@ from response_cleanup import strip_markdown
 
 router = APIRouter()
 
+
 _MOOD_SYSTEM = (
-    "You track the inner state of Vector, a small desktop robot with a dry, "
-    "sardonic character - somewhere between Marvin from Hitchhiker's Guide, "
-    "Bender from Futurama, and Stephen Fry. Given a short digest of how his "
-    "day has gone, reply with his CURRENT state of mind as ONE short phrase: "
-    "third person, lowercase, no final period, a mood rather than a list of "
-    "events (e.g. 'restless after a long quiet stretch', or 'quietly content "
-    "after a sociable evening'). Plain text only, under 12 words."
+    "You track the inner state of a small desktop robot with a dry, sardonic "
+    "character. Given a short digest of how his day has gone, reply with his "
+    "CURRENT state of mind as ONE short phrase: third person, lowercase, no "
+    "final period, a mood rather than a list of events (e.g. 'restless after a "
+    "long quiet stretch', or 'quietly content after a sociable evening'). "
+    "Plain text only, under 12 words."
 )
 
 

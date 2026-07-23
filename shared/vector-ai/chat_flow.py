@@ -118,11 +118,13 @@ async def _summarise_conversation(messages: list, latest_reply: str,
     transcript = "\n".join(lines)
     prompt = [
         {"role": "system", "content":
-            "You summarise a conversation between a user and Vector (a small "
-            "robot) in ONE short factual sentence, from Vector's point of "
+            "You summarise a conversation between a user and a small desktop "
+            "robot in ONE short factual sentence, from the robot's point of "
             "view, naming the actual topics discussed. Refer to the human "
-            "only as 'the user' - never use a name for them, even if names "
-            "appear in the text. No preamble, no quotes - just the sentence."},
+            "only as 'the user' and to the robot as 'I' - never use a name "
+            "for either, even if names appear in the text. Be literal and "
+            "factual, not witty. No preamble, no quotes - just the "
+            "sentence."},
         {"role": "user", "content": transcript},
     ]
     try:

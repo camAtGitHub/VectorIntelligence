@@ -32,7 +32,7 @@ _PHRASE_FIXES = [
 # newVoiceRequest is real but disabled here: when it fires, Vector's firmware
 # opens a listening session and can hang noisily (~30s) if no speech follows.
 _FORBIDDEN_COMMAND = re.compile(
-    r'\{\{(newVoiceRequest|voiceRequest|listen|wakeWord|waitForUser)\|\|[^}]*\}\}',
+    r'\{\{(voiceRequest|listen|wakeWord|waitForUser)\|\|[^}]*\}\}',
     re.IGNORECASE,
 )
 
