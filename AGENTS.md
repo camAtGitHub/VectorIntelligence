@@ -359,7 +359,8 @@ the patched process re-reads env.
 | `POST /v1/ambient`, quiet/state | Novelty speech + **PRESENCE every glance** |
 | `POST /v1/sensor_reaction` | Pickup / pet / fall quips |
 | `POST /v1/behaviors/tick` | Presence → BehaviorRuntime (weak chipper empty) |
-| `GET /v1/behaviors/state` | Debug FSM / sticky presence fields |
+| `GET /v1/behaviors/state` | Multi-FSM index envelope v1 (`schema_version`, presence, arbiter, behavior cards) |
+| `GET /v1/behaviors/{id}` | Per-FSM detail/debug (e.g. `workday`, `joke_idle`) |
 | `POST /v1/proactive_greeting` | Arrival greeting |
 
 Localhost trust model: same class as other chipper→brain loops. Still validate

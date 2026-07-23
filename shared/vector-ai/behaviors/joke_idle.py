@@ -31,6 +31,100 @@ class JokeIdleBehavior:
     def enabled(self) -> bool:
         return bool(self.cfg.enabled)
 
+    def _ops_snapshot(
+        self,
+        now: float,
+        *,
+        presence_updated_at: float = 0.0,
+        occupied: bool = False,
+    ) -> dict:
+        """Read-only gate/counters for status (no mutations, no LLM)."""
+        date = datetime.fromtimestamp(now, tz=self.cfg.tz).date().isoformat()
+        daily = self.store.joke_load_daily(date)
+        cfg = self.cfg
+        last_spoke = float(daily["last_spoke_at"] or 0.0)
+        # Same formula as tick(): now - max(presence.updated_at, last_spoke_at)
+        quiet_base = max(float(presence_updated_at or 0.0), last_spoke)
+        quiet_dwell = max(0.0, now - quiet_base)
+
+        dwell_remaining = max(0.0, float(cfg.min_dwell_s) - quiet_dwell)
+        if last_spoke > 0:
+            cooldown_remaining = max(0.0, float(cfg.cooldown_s) - (now - last_spoke))
+        else:
+            cooldown_remaining = 0.0
+
+        try:
+            queue_len = int(self.store.joke_queue_len())
+        except Exception:
+            queue_len = 0
+
+        # Gate order mirrors tick() (cheap ops view; skips identity probe path).
+        if daily["count"] >= cfg.max_per_day:
+            reason = "capped"
+        elif last_spoke > 0 and (now - last_spoke) < cfg.cooldown_s:
+            reason = "cooldown"
+        elif not occupied:
+            reason = "empty"
+        elif quiet_dwell < cfg.min_dwell_s:
+            reason = "dwell_building"
+        elif queue_len <= 0:
+            reason = "no_line_available"
+        else:
+            reason = "idle_ready"
+
+        return {
+            "date": date,
+            "audience": cfg.audience,
+            "min_dwell_s": cfg.min_dwell_s,
+            "cooldown_s": cfg.cooldown_s,
+            "max_per_day": cfg.max_per_day,
+            "daily_count": int(daily["count"] or 0),
+            "last_spoke_at": last_spoke if last_spoke > 0 else None,
+            "last_reject_at": (
+                float(daily["last_reject_at"])
+                if float(daily["last_reject_at"] or 0) > 0
+                else None
+            ),
+            "quiet_dwell_s": quiet_dwell,
+            "dwell_remaining_s": dwell_remaining,
+            "cooldown_remaining_s": cooldown_remaining,
+            "queue_len": queue_len,
+            "occupied": bool(occupied),
+            "presence_updated_at": float(presence_updated_at or 0.0),
+            "reason": reason,
+        }
+
+    def status_summary(self, now: float, **kwargs) -> str:
+        """Card summary: last-known gate reason (cheap, no tick)."""
+        # Runtime may call with only now; presence bits optional → assume empty desk.
+        snap = self._ops_snapshot(
+            now,
+            presence_updated_at=float(kwargs.get("presence_updated_at") or 0.0),
+            occupied=bool(kwargs.get("occupied", False)),
+        )
+        return str(snap["reason"])
+
+    def status(
+        self,
+        now: float,
+        *,
+        presence_updated_at: float = 0.0,
+        occupied: bool = False,
+        **_kwargs,
+    ) -> dict:
+        """Full joke_idle detail for GET /v1/behaviors/joke_idle."""
+        snap = self._ops_snapshot(
+            now,
+            presence_updated_at=presence_updated_at,
+            occupied=occupied,
+        )
+        return {
+            "id": self.id,
+            "schema_version": 1,
+            "enabled": bool(self.cfg.enabled),
+            **snap,
+        }
+
     def tick(self, ctx: BehaviorContext) -> TickResult:
         r = TickResult()
         date = datetime.fromtimestamp(ctx.now, tz=self.cfg.tz).date().isoformat()

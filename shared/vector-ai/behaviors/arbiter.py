@@ -51,3 +51,10 @@ class SpeechArbiter:
     def record_speech(self, now: float) -> None:
         self._last_speech_at = now
         blog(_TAG, f"recorded speech at now={now:.0f}", verbose=True)
+
+    @property
+    def last_speech_at(self) -> float | None:
+        """Epoch of last allowed proactive speech, or None if never."""
+        if self._last_speech_at <= 0:
+            return None
+        return self._last_speech_at

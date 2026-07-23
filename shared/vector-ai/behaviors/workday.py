@@ -114,6 +114,54 @@ class WorkDayBehavior:
     def enabled(self) -> bool:
         return bool(self.cfg.enabled)
 
+    def status_summary(self, now: float) -> str:
+        """One-line card text for GET /v1/behaviors/state (mode value)."""
+        try:
+            date_s = datetime.fromtimestamp(now, tz=self.cfg.tz).strftime("%Y-%m-%d")
+            rec = self.store.load_workday(date_s)
+            return rec.mode.value
+        except Exception:
+            return "error"
+
+    def status(self, now: float, **_kwargs) -> dict:
+        """Full workday detail for GET /v1/behaviors/workday (ops/debug)."""
+        try:
+            local_dt = datetime.fromtimestamp(now, tz=self.cfg.tz)
+            date_s = local_dt.strftime("%Y-%m-%d")
+            rec = self.store.load_workday(date_s)
+            strip = self.store.day_strip(date_s)
+            mode = rec.mode.value
+        except Exception as e:
+            return {
+                "id": self.id,
+                "schema_version": 1,
+                "workday_enabled": bool(self.cfg.enabled),
+                "date": "",
+                "mode": "error",
+                "day_strip": str(e),
+            }
+        return {
+            "id": self.id,
+            "schema_version": 1,
+            "workday_enabled": bool(self.cfg.enabled),
+            "date": date_s,
+            "mode": mode,
+            "day_strip": strip,
+            "primary_face_id": rec.primary_face_id,
+            "primary_face_name": rec.primary_face_name or "",
+            "arm_source": rec.arm_source or "",
+            "started_at": rec.started_at,
+            "last_poke_at": rec.last_poke_at,
+            "pause_until": rec.pause_until if rec.pause_until > 0 else None,
+            "paused_from": rec.paused_from or "",
+            "absence_count": rec.absence_count,
+            "total_away_s": rec.total_away_s,
+            "late_check_done": rec.late_check_done,
+            "late_check_asked_at": (
+                rec.late_check_asked_at if rec.late_check_asked_at > 0 else None
+            ),
+        }
+
     # -- chat / command hooks -------------------------------------------------
 
     def on_afternoon_yes(self, local_date: str, now: float = 0.0) -> None:

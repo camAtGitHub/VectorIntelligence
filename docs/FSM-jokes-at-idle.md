@@ -273,10 +273,15 @@ If the arbiter **denies** a line (quiet mode, recent voice, min gap, lower prior
 With vector-ai running (default port **8090**):
 
 ```bash
-curl -s http://127.0.0.1:8090/v1/behaviors/state
+# Shared index (envelope v1): card under behaviors.joke_idle
+curl -s http://127.0.0.1:8090/v1/behaviors/state | jq
+# Joke detail (dwell/cooldown remaining, queue_len, daily cap)
+curl -s http://127.0.0.1:8090/v1/behaviors/joke_idle | jq
 ```
 
-You should see `joke_idle` among registered behaviors when both gates are on.  
+On the index, `behaviors.joke_idle` should appear when both gates are on
+(`JOKE_ENABLED=1` and `joke_idle` in `BEHAVIORS_ENABLED`); `summary` is a
+gate reason such as `dwell_building`, `cooldown`, `capped`, or `idle_ready`.  
 `/health` should still be healthy for normal chat.
 
 Logs on enable typically include a short `[behaviors]` / joke status line at startup; when disabled, the refill task is not started.

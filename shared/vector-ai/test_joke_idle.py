@@ -585,6 +585,116 @@ def test_fsm_identity_gating() -> None:
 # 8. Feature flag off
 # ---------------------------------------------------------------------------
 
+def test_joke_status_dwell_queue_cap() -> None:
+    """status() reports dwell math, queue_len, cap without mutating."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        cfg = _joke_cfg(
+            enabled=True,
+            min_dwell_s=1200,
+            cooldown_s=9000,
+            max_per_day=4,
+        )
+        b = JokeIdleBehavior(cfg, store)
+        now = datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        date = "2026-07-18"
+        _push(store, "Status test line unique alpha.", "joke", 0.9, now)
+        _push(store, "Status test line unique beta.", "joke", 0.9, now)
+
+        # Occupied, presence just updated → dwell_building
+        st = b.status(
+            now,
+            presence_updated_at=now - 100.0,
+            occupied=True,
+        )
+        check("status id", st["id"] == JOKE_IDLE_ID)
+        check("status schema", st["schema_version"] == 1)
+        check("status reason dwell", st["reason"] == "dwell_building")
+        check("quiet_dwell ~100", abs(st["quiet_dwell_s"] - 100.0) < 0.01)
+        check(
+            "dwell remaining ~1100",
+            abs(st["dwell_remaining_s"] - 1100.0) < 0.01,
+        )
+        check("queue_len 2", st["queue_len"] == 2)
+        check("daily_count 0", st["daily_count"] == 0)
+        check("occupied true", st["occupied"] is True)
+        check("summary matches reason", b.status_summary(now, occupied=True, presence_updated_at=now - 100.0) == "dwell_building")
+
+        # status must not mutate queue or daily
+        check("queue unchanged after status", store.joke_queue_len() == 2)
+        d = store.joke_load_daily(date)
+        check("daily unchanged after status", d["count"] == 0)
+
+        # After dwell met → idle_ready
+        st2 = b.status(
+            now,
+            presence_updated_at=now - 2000.0,
+            occupied=True,
+        )
+        check("ready after dwell", st2["reason"] == "idle_ready")
+        check("dwell remaining 0", st2["dwell_remaining_s"] == 0.0)
+
+        # Empty desk
+        st3 = b.status(now, presence_updated_at=now - 2000.0, occupied=False)
+        check("empty reason", st3["reason"] == "empty")
+
+        # Cap
+        store.joke_commit_spoke(date, now - 10_000)
+        store.joke_commit_spoke(date, now - 9_000)
+        store.joke_commit_spoke(date, now - 8_000)
+        store.joke_commit_spoke(date, now - 7_000)
+        st4 = b.status(now, presence_updated_at=now - 2000.0, occupied=True)
+        check("capped", st4["reason"] == "capped")
+        check("daily_count 4", st4["daily_count"] == 4)
+
+
+def test_joke_status_cooldown_remaining() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        cfg = _joke_cfg(min_dwell_s=100, cooldown_s=9000, max_per_day=4)
+        b = JokeIdleBehavior(cfg, store)
+        now = datetime(2026, 7, 18, 15, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        date = "2026-07-18"
+        _push(store, "Cooldown status line unique.", "joke", 0.9, now)
+        store.joke_commit_spoke(date, now - 1000.0)  # spoke 1000s ago
+        st = b.status(
+            now,
+            presence_updated_at=now - 5000.0,
+            occupied=True,
+        )
+        check("cooldown reason", st["reason"] == "cooldown")
+        check(
+            "cooldown remaining ~8000",
+            abs(st["cooldown_remaining_s"] - 8000.0) < 0.01,
+        )
+        check("last_spoke set", st["last_spoke_at"] == now - 1000.0)
+
+
+def test_joke_runtime_status_and_card() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        jcfg = _joke_cfg(enabled=True, min_dwell_s=1200, cooldown_s=9000)
+        rcfg = load_runtime_config({"BEHAVIORS_ENABLED": "joke_idle"})
+        wcfg = WorkdayConfig(enabled=False, tz=ZoneInfo("UTC"))
+        rt = BehaviorRuntime(rcfg, wcfg, store, joke_cfg=jcfg)
+        now = datetime(2026, 7, 18, 13, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        _push(store, "Runtime card line unique.", "joke", 0.9, now)
+        # Occupy desk recently (dwell building)
+        rt.presence.note_person_evidence(now - 200.0, source="test", face=None)
+        detail = rt.behavior_status(JOKE_IDLE_ID, now)
+        check("runtime detail", detail is not None)
+        assert detail is not None
+        check("runtime reason dwell", detail["reason"] == "dwell_building")
+        check("runtime queue", detail["queue_len"] == 1)
+        idx = rt.build_state_index(now)
+        check("card present", JOKE_IDLE_ID in idx["behaviors"])
+        check(
+            "card summary dwell",
+            idx["behaviors"][JOKE_IDLE_ID]["summary"] == "dwell_building",
+        )
+        check("unregistered workday 404 path", rt.behavior_status("workday", now) is None)
+
+
 def test_feature_flag_off() -> None:
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "joke.db")

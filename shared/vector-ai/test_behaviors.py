@@ -727,6 +727,113 @@ def test_single_pipe_work_tags() -> None:
     check("single-pipe pause", actions == [("pause", "14:00")])
 
 
+# ---------------------------------------------------------------------------
+# Envelope v1 + status hooks
+# ---------------------------------------------------------------------------
+
+def test_arbiter_last_speech_at_none_then_set() -> None:
+    arb = SpeechArbiter(min_gap_s=90, suppress_after_voice_s=120)
+    check("never spoke is None", arb.last_speech_at is None)
+    arb.record_speech(1000.0)
+    check("after record", arb.last_speech_at == 1000.0)
+
+
+def test_workday_status_and_summary() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        b = WorkDayBehavior(_wd_cfg(), store)
+        now = datetime(2026, 7, 18, 10, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        store.save_workday(
+            WorkdayRecord(
+                date="2026-07-18",
+                mode=WorkdayMode.WORKING,
+                primary_face_id=1,
+                primary_face_name="Cam",
+                arm_source="morning",
+                started_at=now - 3600,
+                last_poke_at=now - 100,
+            )
+        )
+        check("summary is mode", b.status_summary(now) == "working")
+        st = b.status(now)
+        check("status mode", st["mode"] == "working")
+        check("status day_strip has working", "working" in (st.get("day_strip") or "").lower())
+        check("status date", st["date"] == "2026-07-18")
+        check("status workday_enabled", st["workday_enabled"] is True)
+        check("status primary name", st["primary_face_name"] == "Cam")
+        check("status has schema", st.get("schema_version") == 1)
+
+
+def test_build_state_index_envelope_v1() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rcfg = load_runtime_config(
+            {"BEHAVIORS_ENABLED": "workday", "SPEECH_MIN_GAP_S": "90"}
+        )
+        wcfg = _wd_cfg(enabled=True)
+        rt = BehaviorRuntime(rcfg, wcfg, store, quiet_fn=lambda: False)
+        now = datetime(2026, 7, 18, 11, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        rt.presence.note_person_evidence(
+            now,
+            source="test",
+            face=FaceIdentity(face_id=1, name="Cam", is_stranger=False),
+        )
+        store.save_workday(
+            WorkdayRecord(date="2026-07-18", mode=WorkdayMode.WORKING)
+        )
+        idx = rt.build_state_index(now)
+        check("schema_version 1", idx["schema_version"] == 1)
+        check("has now", isinstance(idx["now"], float))
+        check("has date", idx["date"] == "2026-07-18")
+        check("presence nested", isinstance(idx.get("presence"), dict))
+        check("presence occupied", idx["presence"]["occupied"] is True)
+        check("arbiter nested", isinstance(idx.get("arbiter"), dict))
+        check("arbiter last_speech null", idx["arbiter"]["last_speech_at"] is None)
+        check("behaviors object not list", isinstance(idx["behaviors"], dict))
+        check("workday card", "workday" in idx["behaviors"])
+        check("card summary mode", idx["behaviors"]["workday"]["summary"] == "working")
+        check(
+            "card href",
+            idx["behaviors"]["workday"]["href"] == "/v1/behaviors/workday",
+        )
+        # Flat legacy keys must not appear at top level
+        for forbidden in ("mode", "day_strip", "occupied", "workday_enabled", "face"):
+            check(f"no flat {forbidden}", forbidden not in idx)
+
+
+def test_behavior_status_workday_and_404() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rcfg = load_runtime_config({"BEHAVIORS_ENABLED": "workday"})
+        wcfg = _wd_cfg(enabled=True)
+        rt = BehaviorRuntime(rcfg, wcfg, store)
+        now = datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        store.save_workday(
+            WorkdayRecord(date="2026-07-18", mode=WorkdayMode.PAUSED, pause_until=now + 600)
+        )
+        detail = rt.behavior_status("workday", now)
+        check("detail present", detail is not None)
+        assert detail is not None
+        check("detail mode paused", detail["mode"] == "paused")
+        check("detail id", detail["id"] == "workday")
+        check("unknown id None", rt.behavior_status("nope", now) is None)
+        check("joke not registered", rt.behavior_status("joke_idle", now) is None)
+
+
+def test_build_state_index_does_not_call_tick() -> None:
+    """Index is pure observability — no speech path side effects."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rcfg = load_runtime_config({"BEHAVIORS_ENABLED": "workday"})
+        wcfg = _wd_cfg(enabled=True)
+        rt = BehaviorRuntime(rcfg, wcfg, store)
+        now = 1_800_000_000.0
+        ticks_before = dict(rt._last_behavior_tick)
+        rt.build_state_index(now)
+        check("no tick times advanced", rt._last_behavior_tick == ticks_before)
+        check("arbiter still never spoke", rt.arbiter.last_speech_at is None)
+
+
 if __name__ == "__main__":
     import pytest
     import sys

@@ -1,8 +1,7 @@
-"""POST /v1/behaviors/tick and GET /v1/behaviors/state."""
+"""POST /v1/behaviors/tick, GET /v1/behaviors/state (envelope v1), GET detail."""
 import time
-from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 import deps
 import process_state
@@ -77,41 +76,22 @@ async def behaviors_tick(req: BehaviorTickRequest):
 
 @router.get("/v1/behaviors/state")
 async def behaviors_state():
-    """Debug/ops view of workday mode + presence cache."""
+    """Shared multi-FSM index (envelope v1).
+
+    Breaking change vs flat pre-envelope shape: top-level workday keys
+    (`mode`, `day_strip`, `occupied`, …) are gone. Use nested `presence` /
+    `arbiter` / `behaviors.<id>` cards, plus `GET /v1/behaviors/{id}` for
+    private FSM fields.
+    """
     now = time.time()
-    _workday_cfg = deps._workday_cfg
-    _continuity = deps._continuity
-    BEHAVIOR_RUNTIME = deps.BEHAVIOR_RUNTIME
-    try:
-        local_dt = datetime.now(_workday_cfg.tz)
-        date_s = local_dt.strftime("%Y-%m-%d")
-        rec = _continuity.load_workday(date_s)
-        mode = rec.mode.value
-        strip = _continuity.day_strip(date_s)
-    except Exception as e:
-        mode, strip, date_s = "error", str(e), ""
-    presence = BEHAVIOR_RUNTIME.presence
-    snap = presence.snapshot
-    # Ensure snapshot.occupied reflects sticky evaluation for ops.
-    occupied = presence.occupied_effective(now)
-    snap.occupied = occupied
-    sticky = presence.debug_dict(now)
-    return {
-        "workday_enabled": _workday_cfg.enabled,
-        "date": date_s,
-        "mode": mode,
-        "day_strip": strip,
-        "occupied": occupied,
-        "identity_fresh": presence.identity_fresh(now),
-        "face": (
-            {"face_id": snap.face.face_id, "name": snap.face.name,
-             "is_stranger": snap.face.is_stranger}
-            if snap.face else None
-        ),
-        "behaviors": [b.id for b in BEHAVIOR_RUNTIME.behaviors],
-        "last_person_at": sticky["last_person_at"],
-        "empty_streak": sticky["empty_streak"],
-        "presence_source": sticky["presence_source"],
-        "soft_name": sticky.get("soft_name") or "",
-        "presence_sticky_s": sticky["sticky_s"],
-    }
+    return deps.BEHAVIOR_RUNTIME.build_state_index(now)
+
+
+@router.get("/v1/behaviors/{behavior_id}")
+async def behavior_detail(behavior_id: str):
+    """Per-FSM ops/debug detail. Does not speak or advance tick policy."""
+    now = time.time()
+    detail = deps.BEHAVIOR_RUNTIME.behavior_status(behavior_id, now)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"behavior not registered: {behavior_id}")
+    return detail

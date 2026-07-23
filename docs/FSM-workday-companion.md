@@ -229,10 +229,15 @@ Then:
 With vector-ai running (default port **8090**):
 
 ```bash
-curl -s http://127.0.0.1:8090/v1/behaviors/state
+# Shared index (envelope v1): cards under behaviors.workday, not flat mode keys
+curl -s http://127.0.0.1:8090/v1/behaviors/state | jq
+# Work Day detail (mode, day_strip, timers)
+curl -s http://127.0.0.1:8090/v1/behaviors/workday | jq
 ```
 
-You should see Work Day enabled (and related state) when `WORKDAY_ENABLED=1`.  
+On the index, `behaviors.workday` should appear when Work Day is registered
+(`WORKDAY_ENABLED=1` and `workday` in `BEHAVIORS_ENABLED`); `summary` is the
+current mode (e.g. `"working"`). Full mode / day strip live on the detail GET.  
 `/health` should still be healthy for normal chat.
 
 ### Holiday / guests

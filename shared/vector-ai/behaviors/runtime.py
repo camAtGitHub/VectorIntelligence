@@ -70,6 +70,127 @@ class BehaviorRuntime:
         if not self.behaviors:
             blog(_TAG, "no behaviors registered (all disabled or not in BEHAVIORS_ENABLED)")
 
+    def build_state_index(self, now: float) -> dict:
+        """Envelope v1 for GET /v1/behaviors/state (cards only; no private dumps)."""
+        self.presence._sync_occupied(now)
+        snap = self.presence.snapshot
+        sticky = self.presence.debug_dict(now)
+        local_dt = self._local_dt(now)
+        date_s = local_dt.strftime("%Y-%m-%d")
+
+        face_block = None
+        if snap.face is not None:
+            face_block = {
+                "face_id": snap.face.face_id,
+                "name": snap.face.name,
+                "is_stranger": snap.face.is_stranger,
+            }
+
+        occupied = bool(sticky["occupied"])
+        presence_updated_at = float(snap.updated_at or 0.0)
+        cards: Dict[str, Any] = {}
+        for b in self.behaviors:
+            summary_fn = getattr(b, "status_summary", None)
+            if callable(summary_fn):
+                try:
+                    try:
+                        # Prefer presence-aware summary (joke dwell/gate).
+                        summary = str(
+                            summary_fn(
+                                now,
+                                presence_updated_at=presence_updated_at,
+                                occupied=occupied,
+                            )
+                            or "ok"
+                        )
+                    except TypeError:
+                        summary = str(summary_fn(now) or "ok")
+                except Exception as e:
+                    summary = f"error:{e}"
+                    blog(_TAG, f"{b.id}: status_summary failed: {e}")
+            else:
+                summary = "ok" if b.enabled() else "disabled"
+            cards[b.id] = {
+                "enabled": True,  # only registered instances appear
+                "summary": summary,
+                "href": f"/v1/behaviors/{b.id}",
+            }
+
+        last_speech = self.arbiter.last_speech_at
+        return {
+            "schema_version": 1,
+            "now": now,
+            "date": date_s,
+            "presence": {
+                "occupied": sticky["occupied"],
+                "identity_fresh": self.presence.identity_fresh(now),
+                "face": face_block,
+                "last_person_at": sticky["last_person_at"],
+                "empty_streak": sticky["empty_streak"],
+                "presence_source": sticky["presence_source"],
+                "soft_name": sticky.get("soft_name") or "",
+                "presence_sticky_s": sticky["sticky_s"],
+            },
+            "arbiter": {
+                "quiet": bool(self.quiet_fn()),
+                "last_speech_at": last_speech,
+            },
+            "behaviors": cards,
+        }
+
+    def behavior_status(self, behavior_id: str, now: float) -> Optional[dict]:
+        """Resolve registered plugin status for GET /v1/behaviors/{id}.
+
+        Returns None if id is not registered. Builds presence bits once so FSMs
+        can compute dwell without coupling to PresenceCache types.
+        """
+        b = None
+        for candidate in self.behaviors:
+            if candidate.id == behavior_id:
+                b = candidate
+                break
+        if b is None:
+            return None
+
+        self.presence._sync_occupied(now)
+        snap = self.presence.snapshot
+        occupied = self.presence.occupied_effective(now)
+        presence_updated_at = float(snap.updated_at or 0.0)
+
+        status_fn = getattr(b, "status", None)
+        if callable(status_fn):
+            try:
+                detail = status_fn(
+                    now,
+                    presence_updated_at=presence_updated_at,
+                    occupied=occupied,
+                )
+            except TypeError:
+                # Status methods that only take now
+                detail = status_fn(now)
+            except Exception as e:
+                blog(_TAG, f"{b.id}: status failed: {e}")
+                detail = {"id": b.id, "error": str(e)}
+            if not isinstance(detail, dict):
+                detail = {"id": b.id, "value": detail}
+            out = dict(detail)
+            out.setdefault("id", b.id)
+            out.setdefault("schema_version", 1)
+            return out
+
+        summary_fn = getattr(b, "status_summary", None)
+        summary = "ok"
+        if callable(summary_fn):
+            try:
+                summary = str(summary_fn(now) or "ok")
+            except Exception as e:
+                summary = f"error:{e}"
+        return {
+            "id": b.id,
+            "schema_version": 1,
+            "summary": summary,
+        }
+
     def ingest_tick_payload(
         self,
         now: float,

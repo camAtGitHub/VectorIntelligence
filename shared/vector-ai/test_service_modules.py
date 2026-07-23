@@ -27,6 +27,7 @@ EXPECTED_ROUTES = {
     "/v1/ambient/quiet",
     "/v1/behaviors/tick",
     "/v1/behaviors/state",
+    "/v1/behaviors/{behavior_id}",
     "/v1/proactive_greeting",
 }
 
@@ -48,6 +49,7 @@ EXPECTED_ROUTE_METHODS = {
     "/v1/ambient/quiet": {"POST"},
     "/v1/behaviors/tick": {"POST"},
     "/v1/behaviors/state": {"GET"},
+    "/v1/behaviors/{behavior_id}": {"GET"},
     "/v1/proactive_greeting": {"POST"},
 }
 
