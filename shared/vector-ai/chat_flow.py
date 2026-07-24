@@ -12,6 +12,8 @@ from debug_log import _redact_messages, debug
 from llm import (
     LLM_API_KEY,
     LLM_BASE_URL,
+    LLM_SUMMARY_TEMPERATURE,
+    LLM_TEMPERATURE,
     MODEL,
     SUMMARY_MODEL,
     _llm_timeout,
@@ -131,7 +133,7 @@ async def _summarise_conversation(messages: list, latest_reply: str,
         summary = await llm_chat_once(
             prompt,
             model=SUMMARY_MODEL,
-            temperature=0.3,
+            temperature=LLM_SUMMARY_TEMPERATURE,
             top_p=0.95,
             timeout=_llm_timeout(read=60.0),
             max_tokens=128,
@@ -150,8 +152,9 @@ async def _summarise_conversation(messages: list, latest_reply: str,
 
 # -- Main flow -----------------------------------------------------------------
 
-async def generate(messages: list, temperature: float = 1.0) -> AsyncIterator[str]:
+async def generate(messages: list, temperature: float | None = None) -> AsyncIterator[str]:
     process_state._LAST_USER_VOICE_TS = time.time()  # suppress proactive speech during chat
+    temp = LLM_TEMPERATURE if temperature is None else float(temperature)
     last_user_text = next(
         (m.content for m in reversed(messages)
          if m.role == "user" and isinstance(m.content, str)),
@@ -162,7 +165,7 @@ async def generate(messages: list, temperature: float = 1.0) -> AsyncIterator[st
     debug(
         "WIREPOD RECV /v1/chat/completions generate()",
         {
-            "temperature": temperature,
+            "temperature": temp,
             "n_messages": len(messages),
             "has_image": has_image,
             "messages": _redact_messages(messages),
@@ -212,7 +215,7 @@ async def generate(messages: list, temperature: float = 1.0) -> AsyncIterator[st
         any_emitted   = False
         reply_parts   = []
         async for sentence in stream_sentences_with_filler(
-            prepared, temperature, filler_enabled=not has_image
+            prepared, temp, filler_enabled=not has_image
         ):
             cleaned = clean_response(sentence)
 

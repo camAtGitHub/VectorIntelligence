@@ -5,7 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter
 
 import deps
-from llm import SUMMARY_MODEL, _llm_timeout, llm_chat_once
+from llm import LLM_MOOD_TEMPERATURE, SUMMARY_MODEL, _llm_timeout, llm_chat_once
 from logging_util import print  # noqa: F401
 from process_state import (
     MOOD_REFLECT_INTERVAL,
@@ -65,7 +65,7 @@ async def _reflect_mood() -> None:
                 {"role": "user", "content": " ".join(bits)},
             ],
             model=SUMMARY_MODEL,
-            temperature=0.7,
+            temperature=LLM_MOOD_TEMPERATURE,
             top_p=0.95,
             timeout=_llm_timeout(read=60.0),
             max_tokens=64,

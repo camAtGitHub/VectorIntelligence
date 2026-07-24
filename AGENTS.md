@@ -240,6 +240,13 @@ one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
 | `LLM_MODEL` | Main multimodal model |
 | `LLM_SUMMARY_MODEL` | Mood + conversation summary |
 | `LLM_MAX_HISTORY_MESSAGES` | Turns sent upstream (default 24) |
+| `LLM_TEMPERATURE` | Knowledge chat sampling (default `1.0`; Wire-Pod request temp ignored) |
+| `LLM_SUMMARY_TEMPERATURE` | Conversation summary (default `0.3`) |
+| `LLM_MOOD_TEMPERATURE` | Mood reflection (default `0.7`) |
+| `LLM_AMBIENT_TEMPERATURE` | Ambient glance (default `0.8`) |
+| `LLM_GREETING_TEMPERATURE` | Proactive greeting (default `1.3`) |
+| `LLM_SENSOR_TEMPERATURE` | Sensor quips (default `1.4`) |
+| `LLM_JOKE_GENERATE_TEMPERATURE` / `LLM_JOKE_CRITIC_TEMPERATURE` | Joke refill stages (default `1.0` / `0.2`) |
 | `LLM_TIMEOUT_CONNECT` / `LLM_TIMEOUT_READ` | HTTP timeouts |
 | `VECTORAI_DEBUG` | Verbose request/response logs (images redacted) |
 

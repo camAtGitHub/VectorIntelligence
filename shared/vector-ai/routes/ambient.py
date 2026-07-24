@@ -9,7 +9,7 @@ from fastapi import APIRouter
 
 import deps
 from debug_log import debug
-from llm import MODEL, _llm_timeout, llm_chat_once
+from llm import LLM_AMBIENT_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
 from logging_util import print  # noqa: F401
 from persona import PERSONA
 from process_state import (
@@ -261,7 +261,7 @@ async def ambient(req: AmbientRequest):
                 {"role": "user", "content": user_msg},
             ],
             model=MODEL,
-            temperature=0.8,
+            temperature=LLM_AMBIENT_TEMPERATURE,
             top_p=0.9,
             seed=random.randint(1, 2**31 - 1),
             timeout=_llm_timeout(connect=12.0, read=45.0),

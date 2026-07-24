@@ -482,9 +482,23 @@ async def _generate_batch(
             f"generating batch: want jokes={want_jokes} questions={want_questions} "
             f"seeds={seeds} model={gen_model or 'default'}",
         )
+        # Temperatures from vector-ai .env (LLM_JOKE_*_TEMPERATURE); keep
+        # generate hotter than critic without hardcoding magic numbers here.
+        try:
+            from llm import (
+                LLM_JOKE_CRITIC_TEMPERATURE,
+                LLM_JOKE_GENERATE_TEMPERATURE,
+            )
+        except Exception:  # pragma: no cover - import path during isolated tests
+            LLM_JOKE_GENERATE_TEMPERATURE = 1.0  # type: ignore[misc, assignment]
+            LLM_JOKE_CRITIC_TEMPERATURE = 0.2  # type: ignore[misc, assignment]
+
         messages = build_generate_messages(seeds, want_jokes, want_questions)
         raw = await llm(
-            messages, model=gen_model, temperature=1.0, tag="joke_gen"
+            messages,
+            model=gen_model,
+            temperature=LLM_JOKE_GENERATE_TEMPERATURE,
+            tag="joke_gen",
         )
         cands = parse_json_array(raw if isinstance(raw, str) else "")
         if not cands:
@@ -500,7 +514,7 @@ async def _generate_batch(
         scored_raw = await llm(
             build_critic_messages(cands),
             model=critic_model,
-            temperature=0.2,
+            temperature=LLM_JOKE_CRITIC_TEMPERATURE,
             tag="joke_critic",
         )
         verdicts = parse_json_array(scored_raw if isinstance(scored_raw, str) else "")

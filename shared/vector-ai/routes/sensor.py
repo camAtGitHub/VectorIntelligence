@@ -4,7 +4,7 @@ import random
 from fastapi import APIRouter
 
 from debug_log import debug
-from llm import MODEL, _llm_timeout, llm_chat_once
+from llm import LLM_SENSOR_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
 from logging_util import print  # noqa: F401
 from persona import PERSONA
 from response_cleanup import _strip_for_speech
@@ -73,7 +73,7 @@ async def sensor_reaction(req: SensorReactionRequest):
                 {"role": "user", "content": user_msg},
             ],
             model=MODEL,
-            temperature=1.4,
+            temperature=LLM_SENSOR_TEMPERATURE,
             top_p=0.95,
             seed=random.randint(1, 2**31 - 1),
             timeout=_llm_timeout(connect=8.0, read=30.0),

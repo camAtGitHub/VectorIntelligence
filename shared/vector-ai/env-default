@@ -22,6 +22,24 @@ LLM_SUMMARY_MODEL=google/gemini-2.0-flash-lite
 # Max user/assistant turns forwarded to the LLM (Wire-Pod may keep more).
 LLM_MAX_HISTORY_MESSAGES=24
 
+# Sampling temperatures (OpenRouter/OpenAI range 0–2; bad values fall back).
+# Each call path has its own knob — set only the ones you care about.
+# Knowledge chat (Wire-Pod → /v1/chat/completions). Request body temp is ignored.
+LLM_TEMPERATURE=1.0
+# Conversation summary after a chat (factual, low creativity)
+LLM_SUMMARY_TEMPERATURE=0.3
+# Background mood reflection
+LLM_MOOD_TEMPERATURE=0.7
+# Ambient glance novelty line
+LLM_AMBIENT_TEMPERATURE=0.8
+# Proactive arrival greeting
+LLM_GREETING_TEMPERATURE=1.3
+# Pickup / pet / fall sensor quips
+LLM_SENSOR_TEMPERATURE=1.4
+# Joke idle background refill (generate + critic stages)
+LLM_JOKE_GENERATE_TEMPERATURE=1.0
+LLM_JOKE_CRITIC_TEMPERATURE=0.2
+
 # Timeouts (seconds)
 LLM_TIMEOUT_CONNECT=15
 LLM_TIMEOUT_READ=120

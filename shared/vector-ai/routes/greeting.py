@@ -7,7 +7,7 @@ from fastapi import APIRouter
 
 import deps
 from debug_log import debug
-from llm import MODEL, _llm_timeout, llm_chat_once
+from llm import LLM_GREETING_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
 from logging_util import print  # noqa: F401
 from persona import PERSONA
 from process_state import (
@@ -107,7 +107,7 @@ async def proactive_greeting(req: GreetingRequest):
                 {"role": "user", "content": " ".join(bits) + " Greet them now."},
             ],
             model=MODEL,
-            temperature=1.3,
+            temperature=LLM_GREETING_TEMPERATURE,
             top_p=0.95,
             seed=random.randint(1, 2**31 - 1),
             timeout=_llm_timeout(connect=8.0, read=30.0),

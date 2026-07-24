@@ -45,6 +45,46 @@ try:
     LLM_TIMEOUT_READ = float(os.getenv("LLM_TIMEOUT_READ", "120"))
 except ValueError:
     LLM_TIMEOUT_READ = 120.0
+
+
+def _parse_temperature(raw: Optional[str], default: float = 1.0) -> float:
+    """Parse OpenAI/OpenRouter temperature; clamp to [0, 2]. Bad values → default."""
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        v = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    if v < 0.0:
+        return 0.0
+    if v > 2.0:
+        return 2.0
+    return v
+
+
+# Sampling temperatures (OpenAI/OpenRouter 0–2). Each path has its own knob so
+# chat creativity can be tuned without flattening mood/ambient/sensor/jokes.
+# Defaults match the previous hardcodes in each call site.
+LLM_TEMPERATURE = _parse_temperature(os.getenv("LLM_TEMPERATURE"), 1.0)
+LLM_SUMMARY_TEMPERATURE = _parse_temperature(
+    os.getenv("LLM_SUMMARY_TEMPERATURE"), 0.3
+)
+LLM_MOOD_TEMPERATURE = _parse_temperature(os.getenv("LLM_MOOD_TEMPERATURE"), 0.7)
+LLM_AMBIENT_TEMPERATURE = _parse_temperature(
+    os.getenv("LLM_AMBIENT_TEMPERATURE"), 0.8
+)
+LLM_GREETING_TEMPERATURE = _parse_temperature(
+    os.getenv("LLM_GREETING_TEMPERATURE"), 1.3
+)
+LLM_SENSOR_TEMPERATURE = _parse_temperature(
+    os.getenv("LLM_SENSOR_TEMPERATURE"), 1.4
+)
+LLM_JOKE_GENERATE_TEMPERATURE = _parse_temperature(
+    os.getenv("LLM_JOKE_GENERATE_TEMPERATURE"), 1.0
+)
+LLM_JOKE_CRITIC_TEMPERATURE = _parse_temperature(
+    os.getenv("LLM_JOKE_CRITIC_TEMPERATURE"), 0.2
+)
 # Optional OpenRouter ranking headers (harmless if empty / other providers).
 LLM_HTTP_REFERER = os.getenv(
     "LLM_HTTP_REFERER",
@@ -93,19 +133,23 @@ async def llm_chat_once(
     messages: list,
     *,
     model: Optional[str] = None,
-    temperature: float = 1.0,
+    temperature: Optional[float] = None,
     top_p: float = 0.95,
     seed: Optional[int] = None,
     timeout: Optional[httpx.Timeout] = None,
     max_tokens: Optional[int] = None,
     tag: str = "llm_chat_once",
 ) -> str:
-    """Single non-streaming chat completion against the configured LLM backend."""
+    """Single non-streaming chat completion against the configured LLM backend.
+
+    ``temperature=None`` uses ``LLM_TEMPERATURE`` from the environment.
+    """
+    temp = LLM_TEMPERATURE if temperature is None else float(temperature)
     body: dict[str, Any] = {
         "model": model or MODEL,
         "messages": messages,
         "stream": False,
-        "temperature": temperature,
+        "temperature": temp,
         "top_p": top_p,
     }
     if seed is not None:
@@ -149,7 +193,9 @@ async def llm_chat_once(
 _SENTENCE_END = re.compile(r'(?<=[.!?])(?:\s+|$)')
 
 
-async def llm_sentence_stream(messages: list, temperature: float = 1.0) -> AsyncIterator[str]:
+async def llm_sentence_stream(
+    messages: list, temperature: Optional[float] = None
+) -> AsyncIterator[str]:
     """Stream chat-completion tokens and yield complete sentences as they arrive.
 
     Wire-Pod's stream parser splits on punctuation but only takes splitResp[1],
@@ -160,7 +206,9 @@ async def llm_sentence_stream(messages: list, temperature: float = 1.0) -> Async
 
     A per-request random seed + top_p<1 keeps responses from converging on the
     same high-probability tokens turn after turn (especially noticeable on
-    'tell me a joke')."""
+    'tell me a joke'). ``temperature=None`` uses ``LLM_TEMPERATURE`` from env.
+    """
+    temp = LLM_TEMPERATURE if temperature is None else float(temperature)
     buffer = ""
     t0 = time.monotonic()
     first_token_seen = False
@@ -170,7 +218,7 @@ async def llm_sentence_stream(messages: list, temperature: float = 1.0) -> Async
         "model":       MODEL,
         "messages":    messages,
         "stream":      True,
-        "temperature": temperature,
+        "temperature": temp,
         "top_p":       0.95,
         "seed":        random.randint(1, 2**31 - 1),
     }
