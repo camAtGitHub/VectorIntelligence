@@ -597,11 +597,17 @@ def test_presence_debug_dict_fields():
     d = cache.debug_dict(t0)
     assert d["occupied"] is True
     assert d["last_person_at"] == t0
+    assert d["session_started_at"] == t0
     assert d["empty_streak"] == 0
     assert d["presence_source"] == "ambient"
     assert d["sticky_s"] == 100
     assert d["soft_name"] == "Cam"
     assert cache.soft_name == "Cam"
+    # Later evidence keeps session start; only refreshes last_person_at / updated_at.
+    cache.note_person_evidence(t0 + 30.0, source="tick", face=None)
+    assert cache.snapshot.session_started_at == t0
+    assert cache.snapshot.updated_at == t0 + 30.0
+    assert cache.last_person_at == t0 + 30.0
 
 
 def test_runtime_zero_sticky_config_allowed():

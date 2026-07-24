@@ -32,7 +32,10 @@ class PresenceSnapshot:
     image_ts: float = 0.0
     on_charger: bool = False
     voice_recent: bool = False
+    # Heartbeat: last ingest/sensor write (refreshes every tick — not for dwell).
     updated_at: float = 0.0
+    # Continuous occupancy session start (empty→occupied only; for dwell gates).
+    session_started_at: float = 0.0
 
 
 @dataclass
@@ -61,6 +64,8 @@ class BehaviorContext:
     quiet: bool
     config: Any  # WorkdayConfig or RuntimeConfig subset
     identity_fresh: bool = False
+    # Epoch of last user chat / voice (for quiet-dwell). 0 = never.
+    last_user_voice_at: float = 0.0
 
 
 class Behavior(Protocol):

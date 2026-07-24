@@ -286,9 +286,16 @@ or `idle_ready`.
 
 **Ops reason scope:** detail `reason` / card `summary` are a **cheap subset**
 of tick gates (cap, cooldown, empty, dwell, queue). They do **not** include
-`voice_recent`, identity probe, or stranger suppress — those only exist on the
-speak path. So `idle_ready` means dwell/cooldown/cap/queue look clear for ops;
-a later tick may still skip. Detail JSON includes `"reason_scope": "ops_subset"`.
+chipper `voice_recent`, identity probe, stranger suppress, or arbiter denies —
+those only exist on the speak path. So `idle_ready` means dwell/cooldown/cap/queue
+look clear for ops; a later tick may still skip. Detail JSON includes
+`"reason_scope": "ops_subset"`.
+
+**Dwell clock:** quiet dwell is `now − max(session_started_at, last_spoke_at,
+last_user_voice_at)`. `session_started_at` is when continuous desk occupancy
+began (empty→occupied), **not** `presence.updated_at`. Every behavior tick
+rewrites `updated_at` as a sensor heartbeat; using it for dwell made status look
+`idle_ready` while real ticks always saw `dwell_building`.
 
 `/health` should still be healthy for normal chat.
 

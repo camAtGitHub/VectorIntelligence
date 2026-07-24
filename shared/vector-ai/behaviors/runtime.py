@@ -93,6 +93,12 @@ class BehaviorRuntime:
 
         occupied = bool(sticky["occupied"])
         presence_updated_at = float(snap.updated_at or 0.0)
+        session_started_at = float(
+            sticky.get("session_started_at")
+            or getattr(snap, "session_started_at", 0.0)
+            or 0.0
+        )
+        last_user_voice_at = float(self.voice_ts_fn() or 0.0)
         cards: Dict[str, Any] = {}
         for b in self.behaviors:
             summary_fn = getattr(b, "status_summary", None)
@@ -103,8 +109,10 @@ class BehaviorRuntime:
                         summary = str(
                             summary_fn(
                                 now,
+                                session_started_at=session_started_at,
                                 presence_updated_at=presence_updated_at,
                                 occupied=occupied,
+                                last_user_voice_at=last_user_voice_at,
                             )
                             or "ok"
                         )
@@ -131,6 +139,7 @@ class BehaviorRuntime:
                 "identity_fresh": self.presence.identity_fresh(now),
                 "face": face_block,
                 "last_person_at": sticky["last_person_at"],
+                "session_started_at": session_started_at or None,
                 "empty_streak": sticky["empty_streak"],
                 "presence_source": sticky["presence_source"],
                 "soft_name": sticky.get("soft_name") or "",
@@ -139,6 +148,7 @@ class BehaviorRuntime:
             "arbiter": {
                 "quiet": bool(self.quiet_fn()),
                 "last_speech_at": last_speech,
+                "last_user_voice_at": last_user_voice_at or None,
             },
             "behaviors": cards,
         }
@@ -161,14 +171,18 @@ class BehaviorRuntime:
         snap = self.presence.snapshot
         occupied = self.presence.occupied_effective(now)
         presence_updated_at = float(snap.updated_at or 0.0)
+        session_started_at = float(getattr(snap, "session_started_at", 0.0) or 0.0)
+        last_user_voice_at = float(self.voice_ts_fn() or 0.0)
 
         status_fn = getattr(b, "status", None)
         if callable(status_fn):
             try:
                 detail = status_fn(
                     now,
+                    session_started_at=session_started_at,
                     presence_updated_at=presence_updated_at,
                     occupied=occupied,
+                    last_user_voice_at=last_user_voice_at,
                 )
             except TypeError:
                 # Status methods that only take now
@@ -301,6 +315,7 @@ class BehaviorRuntime:
             quiet=quiet,
             config=self.workday_cfg,
             identity_fresh=identity_fresh,
+            last_user_voice_at=voice_ts,
         )
 
         candidates: List[tuple[Any, TickResult]] = []

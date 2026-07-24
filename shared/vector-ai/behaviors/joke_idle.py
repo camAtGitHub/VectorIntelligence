@@ -31,21 +31,49 @@ class JokeIdleBehavior:
     def enabled(self) -> bool:
         return bool(self.cfg.enabled)
 
+    @staticmethod
+    def _quiet_base(
+        *,
+        session_started_at: float,
+        last_spoke_at: float,
+        last_user_voice_at: float = 0.0,
+    ) -> float:
+        """Quiet clock for dwell — never use presence.updated_at (tick heartbeat).
+
+        Uses occupancy session start + last joke speak + last user voice so
+        continuous person evidence / ingest heartbeats cannot reset dwell.
+        """
+        return max(
+            float(session_started_at or 0.0),
+            float(last_spoke_at or 0.0),
+            float(last_user_voice_at or 0.0),
+        )
+
     def _ops_snapshot(
         self,
         now: float,
         *,
+        session_started_at: float = 0.0,
         presence_updated_at: float = 0.0,
         occupied: bool = False,
+        last_user_voice_at: float = 0.0,
     ) -> dict:
         """Read-only gate/counters for status (no mutations, no LLM)."""
         date = datetime.fromtimestamp(now, tz=self.cfg.tz).date().isoformat()
         daily = self.store.joke_load_daily(date)
         cfg = self.cfg
         last_spoke = float(daily["last_spoke_at"] or 0.0)
-        # Same formula as tick(): now - max(presence.updated_at, last_spoke_at)
-        quiet_base = max(float(presence_updated_at or 0.0), last_spoke)
-        quiet_dwell = max(0.0, now - quiet_base)
+        # Same formula as tick() — session start, not updated_at heartbeat.
+        quiet_base = self._quiet_base(
+            session_started_at=session_started_at,
+            last_spoke_at=last_spoke,
+            last_user_voice_at=last_user_voice_at,
+        )
+        if quiet_base > 0:
+            quiet_dwell = max(0.0, now - quiet_base)
+        else:
+            # No session / speech clock yet → no dwell progress.
+            quiet_dwell = 0.0
 
         dwell_remaining = max(0.0, float(cfg.min_dwell_s) - quiet_dwell)
         if last_spoke > 0:
@@ -59,9 +87,10 @@ class JokeIdleBehavior:
             queue_len = 0
 
         # Cheap ops gate (subset of tick). Intentionally does NOT model
-        # voice_recent, identity probe, or stranger suppress — those only
-        # exist on the speak path. ``idle_ready`` means dwell/cooldown/cap/
-        # queue look clear for ops; tick may still skip. See FSM-jokes-at-idle.
+        # voice_recent bool / identity probe / stranger suppress — those only
+        # exist on the speak path. last_user_voice_at *is* in the dwell base.
+        # ``idle_ready`` means dwell/cooldown/cap/queue look clear for ops;
+        # tick may still skip (arbiter, voice_recent). See FSM-jokes-at-idle.
         if daily["count"] >= cfg.max_per_day:
             reason = "capped"
         elif last_spoke > 0 and (now - last_spoke) < cfg.cooldown_s:
@@ -93,9 +122,15 @@ class JokeIdleBehavior:
             "cooldown_remaining_s": cooldown_remaining,
             "queue_len": queue_len,
             "occupied": bool(occupied),
+            "session_started_at": float(session_started_at or 0.0) or None,
             "presence_updated_at": float(presence_updated_at or 0.0),
+            "last_user_voice_at": (
+                float(last_user_voice_at)
+                if float(last_user_voice_at or 0) > 0
+                else None
+            ),
             "reason": reason,
-            # Ops reason is a cheap subset of tick gates (not identity/voice).
+            # Ops reason is a cheap subset of tick gates (not identity/arbiter).
             "reason_scope": "ops_subset",
         }
 
@@ -104,8 +139,10 @@ class JokeIdleBehavior:
         # Runtime may call with only now; presence bits optional → assume empty desk.
         snap = self._ops_snapshot(
             now,
+            session_started_at=float(kwargs.get("session_started_at") or 0.0),
             presence_updated_at=float(kwargs.get("presence_updated_at") or 0.0),
             occupied=bool(kwargs.get("occupied", False)),
+            last_user_voice_at=float(kwargs.get("last_user_voice_at") or 0.0),
         )
         return str(snap["reason"])
 
@@ -113,15 +150,19 @@ class JokeIdleBehavior:
         self,
         now: float,
         *,
+        session_started_at: float = 0.0,
         presence_updated_at: float = 0.0,
         occupied: bool = False,
+        last_user_voice_at: float = 0.0,
         **_kwargs,
     ) -> dict:
         """Full joke_idle detail for GET /v1/behaviors/joke_idle."""
         snap = self._ops_snapshot(
             now,
+            session_started_at=session_started_at,
             presence_updated_at=presence_updated_at,
             occupied=occupied,
+            last_user_voice_at=last_user_voice_at,
         )
         return {
             "id": self.id,
@@ -143,9 +184,16 @@ class JokeIdleBehavior:
                 left = cfg.cooldown_s - (ctx.now - daily["last_spoke_at"])
                 remaining = f" ({left:.0f}s left)"
             elif reason == "dwell_building":
-                quiet_dwell = ctx.now - max(
-                    ctx.presence.updated_at, daily["last_spoke_at"]
+                qb = self._quiet_base(
+                    session_started_at=float(
+                        getattr(ctx.presence, "session_started_at", 0.0) or 0.0
+                    ),
+                    last_spoke_at=float(daily["last_spoke_at"] or 0.0),
+                    last_user_voice_at=float(
+                        getattr(ctx, "last_user_voice_at", 0.0) or 0.0
+                    ),
                 )
+                quiet_dwell = (ctx.now - qb) if qb > 0 else 0.0
                 remaining = f" ({quiet_dwell:.0f}/{cfg.min_dwell_s}s)"
             elif reason == "capped":
                 remaining = f" ({daily['count']}/{cfg.max_per_day})"
@@ -169,8 +217,19 @@ class JokeIdleBehavior:
         if not ctx.presence.occupied:
             return _skip("empty")
 
-        # 6. Dwell (quiet time at desk since presence update or last spoke)
-        quiet_dwell = ctx.now - max(ctx.presence.updated_at, daily["last_spoke_at"])
+        # 6. Dwell: quiet time since occupancy *session start* / last speak /
+        # last user voice. Do NOT use presence.updated_at — every tick ingest
+        # rewrites that field (heartbeat), which zeroed dwell forever.
+        quiet_base = self._quiet_base(
+            session_started_at=float(
+                getattr(ctx.presence, "session_started_at", 0.0) or 0.0
+            ),
+            last_spoke_at=float(daily["last_spoke_at"] or 0.0),
+            last_user_voice_at=float(
+                getattr(ctx, "last_user_voice_at", 0.0) or 0.0
+            ),
+        )
+        quiet_dwell = (ctx.now - quiet_base) if quiet_base > 0 else 0.0
         if quiet_dwell < cfg.min_dwell_s:
             return _skip("dwell_building")
 

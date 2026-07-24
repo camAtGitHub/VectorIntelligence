@@ -76,17 +76,23 @@ def _joke_ctx(
     face: FaceIdentity | None = None,
     identity_fresh: bool = False,
     updated_at: float | None = None,
+    session_started_at: float | None = None,
     voice_recent: bool = False,
+    last_user_voice_at: float = 0.0,
 ) -> BehaviorContext:
+    if session_started_at is None:
+        # Dwell fully met: session started min_dwell_s ago.
+        session_started_at = now - float(behavior.cfg.min_dwell_s)
     if updated_at is None:
-        # Dwell fully met relative to last_spoke_at default 0.
-        updated_at = now - float(behavior.cfg.min_dwell_s)
+        # Heartbeat field — may be "now" even when session is old.
+        updated_at = now
     local_dt = datetime.fromtimestamp(now, tz=behavior.cfg.tz)
     snap = PresenceSnapshot(
         occupied=occupied,
         face=face,
         face_ts=now if face is not None else 0.0,
         updated_at=updated_at,
+        session_started_at=float(session_started_at),
         voice_recent=voice_recent,
     )
     return BehaviorContext(
@@ -96,6 +102,7 @@ def _joke_ctx(
         quiet=False,
         config=behavior.cfg,
         identity_fresh=identity_fresh,
+        last_user_voice_at=float(last_user_voice_at or 0.0),
     )
 
 
@@ -601,10 +608,12 @@ def test_joke_status_dwell_queue_cap() -> None:
         _push(store, "Status test line unique alpha.", "joke", 0.9, now)
         _push(store, "Status test line unique beta.", "joke", 0.9, now)
 
-        # Occupied, presence just updated → dwell_building
+        # Occupied, session just started → dwell_building.
+        # presence_updated_at may be "now" (tick heartbeat) and must NOT control dwell.
         st = b.status(
             now,
-            presence_updated_at=now - 100.0,
+            session_started_at=now - 100.0,
+            presence_updated_at=now,
             occupied=True,
         )
         check("status id", st["id"] == JOKE_IDLE_ID)
@@ -618,7 +627,16 @@ def test_joke_status_dwell_queue_cap() -> None:
         check("queue_len 2", st["queue_len"] == 2)
         check("daily_count 0", st["daily_count"] == 0)
         check("occupied true", st["occupied"] is True)
-        check("summary matches reason", b.status_summary(now, occupied=True, presence_updated_at=now - 100.0) == "dwell_building")
+        check(
+            "summary matches reason",
+            b.status_summary(
+                now,
+                occupied=True,
+                session_started_at=now - 100.0,
+                presence_updated_at=now,
+            )
+            == "dwell_building",
+        )
 
         # status must not mutate queue or daily
         check("queue unchanged after status", store.joke_queue_len() == 2)
@@ -628,14 +646,20 @@ def test_joke_status_dwell_queue_cap() -> None:
         # After dwell met → idle_ready
         st2 = b.status(
             now,
-            presence_updated_at=now - 2000.0,
+            session_started_at=now - 2000.0,
+            presence_updated_at=now,
             occupied=True,
         )
         check("ready after dwell", st2["reason"] == "idle_ready")
         check("dwell remaining 0", st2["dwell_remaining_s"] == 0.0)
 
         # Empty desk
-        st3 = b.status(now, presence_updated_at=now - 2000.0, occupied=False)
+        st3 = b.status(
+            now,
+            session_started_at=now - 2000.0,
+            presence_updated_at=now,
+            occupied=False,
+        )
         check("empty reason", st3["reason"] == "empty")
 
         # Cap
@@ -643,7 +667,12 @@ def test_joke_status_dwell_queue_cap() -> None:
         store.joke_commit_spoke(date, now - 9_000)
         store.joke_commit_spoke(date, now - 8_000)
         store.joke_commit_spoke(date, now - 7_000)
-        st4 = b.status(now, presence_updated_at=now - 2000.0, occupied=True)
+        st4 = b.status(
+            now,
+            session_started_at=now - 2000.0,
+            presence_updated_at=now,
+            occupied=True,
+        )
         check("capped", st4["reason"] == "capped")
         check("daily_count 4", st4["daily_count"] == 4)
 
@@ -658,7 +687,8 @@ def test_joke_status_no_line_available() -> None:
         check("queue empty", store.joke_queue_len() == 0)
         st = b.status(
             now,
-            presence_updated_at=now - 500.0,
+            session_started_at=now - 500.0,
+            presence_updated_at=now,
             occupied=True,
         )
         check("no_line_available", st["reason"] == "no_line_available")
@@ -677,7 +707,8 @@ def test_joke_status_cooldown_remaining() -> None:
         store.joke_commit_spoke(date, now - 1000.0)  # spoke 1000s ago
         st = b.status(
             now,
-            presence_updated_at=now - 5000.0,
+            session_started_at=now - 5000.0,
+            presence_updated_at=now,
             occupied=True,
         )
         check("cooldown reason", st["reason"] == "cooldown")
@@ -711,6 +742,61 @@ def test_joke_runtime_status_and_card() -> None:
             idx["behaviors"][JOKE_IDLE_ID]["summary"] == "dwell_building",
         )
         check("unregistered workday 404 path", rt.behavior_status("workday", now) is None)
+
+
+def test_joke_dwell_survives_tick_ingest_heartbeat() -> None:
+    """Regression: every /behaviors/tick ingest rewrites updated_at=now.
+
+    Old formula used updated_at for dwell, so real ticks always saw
+    quiet_dwell≈0 and never spoke — while GET status (no ingest) looked idle_ready.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        jcfg = _joke_cfg(
+            enabled=True,
+            audience="anyone",
+            min_dwell_s=1,
+            cooldown_s=90,
+            max_per_day=24,
+            priority=15,
+        )
+        rcfg = load_runtime_config(
+            {
+                "BEHAVIORS_ENABLED": "joke_idle",
+                "SPEECH_MIN_GAP_S": "0",
+                "SPEECH_SUPPRESS_AFTER_VOICE_S": "0",
+            }
+        )
+        wcfg = WorkdayConfig(enabled=False, tz=ZoneInfo("UTC"))
+        rt = BehaviorRuntime(
+            rcfg, wcfg, store, joke_cfg=jcfg, voice_ts_fn=lambda: 0.0
+        )
+        t0 = datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        _push(store, "Heartbeat dwell regression line unique.", "joke", 0.9, t0)
+
+        # Session starts; many subsequent occupied ticks refresh updated_at.
+        rt.ingest_tick_payload(now=t0, occupied=True, voice_recent=False)
+        for i in range(1, 6):
+            rt.ingest_tick_payload(now=t0 + i, occupied=True, voice_recent=False)
+
+        t_ready = t0 + 5.0  # > min_dwell_s=1 since session start
+        # Heartbeat is fresh; session is old enough.
+        check(
+            "session start held",
+            abs(rt.presence.snapshot.session_started_at - t0) < 0.01,
+        )
+        check("updated_at is heartbeat", rt.presence.snapshot.updated_at == t_ready)
+
+        detail = rt.behavior_status(JOKE_IDLE_ID, t_ready)
+        assert detail is not None
+        check("status idle_ready after session dwell", detail["reason"] == "idle_ready")
+
+        result = rt.tick(t_ready)
+        check(
+            "tick speaks despite updated_at heartbeat",
+            isinstance(result.speak, str) and len(result.speak) > 0,
+        )
+        check("spoke_from joke_idle", (result.debug or {}).get("spoke_from") == JOKE_IDLE_ID)
 
 
 def test_feature_flag_off() -> None:

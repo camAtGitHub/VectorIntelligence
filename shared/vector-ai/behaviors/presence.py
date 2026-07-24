@@ -35,6 +35,8 @@ class PresenceCache:
         self._empty_streak: int = 0
         self._last_source: str = ""
         self._soft_name: str = ""
+        # When continuous sticky occupancy began (not refreshed every evidence).
+        self._session_started_at: float = 0.0
 
     @property
     def snapshot(self) -> PresenceSnapshot:
@@ -70,6 +72,23 @@ class PresenceCache:
 
     def _sync_occupied(self, now: float) -> None:
         self._snap.occupied = self.occupied_effective(now)
+        # Drop session clock if sticky hold has expired (TTL / streak).
+        if not self._snap.occupied:
+            self._session_started_at = 0.0
+            self._snap.session_started_at = 0.0
+        else:
+            self._snap.session_started_at = float(self._session_started_at or 0.0)
+
+    def _begin_or_keep_session(self, now: float) -> None:
+        """Start occupancy session only on empty→occupied; keep across evidence."""
+        was_occupied = (
+            self._last_person_at > 0
+            and (now - self._last_person_at) <= self.sticky_s
+            and self._empty_streak < self.empty_streak_clear
+        )
+        if not was_occupied or self._session_started_at <= 0:
+            self._session_started_at = now
+        self._snap.session_started_at = self._session_started_at
 
     def _enrolled_fresh(self, now: float) -> bool:
         s = self._snap
@@ -130,6 +149,7 @@ class PresenceCache:
     ) -> PresenceSnapshot:
         """Record positive person evidence (ambient, face_seen, or tick occupied)."""
         s = self._snap
+        self._begin_or_keep_session(now)
         self._last_person_at = now
         self._empty_streak = 0
         self._last_source = source
@@ -209,6 +229,8 @@ class PresenceCache:
         if self._empty_streak >= self.empty_streak_clear or sticky_expired:
             s.occupied = False
             self._last_person_at = 0.0
+            self._session_started_at = 0.0
+            s.session_started_at = 0.0
         else:
             self._sync_occupied(now)
         return s
@@ -225,7 +247,9 @@ class PresenceCache:
         s.updated_at = now
         s.face = None
         s.face_ts = 0.0
+        s.session_started_at = 0.0
         self._last_person_at = 0.0
+        self._session_started_at = 0.0
         self._empty_streak = 0
         self._last_source = "sleep"
         self._soft_name = ""
@@ -258,10 +282,12 @@ class PresenceCache:
             s.image_b64 = image_b64
             s.image_ts = now
         if occupied:
+            self._begin_or_keep_session(now)
             self._last_person_at = now
             self._empty_streak = 0
             self._last_source = self._last_source or "update"
             s.occupied = True
+            s.session_started_at = self._session_started_at
         else:
             # Weak empty: keep sticky if still warm.
             self._sync_occupied(now)
@@ -284,6 +310,7 @@ class PresenceCache:
         return {
             "occupied": self.occupied_effective(now),
             "last_person_at": self._last_person_at,
+            "session_started_at": self._session_started_at,
             "empty_streak": self._empty_streak,
             "empty_streak_clear": self.empty_streak_clear,
             "presence_source": self._last_source,
