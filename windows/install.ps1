@@ -254,6 +254,9 @@ Patch "$SharedDir\patches\slow-tts.py" (Join-Path $WirePodDir "chipper\pkg\wirep
 Info "Adding LLM-driven eye colour command (mood expression)..."
 Patch "$SharedDir\patches\add-eye-color-cmd.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\kgsim_cmds.go")
 
+Info "Conversation mode follows Save Chat tick (newVoiceRequest on intent-graph path)..."
+Patch "$SharedDir\patches\conversation-via-savechat.py" (Join-Path $WirePodDir "chipper\pkg\wirepod\ttr\kgsim_cmds.go")
+
 Info "Adding background sensor reactions (pickup, putdown, pet)..."
 Patch "$SharedDir\patches\add-sensor-reactions.py" $WirePodDir
 

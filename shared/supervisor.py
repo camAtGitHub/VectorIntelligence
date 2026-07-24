@@ -48,7 +48,7 @@ VECTORAI_LOG = POD_DIR / "vector-ai.log"
 
 # -- Tunables (the few things worth changing live here, not scattered) ---------
 # STT_SERVICE   = "whisper.cpp"  # whisper.cpp | vosk (must match Wire-Pod's STT names)
-STT_SERVICE   = "whisper.cpp":waitvosk (must match Wire-Pod's STT names)
+STT_SERVICE   = "whisper.cpp"  # vosk (must match Wire-Pod's STT names)
 WHISPER_MODEL = "base.en"
 HEALTH_PERIOD = 30            # seconds between health checks (raised in companion mode)
 SLEEP_GAP     = 60            # a tick gap longer than this == PC slept

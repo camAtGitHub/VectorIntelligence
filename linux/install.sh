@@ -158,6 +158,9 @@ sudo python3 "$SHARED_DIR/patches/slow-tts.py" "$WIREPOD_DIR/chipper/pkg/wirepod
 info "Adding LLM-driven eye colour command (mood expression)..."
 sudo python3 "$SHARED_DIR/patches/add-eye-color-cmd.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/kgsim_cmds.go"
 
+info "Conversation mode follows Save Chat tick (newVoiceRequest on intent-graph path)..."
+sudo python3 "$SHARED_DIR/patches/conversation-via-savechat.py" "$WIREPOD_DIR/chipper/pkg/wirepod/ttr/kgsim_cmds.go"
+
 info "Adding background sensor reactions (pickup, putdown, pet)..."
 sudo python3 "$SHARED_DIR/patches/add-sensor-reactions.py" "$WIREPOD_DIR"
 
