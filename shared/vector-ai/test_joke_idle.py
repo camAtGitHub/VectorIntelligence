@@ -217,6 +217,38 @@ def test_joke_continuity_push_pop_daily() -> None:
 # 3. Serve (select_line / commit_line / pop_line + parse_json_array)
 # ---------------------------------------------------------------------------
 
+def test_commit_line_double_and_empty() -> None:
+    """Second commit of same hash fails; empty dict False; daily gated on success."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        cfg = _joke_cfg()
+        now = 2000.0
+        text = "Unique double commit line about desks."
+        _push(store, text, "joke", 0.9, now)
+        line = select_line(store, cfg, 0.9)
+        check("select ok", line is not None and line["text"] == text)
+        check("first commit True", commit_line(store, line, served_at=now) is True)
+        check("queue empty", store.joke_queue_len() == 0)
+        check("second commit False", commit_line(store, line, served_at=now + 1) is False)
+        check("empty dict False", commit_line(store, {}, served_at=now) is False)
+        check("None-ish False", commit_line(store, None, served_at=now) is False)  # type: ignore[arg-type]
+        # Daily must only advance when commit_line returns True (joke_idle path).
+        b = JokeIdleBehavior(_joke_cfg(enabled=True, audience="anyone", min_dwell_s=1), store)
+        date = "2026-07-18"
+        t0 = datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        _push(store, "Gated daily line unique zebra.", "joke", 0.9, t0)
+        r = b.tick(_joke_ctx(b, t0, occupied=True, identity_fresh=False))
+        check("planned speak", len(r.speak) > 0)
+        # Simulate race: burn the row before on_speak_allowed
+        assert r.on_speak_allowed is not None
+        line2 = select_line(store, b.cfg, 0.9)
+        check("same line still selectable", line2 is not None)
+        commit_line(store, line2, served_at=t0)
+        r.on_speak_allowed()  # second commit fails → daily unchanged
+        d = store.joke_load_daily(date)
+        check("daily not double after lost race", d["count"] == 0)
+
+
 def test_select_line_ratio_fallback_commit() -> None:
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "joke.db")

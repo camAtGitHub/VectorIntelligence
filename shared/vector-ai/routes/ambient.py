@@ -290,6 +290,8 @@ async def ambient(req: AmbientRequest):
         "obs_note": obs_note[:500],
     })
 
+    # Not one_shot_spoken_line: ambient needs raw multi-line PRESENCE + NOTHING
+    # / novelty text for parse_ambient_llm_raw (not a single stripped speech line).
     try:
         raw = (await llm_chat_once(
             [

@@ -1,8 +1,11 @@
 """Joke idle sourcing — serve side + pure prompt/JSON helpers + async refill.
 
-Serve (`select_line` / `commit_line`) is synchronous and pure SQLite: no network,
-no LLM. Peek is non-destructive; only `commit_line` (or legacy `pop_line`)
-removes a row and marks it served. Refill runs off the tick path only.
+Speech path (joke_idle): ``select_line`` (peek) then ``commit_line`` only inside
+``on_speak_allowed`` after the speech arbiter allows. Never burn the queue on plan.
+
+``select_line`` / ``commit_line`` are synchronous SQLite (no network, no LLM).
+``pop_line`` is a test/legacy convenience (select+commit immediately) — do not
+use it on the speech path. Refill runs off the tick path only.
 Do not top-level import service (import cycles); inject llm_chat_once or lazy-import.
 """
 from __future__ import annotations
@@ -159,6 +162,8 @@ def select_line(store: Any, cfg: Any, question_ratio_roll: float) -> Optional[di
     Prefer 'question' if roll < cfg.question_ratio else 'joke'. Falls back to the
     other kind when preferred is empty. Returns
     ``{'text','kind','source','text_hash'}`` or None. NO network, NO LLM.
+
+    Requires ``store.joke_queue_peek`` (ContinuityStore). No destructive fallback.
     """
     ratio = float(getattr(cfg, "question_ratio", 0.6))
     if question_ratio_roll < ratio:
@@ -166,20 +171,11 @@ def select_line(store: Any, cfg: Any, question_ratio_roll: float) -> Optional[di
     else:
         preferred, fallback = "joke", "question"
 
-    peek = getattr(store, "joke_queue_peek", None)
-    if callable(peek):
-        row = peek(preferred)
-        used_fallback = False
-        if row is None:
-            row = peek(fallback)
-            used_fallback = row is not None
-    else:
-        # Legacy stores without peek: non-gated pop path (tests only).
-        row = store.joke_queue_pop(preferred)
-        used_fallback = False
-        if row is None:
-            row = store.joke_queue_pop(fallback)
-            used_fallback = row is not None
+    row = store.joke_queue_peek(preferred)
+    used_fallback = False
+    if row is None:
+        row = store.joke_queue_peek(fallback)
+        used_fallback = row is not None
     if row is None:
         blog(
             _TAG,
@@ -204,7 +200,9 @@ def select_line(store: Any, cfg: Any, question_ratio_roll: float) -> Optional[di
 def commit_line(store: Any, line: dict, served_at: Optional[float] = None) -> bool:
     """Remove selected line from the queue and mark it served. Speech-gated only.
 
-    Returns True if the row was removed (or already gone) and served was written.
+    Returns True only when this call uniquely removed the queue row (so daily
+    count / cooldown should advance). Second commit of the same hash returns
+    False and does not re-mark or invent success.
     """
     if not line or not isinstance(line, dict):
         return False
@@ -214,41 +212,41 @@ def commit_line(store: Any, line: dict, served_at: Optional[float] = None) -> bo
     if not text_hash or not text:
         return False
     at = float(served_at if served_at is not None else time.time())
-    remove = getattr(store, "joke_queue_remove", None)
-    if callable(remove):
-        remove(text_hash)
+    # Prefer atomic remove+mark under one lock (ContinuityStore).
+    atomic = getattr(store, "joke_queue_commit_served", None)
+    if callable(atomic):
+        ok = bool(atomic(text_hash, text, kind, at))
     else:
-        # Fallback: pop until hash matches (tests with minimal stores).
-        while True:
-            row = store.joke_queue_pop(kind if kind in _ALLOWED_KINDS else None)
-            if row is None:
-                break
-            h = row.get("text_hash") or joke_hash(row.get("text") or "")
-            if h == text_hash:
-                break
-    store.joke_mark_served(text_hash, text, kind, at)
-    blog(
-        _TAG,
-        f"commit_line: served {kind}: {short(text)!r}",
-        verbose=True,
-    )
-    return True
+        ok = bool(store.joke_queue_remove(text_hash))
+        if ok:
+            store.joke_mark_served(text_hash, text, kind, at)
+    if ok:
+        blog(
+            _TAG,
+            f"commit_line: served {kind}: {short(text)!r}",
+            verbose=True,
+        )
+    else:
+        blog(
+            _TAG,
+            f"commit_line: already gone {kind}: {short(text)!r}",
+            verbose=True,
+        )
+    return ok
 
 
 def pop_line(store: Any, cfg: Any, question_ratio_roll: float) -> Optional[dict]:
-    """Select + immediately commit (legacy helper for tests / non-FSM callers).
+    """TEST/legacy only: select + immediately commit. Not for the speech path.
 
-    Prefer select_line + commit_line on the speech path so arbiter deny leaves
-    the queue intact.
+    Speech (joke_idle) must use select_line + commit_line inside on_speak_allowed
+    so arbiter deny leaves the queue intact.
     """
     line = select_line(store, cfg, question_ratio_roll)
     if line is None:
         return None
-    # If select used peek (non-destructive), commit now. If the legacy store
-    # path already popped inside select_line, still mark served.
-    commit_line(store, line)
+    if not commit_line(store, line):
+        return None
     return {"text": line["text"], "kind": line["kind"], "source": line["source"]}
-
 
 def build_generate_messages(
     seeds: list[str], want_jokes: int, want_questions: int

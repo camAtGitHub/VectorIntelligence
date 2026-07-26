@@ -78,8 +78,7 @@ async def sensor_reaction(req: SensorReactionRequest):
         max_tokens=128,
         tag="sensor_reaction",
     )
-    # one_shot returns "" on error (no crash); keep prior shape with optional error
-    # only when empty for hard failures is not distinguishable — empty text is fine.
+    # Intentional: failures → empty text only (chipper uses text; no error field).
     print(f"[sensor_reaction] {req.event} -> {clean!r}")
     debug("HTTP SEND /v1/sensor_reaction response", {"text": clean})
     return {"text": clean}

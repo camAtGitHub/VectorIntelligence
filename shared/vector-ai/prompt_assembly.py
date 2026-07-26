@@ -43,13 +43,11 @@ def _build_memory_section(
 ) -> str:
     """Identity branches + top-k retrieved facts + short SAVE line.
 
-    ``face`` should be the same effective face used for prepare_messages touch
-    and remember ownership (prefer ``_effective_face()``). When omitted, falls
-    back to resolving once via ``_effective_face()``.
+    ``face`` must be the same effective face used for prepare_messages touch
+    and remember ownership (``_effective_face()``). Do not re-resolve here —
+    ``face is None`` means unknown speaker (multi-user cautious path).
     """
     MEMORY = deps.MEMORY
-    if face is None:
-        face = _effective_face()
     selected = select_memories_for_turn(MEMORY, face, last_user_text)
 
     sections: List[str] = []

@@ -112,6 +112,7 @@ async def proactive_greeting(req: GreetingRequest):
         max_tokens=128,
         tag="greeting",
     )
+    # Intentional: failures → empty text only (chipper uses text; no error field).
     if line:
         _recent_greetings.append(line)
         del _recent_greetings[:-6]

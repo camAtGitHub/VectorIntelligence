@@ -17,6 +17,7 @@ from llm import (
     MODEL,
     SUMMARY_MODEL,
     _llm_timeout,
+    image_payload_too_large,
     llm_chat_once,
     llm_sentence_stream,
 )
@@ -170,14 +171,35 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
         },
     )
     if has_image:
-        # Archive frames attached to this chat turn (Wire-Pod getImage follow-up).
-        for part in messages[-1].content:
+        # Bound absurd payloads; strip oversized image parts before archive/LLM.
+        content = list(messages[-1].content)
+        stripped_any = False
+        for i, part in enumerate(content):
             if not isinstance(part, dict) or part.get("type") != "image_url":
                 continue
             iu = part.get("image_url")
             url = iu.get("url") if isinstance(iu, dict) else iu
-            if isinstance(url, str) and url:
-                save_submitted_image(url, "chat")
+            if not isinstance(url, str) or not url:
+                continue
+            if image_payload_too_large(url):
+                print(
+                    f"[vector-ai] chat image too large "
+                    f"(chars={len(url)}) — dropping image part"
+                )
+                content[i] = {
+                    "type": "text",
+                    "text": "[image omitted: payload too large]",
+                }
+                stripped_any = True
+                continue
+            save_submitted_image(url, "chat")
+        if stripped_any:
+            messages[-1].content = content
+            # Re-evaluate: all images may have been dropped.
+            has_image = any(
+                isinstance(p, dict) and p.get("type") == "image_url"
+                for p in content
+            )
 
     # Vision-intent backstop: if the user is clearly asking to look at something
     # and no photo is attached yet, force the camera command rather than letting

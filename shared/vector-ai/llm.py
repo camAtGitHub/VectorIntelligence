@@ -273,24 +273,11 @@ def find_sentence_end(buffer: str) -> Optional[int]:
     """
     if not buffer:
         return None
-    # Walk candidates from _SENTENCE_END; accept only when tag depth is 0
-    # for the prefix ending at the punctuation.
     for match in _SENTENCE_END.finditer(buffer):
-        # End of the sentence including trailing whitespace (or just punct at EOS).
-        end = match.end()
-        # Prefix up through the punctuation character (exclude trailing space).
-        punct_end = match.start() + 1  # one char after lookbehind position
-        # match.start() is the whitespace/end after [.!?]; the punct is at start-1
-        # because of lookbehind. Safer: use the span of the whole match.
-        # (?<=[.!?])(?:\s+|$) → match starts at whitespace after punct, or at EOS
-        # after punct. The punctuation itself is at match.start()-1 when there is
-        # trailing space; when match is EOS after punct, start points past punct.
-        prefix = buffer[: match.start()]
-        # When pattern matches at EOS with empty $, match.start() is len and
-        # prefix includes the punctuation. When \s+, start is after punct.
-        # Either way prefix ends at or after the sentence-ending punct.
-        if _tag_open_depth(prefix) == 0:
-            return end
+        # Prefix ends at/after the sentence-ending punct (match starts on
+        # trailing whitespace or EOS after the lookbehind).
+        if _tag_open_depth(buffer[: match.start()]) == 0:
+            return match.end()
     return None
 
 

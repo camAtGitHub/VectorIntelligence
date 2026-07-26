@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, tzinfo
+from enum import Enum
 from typing import List, Optional, Tuple
 
 from .config import WorkdayConfig, minutes_since_midnight, parse_hhmm
@@ -16,6 +17,17 @@ from .types import (
 )
 
 _TAG = "workday"
+
+
+class ClockOutcome(str, Enum):
+    """Machine keys for plan early-returns after clock transitions."""
+
+    NONE = ""
+    WORK_END = "work_end"
+    LATE_TIMEOUT = "late_timeout"
+    OFF_TO_WAITING = "off_to_waiting"
+    MORNING_TO_NO_SHOW = "morning_to_no_show"
+    PAUSE_EXPIRED = "pause_expired"
 
 # Strict tags (parsed as actions). Accept || or single | separators.
 _AFTERNOON_RE = re.compile(
@@ -275,15 +287,16 @@ class WorkDayBehavior:
 
     def _apply_clock_transitions(
         self, rec: WorkdayRecord, now: float, local_dt: datetime
-    ) -> tuple[WorkdayRecord, bool, str]:
+    ) -> tuple[WorkdayRecord, bool, ClockOutcome, str]:
         """Shared clock-driven mode transitions for plan + clock_tick.
 
-        Returns (rec, dirty, note). Mutates ``rec`` in place when dirty.
-        Does not save; caller persists when dirty (and when plan needs early
-        returns for speech-empty outcomes).
+        Returns (rec, dirty, outcome, note). Mutates ``rec`` in place when dirty.
+        ``outcome`` is a machine key for plan early-returns; ``note`` is log-only.
+        Does not save; caller persists when dirty.
         """
         note = ""
         dirty = False
+        outcome = ClockOutcome.NONE
         # End-of-day for armed / paused / late_check
         if rec.mode in (
             WorkdayMode.WORKING,
@@ -293,18 +306,21 @@ class WorkDayBehavior:
         ) and _past(local_dt, self.cfg.end):
             rec.mode = WorkdayMode.OFF
             dirty = True
+            outcome = ClockOutcome.WORK_END
             note = "work end → off"
-            return rec, dirty, note
+            return rec, dirty, outcome, note
 
         if rec.mode == WorkdayMode.OFF and not _past(local_dt, self.cfg.end):
             if rec.started_at <= 0 and not _past(local_dt, self.cfg.start_end):
                 rec.mode = WorkdayMode.WAITING_MORNING
                 dirty = True
+                outcome = ClockOutcome.OFF_TO_WAITING
                 note = "off → waiting_morning"
 
         if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
             rec.mode = WorkdayMode.NO_SHOW
             dirty = True
+            outcome = ClockOutcome.MORNING_TO_NO_SHOW
             note = "morning window ended → no_show"
 
         if rec.mode == WorkdayMode.PAUSED:
@@ -317,6 +333,7 @@ class WorkDayBehavior:
                 rec.pause_until = 0.0
                 rec.paused_from = ""
                 dirty = True
+                outcome = ClockOutcome.PAUSE_EXPIRED
                 note = f"pause expired → {rec.mode.value}"
 
         if rec.mode == WorkdayMode.LATE_CHECK and rec.late_check_asked_at > 0:
@@ -324,9 +341,10 @@ class WorkDayBehavior:
                 rec.mode = WorkdayMode.NO_SHOW
                 rec.late_check_done = True
                 dirty = True
+                outcome = ClockOutcome.LATE_TIMEOUT
                 note = "late_check timeout → no_show"
 
-        return rec, dirty, note
+        return rec, dirty, outcome, note
 
     def plan(self, ctx: BehaviorContext) -> TickResult:
         """Raw desire: speak text / need_identity.
@@ -345,12 +363,12 @@ class WorkDayBehavior:
         presence = ctx.presence
         face = presence.face if ctx.identity_fresh else None
 
-        rec, dirty, note = self._apply_clock_transitions(rec, now, local_dt)
+        rec, dirty, outcome, note = self._apply_clock_transitions(rec, now, local_dt)
         if dirty:
             self.store.save_workday(rec)
-            if note == "work end → off":
+            if outcome == ClockOutcome.WORK_END:
                 return TickResult(debug={"mode": "off", "reason": "work_end"})
-            if note == "late_check timeout → no_show":
+            if outcome == ClockOutcome.LATE_TIMEOUT:
                 return TickResult(debug={"mode": "no_show", "reason": "late_timeout"})
 
         if rec.mode == WorkdayMode.PAUSED:
@@ -629,14 +647,21 @@ class WorkDayBehavior:
         return result
 
     def clock_tick(self, now: float, local_dt: datetime) -> None:
-        """Clock-only transitions (no presence) — waiting_morning → no_show, EOD."""
+        """Clock-only transitions (no presence).
+
+        Same transitions as plan's clock pass via ``_apply_clock_transitions``:
+        EOD → off, OFF→waiting_morning (before start window ends), morning
+        window end → no_show, late_check timeout, pause expiry.
+        """
         if not self.cfg.enabled:
             return
         with self.store.fsm_lock:
             date = _local_date(local_dt)
             rec = self.store.load_workday(date)
             prev = rec.mode.value
-            rec, dirty, note = self._apply_clock_transitions(rec, now, local_dt)
+            rec, dirty, _outcome, note = self._apply_clock_transitions(
+                rec, now, local_dt
+            )
             if dirty:
                 self.store.save_workday(rec)
                 blog(_TAG, f"clock_tick: {prev} → {rec.mode.value} ({note}) date={date}")

@@ -214,17 +214,12 @@ def test_sentence_stream_holds_tags_with_periods():
 
     buf = "Noted. {{remember||Dr. Smith is Cam's dentist}} Done. Next sentence."
     parts, rest = split_sentences_from_buffer(buf)
-    # First plain sentence
-    assert parts[0].strip().startswith("Noted")
-    # Tag with internal period stays whole in one piece
-    joined = " ".join(parts)
-    assert "{{remember||Dr. Smith is Cam's dentist}}" in joined
-    # No fragment that is only "Smith is Cam's dentist}}" without open
-    for p in parts:
-        assert not (
-            "Smith is Cam" in p and "{{" not in p and "Dr." not in p
-        )
-    assert rest == "" or "Next" in " ".join(parts + ([rest] if rest else []))
+    assert parts == [
+        "Noted.",
+        "{{remember||Dr. Smith is Cam's dentist}} Done.",
+        "Next sentence.",
+    ]
+    assert rest == ""
 
 
 def test_sentence_stream_abbreviations_still_split():
@@ -233,9 +228,36 @@ def test_sentence_stream_abbreviations_still_split():
     parts, rest = split_sentences_from_buffer(
         "I'll note that. Next sentence. "
     )
-    assert len(parts) >= 2
-    assert "I'll note that." in parts[0]
-    assert "Next sentence." in parts[1]
+    assert parts == ["I'll note that.", "Next sentence."]
+    assert rest == ""
+
+
+def test_sentence_stream_incomplete_open_tag_held():
+    from llm import split_sentences_from_buffer
+
+    parts, rest = split_sentences_from_buffer(
+        "Hi. {{remember||Dr. Smith is still open"
+    )
+    assert parts == ["Hi."]
+    assert rest == "{{remember||Dr. Smith is still open"
+    # Closing the tag later allows a sentence end after it.
+    parts2, rest2 = split_sentences_from_buffer(
+        rest + " now}} And done. "
+    )
+    assert parts2 == ["{{remember||Dr. Smith is still open now}} And done."]
+    assert rest2 == ""
+
+
+def test_sentence_stream_nested_tags_and_multi_outside():
+    from llm import split_sentences_from_buffer
+
+    # Nested {{ }} depth: hold until fully closed.
+    parts, rest = split_sentences_from_buffer(
+        "A. {{outer||inner {{x||Dr. Y}} z}} B. C. "
+    )
+    assert parts[0] == "A."
+    assert "{{outer||inner {{x||Dr. Y}} z}} B." in parts
+    assert parts[-1] == "C."
     assert rest == ""
 
 
@@ -359,6 +381,80 @@ def test_remember_stranger_stays_shared(tmp_path, monkeypatch):
     rain = [m for m in store.list_all(limit=20) if "rain" in m.text]
     assert len(rain) == 1
     assert rain[0].face_id is None
+
+
+def test_remember_zero_enrolled_stays_shared(tmp_path, monkeypatch):
+    """No live face and zero enrolled profiles → shared ownership."""
+    import prompt_assembly
+    from response_cleanup import clean_response
+
+    store = _patch_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr(prompt_assembly, "current_face", lambda: None)
+    out = clean_response("Ok {{remember||orphan fact about weather}} x")
+    assert "{{remember" not in out
+    rows = [m for m in store.list_all(limit=10) if "weather" in m.text]
+    assert len(rows) == 1
+    assert rows[0].face_id is None
+
+
+def test_remember_two_enrolled_stays_shared(tmp_path, monkeypatch):
+    """No live face + two enrolled → cannot pick owner → shared."""
+    import prompt_assembly
+    from response_cleanup import clean_response
+
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("Cam fact", face_id=1, face_name="Cam")
+    store.remember("Sam fact", face_id=2, face_name="Sam")
+    monkeypatch.setattr(prompt_assembly, "current_face", lambda: None)
+    out = clean_response("Ok {{remember||ambiguous owner fact}} x")
+    assert "{{remember" not in out
+    rows = [m for m in store.list_all(limit=20) if "ambiguous" in m.text]
+    assert len(rows) == 1
+    assert rows[0].face_id is None
+
+
+def test_image_payload_too_large_edges():
+    from llm import image_payload_too_large
+
+    assert image_payload_too_large("") is False
+    assert image_payload_too_large(None) is False  # type: ignore[arg-type]
+    assert image_payload_too_large("abc", limit=10) is False
+    assert image_payload_too_large("a" * 11, limit=10) is True
+    # data-URL: only payload after comma is measured
+    assert image_payload_too_large("data:image/jpeg;base64," + ("x" * 5), limit=10) is False
+    assert image_payload_too_large("data:image/jpeg;base64," + ("x" * 11), limit=10) is True
+
+
+def test_one_shot_spoken_line_strips_and_errors(monkeypatch):
+    import llm as llm_mod
+
+    async def _ok(*a, **k):
+        return '**Hi** {{remember||x}} "there"'
+
+    monkeypatch.setattr(llm_mod, "llm_chat_once", _ok)
+    out = asyncio.run(
+        llm_mod.one_shot_spoken_line(
+            [{"role": "user", "content": "hi"}],
+            temperature=0.5,
+            tag="t",
+        )
+    )
+    assert "Hi" in out
+    assert "{{" not in out
+    assert "**" not in out
+
+    async def _boom(*a, **k):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(llm_mod, "llm_chat_once", _boom)
+    out2 = asyncio.run(
+        llm_mod.one_shot_spoken_line(
+            [{"role": "user", "content": "hi"}],
+            temperature=0.5,
+            tag="t",
+        )
+    )
+    assert out2 == ""
 
 
 def test_pick_thinking_phrase_nonempty():

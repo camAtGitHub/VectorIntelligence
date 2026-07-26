@@ -350,6 +350,39 @@ class ContinuityStore:
             )
             return cur.rowcount > 0
 
+    def joke_queue_commit_served(
+        self,
+        text_hash: str,
+        text: str,
+        kind: str,
+        served_at: float,
+    ) -> bool:
+        """Atomically remove queue row by hash and mark served under one lock.
+
+        Returns True only if this call uniquely removed the row (rowcount>0).
+        When False, served is not written (caller must not advance daily count).
+        """
+        if not text_hash or not (text or "").strip():
+            return False
+        with self._lock, self._conn() as c:
+            cur = c.execute(
+                "DELETE FROM joke_queue WHERE text_hash = ?", (text_hash,)
+            )
+            if cur.rowcount <= 0:
+                return False
+            c.execute(
+                """
+                INSERT INTO joke_served (text_hash, text, kind, served_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(text_hash) DO UPDATE SET
+                    text=excluded.text,
+                    kind=excluded.kind,
+                    served_at=excluded.served_at
+                """,
+                (text_hash, text, kind, served_at),
+            )
+            return True
+
     def joke_queue_pop(self, kind: Optional[str] = None) -> Optional[dict]:
         """Atomically select highest-score row and delete it. None if empty."""
         with self._lock, self._conn() as c:

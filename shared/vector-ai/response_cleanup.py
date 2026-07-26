@@ -64,26 +64,6 @@ def _scrub_double_pipes(text: str) -> str:
     )
 
 
-def strip_for_speech_text(text: str) -> str:
-    """Pure strip path for spoken text: markdown, forbidden cmds, memory/work
-    tag shells, phrase fixes, and ``||`` scrub. No side effects / no I/O."""
-    if not text:
-        return text or ""
-    text = strip_markdown(text)
-    text = _FORBIDDEN_COMMAND.sub('', text)
-    # Strip tag shells without applying (parse-only for speech purity).
-    text = _REMEMBER_SHARED_RE.sub('', text)
-    text = _REMEMBER_RE.sub('', text)
-    text = _FORGET_RE.sub('', text)
-    text = _QUIET_RE.sub('', text)
-    if text and "{{work" in text.lower():
-        cleaned, _actions = parse_work_commands(text)
-        text = cleaned
-    for pattern, replacement in _PHRASE_FIXES:
-        text = pattern.sub(replacement, text)
-    return _scrub_double_pipes(text)
-
-
 def _remember_owner_face() -> Optional[dict]:
     """Same effective face as chat inject / prepare_messages."""
     try:
@@ -118,7 +98,12 @@ def parse_memory_tags(text: str) -> Tuple[str, List[Tuple[str, str]]]:
 
 
 def apply_memory_actions(actions: List[Tuple[str, str]]) -> None:
-    """Apply parsed memory/quiet actions (side effects)."""
+    """Apply parsed memory/quiet actions (side effects).
+
+    Not idempotent if re-run with the same action list (duplicates skipped by
+    memory store; quiet toggles would flip again). Chat path applies once per
+    cleaned sentence; do not call twice on the same parse result.
+    """
     if not actions:
         return
     MEMORY = deps.MEMORY
@@ -211,7 +196,11 @@ def clean_response(text: str) -> str:
 
 
 def _strip_for_speech(text: str) -> str:
-    """One-shot path: strip markdown + all {{…}} shells (no side effects)."""
+    """Pure strip for one-shot spoken lines (sensor/greeting/ambient spoken).
+
+    Markdown + all ``{{…}}`` shells removed; no side effects / no I/O.
+    Used by ``llm.one_shot_spoken_line`` and ambient novelty parsing.
+    """
     text = strip_markdown(text)
     text = re.sub(r'\{\{[^}]*\}\}', '', text)
     text = text.strip().strip('"').strip("'").strip()

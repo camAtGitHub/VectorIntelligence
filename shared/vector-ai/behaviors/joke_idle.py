@@ -302,7 +302,15 @@ class JokeIdleBehavior:
         q_left = max(0, qlen - 1)
 
         def _on_allowed() -> None:
-            commit_line(self.store, line_commit, served_at=spoke_at)
+            # Only advance daily/cooldown when we uniquely burned this queue row
+            # (second concurrent allow of the same hash must not double-count).
+            if not commit_line(self.store, line_commit, served_at=spoke_at):
+                blog(
+                    _TAG,
+                    f"spoke but queue commit lost race ({kind}/{source}) "
+                    f"to {who}: {short(text)!r} — daily count unchanged",
+                )
+                return
             self.store.joke_commit_spoke(spoke_date, spoke_at)
             blog(
                 _TAG,

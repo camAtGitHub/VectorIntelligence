@@ -406,7 +406,9 @@ tick:
 
 Use the same idea for: entering a “we already asked” mode, counting absences that were *announced*, etc.
 
-State that must advance even when silent (e.g. “morning window closed → no_show”) belongs in `clock_tick` / occupancy logic, **not** in speech callbacks.
+**Durable resources must not be consumed until speech is allowed.** Queue rows, “served” marks, daily counts, and cooldown anchors only change inside `on_speak_allowed` (or not at all). Reference: `joke_idle` peeks with `select_line` and only runs `commit_line` + `joke_commit_spoke` after the arbiter wins — a denied or lower-priority plan leaves the joke queue intact.
+
+State that must advance even when silent (e.g. “morning window closed → no_show”, OFF→waiting_morning before start end) belongs in `clock_tick` / plan’s shared `_apply_clock_transitions`, **not** in speech callbacks.
 
 ---
 
