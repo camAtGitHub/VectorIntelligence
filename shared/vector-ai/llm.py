@@ -129,6 +129,22 @@ def _message_content(data: dict) -> str:
         return ""
 
 
+# Base64 JPEG payload size guard (~4 MB decoded ≈ 5.5M chars base64).
+# Real Vector frames are far smaller; this rejects pathological payloads before
+# they hit the LLM or blow memory.
+MAX_IMAGE_B64_CHARS = 5_500_000
+
+
+def image_payload_too_large(image_b64: Optional[str], *, limit: int = MAX_IMAGE_B64_CHARS) -> bool:
+    """True when raw base64 (or data-URL) string exceeds the safe char cap."""
+    if not image_b64:
+        return False
+    s = image_b64
+    if isinstance(s, str) and s.startswith("data:") and "," in s:
+        s = s.split(",", 1)[1]
+    return len(s) > int(limit)
+
+
 async def llm_chat_once(
     messages: list,
     *,
@@ -189,8 +205,110 @@ async def llm_chat_once(
         return text
 
 
+async def one_shot_spoken_line(
+    messages: list,
+    *,
+    temperature: float,
+    max_tokens: int = 128,
+    timeout: Optional[httpx.Timeout] = None,
+    top_p: float = 0.95,
+    seed: Optional[int] = None,
+    model: Optional[str] = None,
+    tag: str = "one_shot",
+) -> str:
+    """Non-stream LLM call + speech strip; errors → \"\" (never raises).
+
+    Shared by sensor / greeting (and similar one-line spoken paths). Preserves
+    each caller's temperature / token / timeout knobs.
+    """
+    try:
+        from response_cleanup import _strip_for_speech
+
+        text = await llm_chat_once(
+            messages,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            tag=tag,
+        )
+        return _strip_for_speech(text or "")
+    except Exception as e:
+        print(f"[{tag}] error: {e}")
+        debug(f"{tag} error: {e}")
+        return ""
+
+
 # Match end of a sentence: punctuation followed by whitespace or end-of-string.
 _SENTENCE_END = re.compile(r'(?<=[.!?])(?:\s+|$)')
+
+
+def _tag_open_depth(text: str) -> int:
+    """Net unmatched ``{{`` open depth in text (0 = balanced / outside tags)."""
+    depth = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        if text.startswith("{{", i):
+            depth += 1
+            i += 2
+            continue
+        if text.startswith("}}", i):
+            if depth > 0:
+                depth -= 1
+            i += 2
+            continue
+        i += 1
+    return depth
+
+
+def find_sentence_end(buffer: str) -> Optional[int]:
+    """Index just past a complete sentence, or None if not yet complete.
+
+    Does not treat ``.!?`` as sentence ends while inside an unmatched
+    ``{{...}}`` tag region, so tags like ``{{remember||Dr. Smith is Cam's
+    dentist}}`` stay in one chunk when possible.
+    """
+    if not buffer:
+        return None
+    # Walk candidates from _SENTENCE_END; accept only when tag depth is 0
+    # for the prefix ending at the punctuation.
+    for match in _SENTENCE_END.finditer(buffer):
+        # End of the sentence including trailing whitespace (or just punct at EOS).
+        end = match.end()
+        # Prefix up through the punctuation character (exclude trailing space).
+        punct_end = match.start() + 1  # one char after lookbehind position
+        # match.start() is the whitespace/end after [.!?]; the punct is at start-1
+        # because of lookbehind. Safer: use the span of the whole match.
+        # (?<=[.!?])(?:\s+|$) → match starts at whitespace after punct, or at EOS
+        # after punct. The punctuation itself is at match.start()-1 when there is
+        # trailing space; when match is EOS after punct, start points past punct.
+        prefix = buffer[: match.start()]
+        # When pattern matches at EOS with empty $, match.start() is len and
+        # prefix includes the punctuation. When \s+, start is after punct.
+        # Either way prefix ends at or after the sentence-ending punct.
+        if _tag_open_depth(prefix) == 0:
+            return end
+    return None
+
+
+def split_sentences_from_buffer(buffer: str) -> tuple[list[str], str]:
+    """Pure helper: peel complete sentences off buffer; return (sentences, rest).
+
+    Used by ``llm_sentence_stream`` and unit tests (no network).
+    """
+    out: list[str] = []
+    while True:
+        end = find_sentence_end(buffer)
+        if end is None:
+            break
+        sentence = buffer[:end].strip()
+        buffer = buffer[end:]
+        if sentence:
+            out.append(sentence)
+    return out, buffer
 
 
 async def llm_sentence_stream(
@@ -203,6 +321,10 @@ async def llm_sentence_stream(
     trailing sentences (and any trailing {{command}}) would be lost. Yielding
     one sentence per SSE chunk sidesteps that bug entirely and also lets Vector
     start speaking before the full response has generated.
+
+    Sentence ends inside unmatched ``{{...}}`` tags are held until the tag
+    closes (or the stream ends), so remember/work tags with internal periods
+    are not fractured.
 
     A per-request random seed + top_p<1 keeps responses from converging on the
     same high-probability tokens turn after turn (especially noticeable on
@@ -260,19 +382,14 @@ async def llm_sentence_stream(
                     first_token_seen = True
                     debug(f"UPSTREAM first token at {time.monotonic() - t0:.2f}s")
                 buffer += delta
-                while True:
-                    match = _SENTENCE_END.search(buffer)
-                    if not match:
-                        break
-                    sentence = buffer[:match.end()].strip()
-                    buffer = buffer[match.end():]
-                    if sentence:
-                        if not first_sentence_seen:
-                            print(f"[vector-ai] timing: LLM first sentence {time.monotonic() - t0:.2f}s")
-                            first_sentence_seen = True
-                        full_reply.append(sentence)
-                        debug(f"UPSTREAM sentence: {sentence!r}")
-                        yield sentence
+                sentences, buffer = split_sentences_from_buffer(buffer)
+                for sentence in sentences:
+                    if not first_sentence_seen:
+                        print(f"[vector-ai] timing: LLM first sentence {time.monotonic() - t0:.2f}s")
+                        first_sentence_seen = True
+                    full_reply.append(sentence)
+                    debug(f"UPSTREAM sentence: {sentence!r}")
+                    yield sentence
     # Flush any trailing content that didn't end in punctuation (often a
     # trailing {{getImage||now}} or animation command).
     if buffer.strip():
