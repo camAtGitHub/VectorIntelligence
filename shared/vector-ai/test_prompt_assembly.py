@@ -1,0 +1,214 @@
+"""Tests for thinner memory inject (select_memories_for_turn + _build_memory_section)."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+# Allow imports when pytest is run from VectorIntelligence root.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+
+def _patch_deps(monkeypatch, tmp_path):
+    import deps
+    from memory import MemoryStore
+
+    store = MemoryStore(tmp_path / "mem.db")
+    monkeypatch.setattr(deps, "MEMORY", store, raising=False)
+
+    class _RT:
+        workday = None
+
+    monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT(), raising=False)
+    monkeypatch.setattr(
+        deps,
+        "_workday_cfg",
+        type("C", (), {"tz": None, "enabled": False})(),
+        raising=False,
+    )
+    return store
+
+
+def _set_face(monkeypatch, face):
+    # prompt_assembly binds current_face at import; patch the local name.
+    import prompt_assembly
+
+    monkeypatch.setattr(prompt_assembly, "current_face", lambda: face)
+
+
+# --- select_memories_for_turn -------------------------------------------------
+
+
+def test_many_personal_facts_capped(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    for i in range(20):
+        store.remember(f"fact number {i} about hobbies", face_id=1, face_name="Cam")
+
+    from memory_retrieve import select_memories_for_turn
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    sel = select_memories_for_turn(
+        store, face, "hello there", max_personal=8, max_shared=4, max_mentions=3
+    )
+    assert len(sel.personal) <= 8
+    assert len(sel.personal) == 8
+
+
+def test_query_tokens_prefer_matching_fact(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("likes pizza on Fridays", face_id=1, face_name="Cam")
+    store.remember("owns a golden retriever named Biscuit", face_id=1, face_name="Cam")
+    store.remember("works on firmware for robots", face_id=1, face_name="Cam")
+
+    from memory_retrieve import select_memories_for_turn
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    sel = select_memories_for_turn(
+        store,
+        face,
+        "how is Biscuit the retriever doing?",
+        max_personal=1,
+        max_shared=0,
+        max_mentions=0,
+    )
+    assert len(sel.personal) == 1
+    assert "Biscuit" in sel.personal[0].text
+
+
+def test_stranger_does_not_leak_personal(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("Cam's wifi password is secret", face_id=1, face_name="Cam")
+    store.remember("Cam hates cilantro", face_id=1, face_name="Cam")
+    store.remember("wifi network is VectorNet", face_id=None, face_name=None)
+
+    from memory_retrieve import select_memories_for_turn
+
+    stranger = {"face_id": 99, "name": "stranger", "is_stranger": True}
+    sel = select_memories_for_turn(
+        store,
+        stranger,
+        "what's the wifi password?",
+        max_personal=8,
+        max_shared=4,
+        max_mentions=3,
+    )
+    assert sel.personal == []
+    assert sel.mentions == []
+    # Shared may still appear when selected
+    assert any("VectorNet" in m.text or "wifi" in m.text.lower() for m in sel.shared) or (
+        len(sel.shared) <= 4
+    )
+    personal_texts = [m.text for m in sel.personal]
+    assert "Cam hates cilantro" not in personal_texts
+    assert not any("cilantro" in m.text for m in sel.personal)
+
+
+def test_shared_facts_can_appear_when_selected(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("household calendar is on the fridge", face_id=None)
+    store.remember("likes tea", face_id=1, face_name="Cam")
+
+    from memory_retrieve import select_memories_for_turn
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    sel = select_memories_for_turn(
+        store,
+        face,
+        "where is the household calendar?",
+        max_personal=8,
+        max_shared=4,
+        max_mentions=3,
+    )
+    assert any("calendar" in m.text.lower() for m in sel.shared)
+
+
+def test_empty_store_blank_slate_one_liner(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import _build_memory_section
+
+    section = _build_memory_section("hi")
+    assert "blank slate" in section.lower() or "NO long-term facts" in section
+    assert "Cam" in section
+    assert "{{remember||" in section or "remember||" in section
+    # Old multi-paragraph SAVE essay must be gone
+    assert "when in doubt, save" not in section.lower()
+    assert "sharp friend" not in section.lower()
+
+
+def test_build_memory_section_caps_bullets(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    for i in range(15):
+        store.remember(f"personal detail {i} unique token{i}", face_id=1, face_name="Cam")
+    for i in range(10):
+        store.remember(f"shared household item {i}", face_id=None)
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import _build_memory_section
+
+    section = _build_memory_section("hello")
+    # Count bullet lines under personal section only loosely: total "-" bullets
+    # should be well under the old firehose (100+) and near 8+4.
+    bullets = [ln for ln in section.splitlines() if ln.strip().startswith("- ")]
+    assert len(bullets) <= 8 + 4 + 3  # personal + shared + mentions caps
+
+
+def test_stranger_section_no_personal_bullets(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("Cam's private project codename Nebula", face_id=1, face_name="Cam")
+    store.remember("shared: trash day is Tuesday", face_id=None)
+
+    stranger = {"face_id": 0, "name": "unknown", "is_stranger": True}
+    _set_face(monkeypatch, stranger)
+
+    from prompt_assembly import _build_memory_section
+
+    section = _build_memory_section("tell me secrets")
+    assert "stranger" in section.lower()
+    assert "Nebula" not in section
+    assert "Things you know about Cam" not in section
+
+
+def test_prepare_messages_passes_user_text_for_ranking(tmp_path, monkeypatch):
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("owns a cat named Whiskers", face_id=1, face_name="Cam")
+    store.remember("collects vintage stamps", face_id=1, face_name="Cam")
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="How is Whiskers the cat?"),
+    ]
+    out = prepare_messages(messages, face)
+    system = out[0]["content"]
+    assert "Whiskers" in system
+    # With max_personal default 8 both may appear; ranking prefers match.
+    # At least the matching fact is present.
+    assert "cat named Whiskers" in system or "Whiskers" in system
+
+
+def test_extract_last_user_text_multimodal():
+    from prompt_assembly import _extract_last_user_text
+
+    messages = [
+        SimpleNamespace(
+            role="user",
+            content=[
+                {"type": "text", "text": "what is this"},
+                {"type": "image_url", "image_url": {"url": "data:x"}},
+            ],
+        )
+    ]
+    assert _extract_last_user_text(messages) == "what is this"

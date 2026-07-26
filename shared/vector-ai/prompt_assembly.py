@@ -4,6 +4,7 @@ from typing import List, Optional
 
 import deps
 from logging_util import print  # noqa: F401
+from memory_retrieve import select_memories_for_turn
 from persona import PERSONA
 from process_state import (
     SESSION_GREETING_GAP,
@@ -12,24 +13,45 @@ from process_state import (
 )
 from llm import MAX_HISTORY_MESSAGES
 
+# One short SAVE line — silent tags only; never the old multi-paragraph essay.
+_SAVE_LINE = (
+    "SAVING: silent tags {{remember||fact}} / {{remember-shared||fact}} / "
+    "{{forget||…}} — never speak them. Save durable personal facts with "
+    "remember; household/world facts with remember-shared."
+)
 
-def _build_memory_section() -> str:
+
+def _extract_last_user_text(messages: list) -> str:
+    """Latest user turn as plain text (string content or joined multimodal text)."""
+    for m in reversed(messages):
+        if getattr(m, "role", None) != "user":
+            continue
+        content = getattr(m, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return " ".join(
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ).strip()
+    return ""
+
+
+def _build_memory_section(last_user_text: str = "") -> str:
+    """Identity branches + top-k retrieved facts + short SAVE line."""
     MEMORY = deps.MEMORY
     face = current_face()
-    shared = MEMORY.list_shared(limit=100)
+    selected = select_memories_for_turn(MEMORY, face, last_user_text)
 
     sections: List[str] = []
 
     if face and not face["is_stranger"]:
-        personal = MEMORY.list_for_face(face["face_id"], limit=100)
-        mentions = MEMORY.list_mentions_of_name(
-            face["name"], exclude_face_id=face["face_id"], limit=20
-        )
         sections.append(f"You are currently looking at {face['name']}.")
-        if personal:
+        if selected.personal:
             sections.append(
                 f"Things you know about {face['name']}:\n"
-                + "\n".join(f"- {m.text}" for m in personal)
+                + "\n".join(f"- {m.text}" for m in selected.personal)
             )
         else:
             sections.append(
@@ -39,14 +61,15 @@ def _build_memory_section() -> str:
                 f"themselves, capture it with {{{{remember||<fact>}}}}."
             )
 
-        if mentions:
+        if selected.mentions:
             sections.append(
                 f"Things other people in your memory have mentioned about "
                 f"{face['name']} (cross-references - use these for context, "
                 "but don't treat them as definitive facts told by "
                 f"{face['name']}):\n"
                 + "\n".join(
-                    f"- ({m.face_name or 'shared'} said) {m.text}" for m in mentions
+                    f"- ({m.face_name or 'shared'} said) {m.text}"
+                    for m in selected.mentions
                 )
             )
     elif face and face["is_stranger"]:
@@ -68,16 +91,15 @@ def _build_memory_section() -> str:
         # known and we genuinely can't tell who's present.
         profiles = MEMORY.distinct_faces()
         if len(profiles) == 1:
-            pid, pname = profiles[0]
-            personal = MEMORY.list_for_face(pid, limit=100)
+            _pid, pname = profiles[0]
             sections.append(
                 f"You're talking to {pname} (your primary user). "
                 f"Address them naturally by name."
             )
-            if personal:
+            if selected.personal:
                 sections.append(
                     f"Things you know about {pname}:\n"
-                    + "\n".join(f"- {m.text}" for m in personal)
+                    + "\n".join(f"- {m.text}" for m in selected.personal)
                 )
         else:
             sections.append(
@@ -86,35 +108,13 @@ def _build_memory_section() -> str:
                 "personal facts until you know who's there."
             )
 
-    if shared:
+    if selected.shared:
         sections.append(
             "Shared/household context (applies to anyone):\n"
-            + "\n".join(f"- {m.text}" for m in shared)
+            + "\n".join(f"- {m.text}" for m in selected.shared)
         )
 
-    sections.append(
-        "MEMORY - how you use what you know:\n"
-        "Reference these facts the way a sharp friend would: a callback to "
-        "their project, a jab at a known habit, their pet's name dropped in "
-        "without ceremony. Pick the ONE most relevant thing and let it shape "
-        "the reply - don't recite the list, don't force a fit. When it's "
-        "natural, ask a short follow-up about something they've mentioned "
-        "before; that's what makes you sound like you were paying attention.\n\n"
-        "SAVING - this is free and never spoken:\n"
-        "A {{remember||fact}} token is stripped before you speak. It costs you "
-        "nothing, is never heard, and does NOT count against keeping your reply "
-        "short. So save readily. The moment the user states anything durable - "
-        "a name, a preference, a project, a pet, a person in their life, a "
-        "date, a plan, an opinion they hold - emit {{remember||<the fact>}}. If "
-        "they say 'remember X', always save it. A duplicate save is discarded "
-        "harmlessly, but a fact you failed to save is gone for good, so when in "
-        "doubt, save. Facts about the person in front of you use "
-        "{{remember||...}}; facts about the household or the world in general "
-        "(the wifi, the calendar, someone not present) use "
-        "{{remember-shared||...}}. To drop something wrong or out of date, "
-        "{{forget||<a few words of it>}}."
-    )
-
+    sections.append(_SAVE_LINE)
 
     return "\n\n".join(sections)
 
@@ -263,7 +263,8 @@ def prepare_messages(messages: list, face: Optional[dict]) -> list:
         prior_meta = MEMORY.touch_face(face["face_id"], face.get("name"))
 
     context_note = _build_context_note(face, prior_meta, now_dt)
-    memory_section = _build_memory_section()
+    last_user_text = _extract_last_user_text(messages)
+    memory_section = _build_memory_section(last_user_text)
 
     # Wire-Pod's system message holds command/vision mechanics; character
     # comes from PERSONA (persona.txt), prepended below.
