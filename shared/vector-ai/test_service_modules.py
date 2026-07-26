@@ -226,13 +226,22 @@ def test_clean_response_strips_forbidden_and_empty_edge(tmp_path, monkeypatch):
 
     _patch_deps(monkeypatch, tmp_path)
 
-    out = clean_response("Hi {{newVoiceRequest||x}} there")
-    assert "newVoiceRequest" not in out
+    # newVoiceRequest is a real chipper command for multi-turn conversation —
+    # clean_response must keep it so chipper can execute listen windows.
+    out = clean_response("Hi {{newVoiceRequest||now}} there")
+    assert "{{newVoiceRequest||now}}" in out
     assert "Hi" in out and "there" in out
 
+    # Invented listen-like commands are stripped.
     out2 = clean_response("Listen {{voiceRequest||y}} now")
     assert "voiceRequest" not in out2
     assert "Listen" in out2 and "now" in out2
+
+    out3 = clean_response("A {{listen||x}} B {{wakeWord||y}} C {{waitForUser||z}} D")
+    assert "{{listen" not in out3
+    assert "wakeWord" not in out3
+    assert "waitForUser" not in out3
+    assert "A" in out3 and "D" in out3
 
     assert strip_markdown("") == ""
     assert clean_response("") == ""

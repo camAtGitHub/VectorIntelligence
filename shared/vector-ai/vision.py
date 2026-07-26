@@ -3,7 +3,7 @@ import re
 
 # -- Vision-intent backstop ----------------------------------------------------
 # When the user clearly asks Vector to look at something but no photo is
-# attached, we don't trust the LLM to remember to call {{getImage||front}} -
+# attached, we don't trust the LLM to remember to call {{getImage||now}} -
 # we force it ourselves so the next request comes back with a real photo.
 
 _VISION_TRIGGERS = re.compile(
@@ -43,11 +43,11 @@ _VISION_TRIGGERS = re.compile(
 
 # Wire-Pod requires at least one punctuation-terminated chunk in the response
 # stream or it errors "LLM returned no response". A bare command like
-# `{{getImage||front}}` has no terminator. Appending a `.` satisfies the
+# `{{getImage||now}}` has no terminator. Appending a `.` satisfies the
 # splitter without producing any audible TTS (Vector's TTS treats lone
 # punctuation as silence). The user-facing audio cue is the shutter
 # animation Wire-Pod plays during DoGetImage.
-_GETIMAGE_PAYLOAD = "{{getImage||front}}."
+_GETIMAGE_PAYLOAD = "{{getImage||now}}."
 
 
 def is_vision_intent(text: str) -> bool:

@@ -274,7 +274,7 @@ async def llm_sentence_stream(
                         debug(f"UPSTREAM sentence: {sentence!r}")
                         yield sentence
     # Flush any trailing content that didn't end in punctuation (often a
-    # trailing {{getImage||front}} or animation command).
+    # trailing {{getImage||now}} or animation command).
     if buffer.strip():
         full_reply.append(buffer.strip())
         debug(f"UPSTREAM tail: {buffer.strip()!r}")

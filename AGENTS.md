@@ -153,16 +153,19 @@ shared/
     logging_util.py      Timestamped print + access-log filter
     debug_log.py         DEBUG flag, redaction, debug()
     llm.py               OpenRouter/OpenAI-compatible transport + llm_chat_once
-    persona.py           persona.txt load
+    persona.py           Re-export PERSONA (= PERSONA_FULL) for chat back-compat
+    prompt_voice.py      PERSONA_FULL (chat) + PERSONA_MINI (ambient/greeting/sensor)
     process_state.py     Face / ambient quiet / mood / voice / filler state
     deps.py              MEMORY / BEHAVIOR_RUNTIME singletons (set by service)
     vision.py            Vision-intent regex + getImage payload
     prompt_assembly.py   prepare_messages + memory/context sections
+    memory_retrieve.py   Top-k fact ranking for chat memory inject
+    desk_extract.py      Scene text → structured desk_items upserts
     response_cleanup.py  strip_markdown, remember/forget/work tags
     chat_flow.py         generate() SSE stream + fillers + convo summary
     routes/              Thin FastAPI APIRouters (chat, ambient, sensor, …)
-    memory.py            SQLite memories, face_meta, observations, mood state
-    persona.txt          Personality prose (not commands, not API keys)
+    memory.py            SQLite memories, face_meta, observations, desk_items, mood
+    persona.txt          Full character prose for chat (not commands, not API keys)
     env-default          Template for runtime .env
     requirements.txt
     test_behaviors.py    Behavior/Work Day unit tests (no robot)
@@ -248,6 +251,9 @@ one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
 | `LLM_SENSOR_TEMPERATURE` | Sensor quips (default `1.4`) |
 | `LLM_JOKE_GENERATE_TEMPERATURE` / `LLM_JOKE_CRITIC_TEMPERATURE` | Joke refill stages (default `1.0` / `0.2`) |
 | `LLM_TIMEOUT_CONNECT` / `LLM_TIMEOUT_READ` | HTTP timeouts |
+| `MEMORY_INJECT_PERSONAL` | Max personal facts in chat system inject (default `8`) |
+| `MEMORY_INJECT_SHARED` | Max shared facts in chat system inject (default `4`) |
+| `MEMORY_INJECT_MENTIONS` | Max “others mentioned this face” facts (default `3`) |
 | `VECTORAI_DEBUG` | Verbose request/response logs (images redacted) |
 
 **`pod.conf` (stack / deploy):**
@@ -386,8 +392,8 @@ Target **readable, explicit Python 3.11+** suitable for a long-lived desk daemon
 | Privacy | `_leading_underscore` = module/internal; do not “publicize” without need. |
 | Config | Load from env with **safe defaults**; never crash import on a bad optional value. |
 | Logging | Prefer timestamped `print` / stdlib logging patterns already in `service.py`. |
-| Persona vs commands | **Prose** in `persona.txt`. Command/vision rules live in Wire-Pod `openai_prompt`. API keys and models stay in `.env`. |
-| LLM tags | Chat may emit structured tags (`{{remember\|\|…}}`, `{{workAfternoon\|\|yes\|no}}`, `{{workPause\|\|until=HH:MM}}`, `{{workResume}}`). **Strip before speech.** |
+| Persona vs commands | **Prose** in `persona.txt` (full chat pack). Non-chat one-shots use `PERSONA_MINI` from `prompt_voice.py`. Command/vision rules live in Wire-Pod `openai_prompt`. API keys and models stay in `.env`. |
+| LLM tags | Chat may emit structured tags (`{{remember\|\|…}}`, `{{workAfternoon\|\|yes\|no}}`, `{{workPause\|\|until=HH:MM}}`, `{{workResume}}`). **Strip before speech.** Keep real chipper commands such as `{{newVoiceRequest\|\|…}}` / `{{getImage\|\|…}}` for execution. |
 | Side effects | Speech-gated commits via `TickResult.on_speak_allowed` — do not advance poke/away/late timers when the arbiter denied speech. |
 
 ### Behavior plugin contract
@@ -586,18 +592,41 @@ Model-emitted tags for memory and work commands are stripped server-side before
 TTS. If you add a new tag family, strip it in the same pipeline as existing ones
 and cover it in unit tests.
 
-### Persona file scope
+### Persona packs (full vs mini)
 
-`persona.txt` shapes tone for chat **and** proactive reactions. Do not put
-animation tokens, API keys, or Wire-Pod command grammar there. Command/vision
-rules stay in Wire-Pod’s openai_prompt (apply-wirepod-config).
+| Pack | Source | Used by |
+|------|--------|---------|
+| **`PERSONA_FULL`** | `persona.txt` via `prompt_voice.load_persona_full()`; re-exported as `PERSONA` from `persona.py` | Chat only (`prepare_messages` / knowledge path) |
+| **`PERSONA_MINI`** | Fixed short voice line in `prompt_voice.py` (not auto-truncated from full file) | Ambient, proactive greeting, sensor quips |
+
+Full prose may include calibration / example blocks that must never hit ambient
+payloads — that is why mini is a separate constant, not a slice of `persona.txt`.
+Do not put animation tokens, API keys, or Wire-Pod command grammar in either
+pack. Command/vision rules stay in Wire-Pod’s openai_prompt (apply-wirepod-config).
 
 ### Memory model
 
 SQLite: durable facts (`memories`), per-face meta + conversation recaps
-(`face_meta`), short visual notes (`observations` — images never stored), and
-generic `state` (mood, etc.). Observations are retention-pruned; facts are
-deduped case-insensitively.
+(`face_meta`), short visual notes (`observations` — images never stored),
+**desk layout** (`desk_items` — semi-stable object → location map), and generic
+`state` (mood, etc.). Observations are retention-pruned; facts are deduped
+case-insensitively.
+
+**Chat memory inject** does not dump the whole table: `memory_retrieve` ranks
+by keyword overlap + recency and caps counts via env (defaults 8 / 4 / 3):
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `MEMORY_INJECT_PERSONAL` | `8` | Top personal facts for the current face |
+| `MEMORY_INJECT_SHARED` | `4` | Shared (unowned) facts |
+| `MEMORY_INJECT_MENTIONS` | `3` | Facts that mention the current face’s name |
+
+**`desk_items` is not a chat fact dump.** It is a structured layout map (mug left
+of monitor, headphones right edge, …) updated from vision / ambient scene text
+via `desk_extract`. Ambient can inject a short “known desk layout” block so
+moved / vanished / appeared objects register as novelty without roasting static
+clutter every glance. Do not merge desk rows into the unique-text `memories`
+table — different lifecycle and purpose.
 
 ### Windows timezones
 

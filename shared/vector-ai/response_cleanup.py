@@ -27,10 +27,10 @@ _PHRASE_FIXES = [
     (re.compile(r'\bthe picture (shows?|depicts?)\b',                  re.IGNORECASE), 'I see'),
 ]
 
-# Wire-Pod commands the LLM should never emit on its own initiative. The model
-# tends to generalise from {{playAnimationWI||x}} and invent these.
-# newVoiceRequest is real but disabled here: when it fires, Vector's firmware
-# opens a listening session and can hang noisily (~30s) if no speech follows.
+# Invented listen-like commands the LLM may hallucinate from playAnimation-style
+# grammar. Strip them so they never reach TTS/chipper.
+# {{newVoiceRequest||…}} is a REAL conversation command — chipper executes it;
+# do NOT add it here (clean_response must leave it intact for multi-turn listen).
 _FORBIDDEN_COMMAND = re.compile(
     r'\{\{(voiceRequest|listen|wakeWord|waitForUser)\|\|[^}]*\}\}',
     re.IGNORECASE,

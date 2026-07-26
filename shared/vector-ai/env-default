@@ -44,6 +44,12 @@ LLM_JOKE_CRITIC_TEMPERATURE=0.2
 LLM_TIMEOUT_CONNECT=15
 LLM_TIMEOUT_READ=120
 
+# Chat memory inject caps (top-k facts into the system memory section).
+# Keyword + recency retrieval; raise if chat "forgets" too often, lower to save tokens.
+# MEMORY_INJECT_PERSONAL=8
+# MEMORY_INJECT_SHARED=4
+# MEMORY_INJECT_MENTIONS=3
+
 # Debug: log Wire-Pod requests + OpenRouter send/recv (images redacted).
 # Writes to vector-ai.log (stdout) AND vector-ai-debug.log next to service.py.
 # VECTORAI_DEBUG=1
