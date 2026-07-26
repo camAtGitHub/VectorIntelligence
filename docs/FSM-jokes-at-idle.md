@@ -4,7 +4,7 @@ Optional **desk aliveness** for Vector: when someone has been present but quiet 
 
 **Default: off.** Safe for holidays, guests, and shared desks.
 
-**Requires:** full Vector Intelligence install with a **patched chipper** (behavior-tick loop). Companion mode (stock Wire-Pod) does not run presence ticks, so this behavior will not speak on its own there.
+**Requires:** full Vector Intelligence install with a **VI chipper build** (behavior-tick loop in monorepo `wire-pod/`). Companion mode (stock Wire-Pod) does not run presence ticks, so this behavior will not speak on its own there. Install-time Python patches are archived — edit chipper Go in-tree if the body loop needs changes.
 
 Related:
 
@@ -256,7 +256,7 @@ If the arbiter **denies** a line (quiet mode, recent voice, min gap, lower prior
 
 ### Prerequisites
 
-- Vector Intelligence full install with **behavior-tick** patch (same body loop Work Day uses).
+- Vector Intelligence full install with **behavior-tick** in the monorepo chipper (same body loop Work Day uses).
 - Working OpenRouter (or compatible) key in `vector-ai/.env` if you want **generated** renewals; curated-only still works without successful generation.
 - For `JOKE_AUDIENCE=known`: face enrollment so Vector can recognize you.
 
@@ -332,7 +332,7 @@ You can point `JOKE_SEED_FILE` at another path if you maintain your own list. Ke
 
 | Symptom | What to check |
 |---------|----------------|
-| Never jokes | `JOKE_ENABLED=1`? `joke_idle` in `BEHAVIORS_ENABLED`? Restarted vector-ai? **Full** patched chipper? |
+| Never jokes | `JOKE_ENABLED=1`? `joke_idle` in `BEHAVIORS_ENABLED`? Restarted vector-ai? **Full** VI chipper with behavior-tick? |
 | Still silent with flags on | Dwell not met yet (`JOKE_MIN_DWELL_S`)? Cooldown / daily cap? Quiet mode or recent chat (`SPEECH_SUPPRESS_AFTER_VOICE_S`)? Desk not “occupied”? |
 | Only silent for strangers | Expected with `JOKE_AUDIENCE=known`. Enroll face or switch to `anyone`. |
 | Face probe spam | Should not happen every tick; if stuck requesting identity, check `JOKE_IDENTITY_REJECT_COOLDOWN_S` and enrollment. |

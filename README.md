@@ -30,12 +30,15 @@ Tested on **Windows 10/11** and Debian-family Linux.
 ### Multi-user memory
 
 - Enrol a face once; facts and chat recaps stay **per person**, plus shared household notes
-- With the **full (patched) chipper**, a face probe runs while you speak so he knows who is talking before the reply
+- With the **full chipper build** (monorepo `wire-pod/`), a face probe runs while you speak so he knows who is talking before the reply
 - Conversation recaps distilled after chats; camera use stores a **short text note** of what he saw (images are not kept)
 
-### Full-stack aliveness (patched chipper only)
+### Full-stack aliveness (full chipper build only)
 
-These loops ship as install-time Go patches; stock packaged Wire-Pod does not run them.
+These loops live **in-tree** under the monorepo chipper (`wire-pod/chipper/…`).
+Stock packaged Wire-Pod does not run them. **Install-time Python patches under
+`shared/patches/` are archived / being removed** — change Go sources directly
+and rebuild; do not add new patch scripts.
 
 | Behavior | What it does |
 |----------|----------------|
@@ -44,7 +47,7 @@ These loops ship as install-time Go patches; stock packaged Wire-Pod does not ru
 | **Proactive greetings** | Notice you arriving without a wake word |
 | **Face probe** | Concurrent identity while you talk |
 | **Speech volume duck** | Desired level in jdoc; idle quieter; raise only while speaking/hold |
-| **Behavior tick** | Thin presence loop for Work Day Mode and future FSMs |
+| **Behavior tick** | Thin presence loop for Work Day Mode, joke idle, and future FSMs |
 
 **Companion mode** (packaged Wire-Pod + this brain) still gets OpenRouter chat,
 persona, and SQLite memory — not the autonomous loops above.
@@ -56,7 +59,7 @@ on-task pokes, away scolds, late-arrival check-in, chat continuity strip, and
 voice tags for pause / resume / afternoon yes-no.
 
 - Master switch: `WORKDAY_ENABLED=0` (safe for holidays and guests)
-- Needs full install with the **behavior-tick** chipper patch
+- Needs **full install** (behavior-tick body in the VI chipper build)
 - User guide: [docs/FSM-workday-companion.md](docs/FSM-workday-companion.md)
 - Extending with more FSMs: [docs/FSM-implementation.md](docs/FSM-implementation.md)
 
@@ -83,11 +86,11 @@ You speak  →  Wire-Pod STT  →  POST http://127.0.0.1:8090/v1/chat/completion
 
 That is a normal Wire-Pod **custom knowledge** endpoint, not a network MITM.
 
-### Full install (this project builds patched chipper)
+### Full install (this project builds monorepo chipper)
 
 ```text
 Vector  <-->  supervisor
-                ├── chipper (patched Wire-Pod)  :443 / web UI
+                ├── chipper (VI wire-pod tree)  :443 / web UI
                 ├── vector-ai                   :8090
                 │        └── OpenRouter
                 └── mDNS escapepod.local
@@ -153,13 +156,13 @@ Then:
 
 Stop brain only: `.\windows\stop-vector.ps1` (does not kill packaged chipper).
 
-| Companion includes | Needs full patched build |
-|--------------------|---------------------------|
+| Companion includes | Needs full VI chipper build |
+|--------------------|----------------------------|
 | Chat via OpenRouter, persona, SQLite memory | Ambient, sensors, face probe, behavior tick |
 | Larger VOSK model (AppData models) | Whisper STT (`chipper-whisper.exe`) |
 | | Work Day Mode proactive speech |
 
-### Windows B — Full install (build patched chipper)
+### Windows B — Full install (build monorepo VI chipper)
 
 ```powershell
 # Admin:
@@ -286,9 +289,9 @@ http://127.0.0.1:8090/health
 | Wire-Pod not calling the brain | Knowledge = **custom**, endpoint `http://127.0.0.1:8090/v1` in AppData `apiConfig.json`; restart Wire-Pod |
 | Wrong `.env` edited | Repo `shared/vector-ai/` is a **template**; live copy is under `vector-pod\` |
 | Wi‑Fi / exclamation on Vector | LAN / 2.4 GHz; `ping` robot — not OpenRouter |
-| Work Day never speaks | Full patched chipper required; `WORKDAY_ENABLED=1`; restart vector-ai; see workday guide |
+| Work Day never speaks | Full VI chipper required (behavior-tick); `WORKDAY_ENABLED=1`; restart vector-ai; see workday guide |
 | `ZoneInfo` / timezone errors on Windows | Re-run install/setup so `tzdata` is in the venv; set `WORKDAY_TZ` to an IANA name |
-| Ambient `DeadlineExceeded` on calm/sleep | Fixed in ambient patch (skip calm power mode; single capture budget) — rebuild/reinstall full stack |
+| Ambient `DeadlineExceeded` on calm/sleep | Fixed in monorepo ambient path (skip calm power mode; single capture budget) — rebuild full chipper |
 | Proactor `WinError 10054` in vector-ai | Usually harmless Windows socket teardown |
 | Slow first reply | Cloud latency; try a faster `LLM_MODEL` on OpenRouter |
 
@@ -301,24 +304,25 @@ windows/                 setup-companion, install, start/stop, apply-config
 linux/                   install + start/stop + apply-config
 shared/
   vector-ai/             FastAPI brain (service, memory, persona, env-default)
-    behaviors/           Multi-behavior runtime + Work Day FSM
-  patches/               Applied only by full install (chipper source)
+    behaviors/           Multi-behavior runtime + Work Day / joke FSMs
+  patches/               ARCHIVED (being removed) — do not add new scripts
   supervisor.py          Process manager / health / mDNS
   config/                Wire-Pod apiConfig + intents templates
+../wire-pod/             Monorepo chipper source of truth (full build)
 docs/
   FSM-workday-companion.md   User-facing Work Day guide
   FSM-implementation.md      How to add more behavior FSMs
-  superpowers/               Design + implementation plan notes
+  superpowers/               Design + implementation plan notes (historical)
 NEXT_STEPS.md            Companion checklist + how to compile chipper
 ```
 
-Chipper patches of note (full install):
+Full-chipper code of note (edit in `wire-pod/chipper/`, rebuild):
 
 - Ambient loop, sensor reactions, face probe, proactive greeting hooks  
-- **Behavior tick** (`add-behavior-tick.py`) — presence → `/v1/behaviors/tick`  
-- **Speech volume** (`add-speech-volume-bump.py`) — desired in `wirepod.SpeechVolume` jdoc; quiet idle, loud speech/hold  
-
-- Connection / stream leak fixes, wake-word mute during camera, etc.
+- **Behavior tick** — presence → `/v1/behaviors/tick`  
+- **Speech volume** — desired in `wirepod.SpeechVolume` jdoc; quiet idle, loud speech/hold  
+- Conversation mode on **Save Chat** (intent-graph path; no `isKG` gate)  
+- Connection / stream leak fixes, wake-word mute during camera, robotsession, etc.
 
 ---
 

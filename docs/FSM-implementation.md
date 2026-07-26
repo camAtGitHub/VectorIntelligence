@@ -43,7 +43,7 @@ HTTP (ops / debug)                 routes/* thin glue
 
 ## 2. Assumptions (read before designing a new FSM)
 
-1. **Full patched chipper** is required for proactive presence-driven speech (behavior-tick patch). Companion-only installs get vector-ai but not the tick body.
+1. **Full VI chipper** (monorepo `wire-pod/` with behavior-tick) is required for proactive presence-driven speech. Companion-only installs get vector-ai but not the tick body. Install-time Python patches under `shared/patches/` are **archived / being removed** — edit chipper Go in-tree.
 2. **Presence is approximate.** Occupancy is sticky/cheap (face/empty heuristics), not a perfect “user at keyboard” signal. Design FSMs that tolerate false empty/occupied.
 3. **Identity is expensive.** Named-face streams are firmware-heavy. Request identity only at **junctures**, never every tick.
 4. **Proactive speech is scarce.** Quiet mode, recent conversation, and global min-gap will drop lines. If your FSM advances timers when speech is denied, users will feel “missed” check-ins—or worse, silent state changes. Prefer **speech-gated commits**.
@@ -51,7 +51,7 @@ HTTP (ops / debug)                 routes/* thin glue
 6. **Localhost trust model.** Tick API is for chipper on the same machine (same class as ambient / face_seen). Still validate and bound inputs.
 7. **Default off / opt-in.** User-facing FSMs should be safe for other people and holidays (`*_ENABLED=0` by default).
 8. **Multi-robot:** tick loop is per enrolled bot; shared state in vector-ai is process-global—design day/self state carefully if multiple Vectors share one brain.
-9. **Python 3 + FastAPI** for brain; Go patches for chipper; unit tests without a robot in `shared/vector-ai/test_behaviors.py` (or a sibling module).
+9. **Python 3 + FastAPI** for brain; **in-tree Go** under monorepo `wire-pod/` for chipper (no new patch scripts); unit tests without a robot in `shared/vector-ai/test_behaviors.py` (or a sibling module).
 10. **Observability is part of the contract.** New FSMs should be curl-friendly: a one-line **summary card** on the shared index and a **detail** GET under `/v1/behaviors/<id>`. Do not dump private fields onto a flat global state object.
 
 ---
@@ -128,7 +128,7 @@ Optional but recommended:
 }
 ```
 
-**Chipper rules (already in `add-behavior-tick.py`):**
+**Chipper rules (behavior-tick in monorepo `wire-pod/`, not via patches):**
 
 - If `speak` is non-empty → **deliver it** (server already applied quiet/gap/voice policy). Do not second-guess with post-HTTP “recent conversation” drops that leave server timers advanced.  
 - If `need_identity` → short face probe, then tick again with `face`.  
@@ -519,7 +519,7 @@ Improvements that help **all** FSMs (registry, shared clock TZ, migrating ambien
 | Shared tick + state index + detail GET | `shared/vector-ai/routes/behaviors_http.py` (+ optional helpers on runtime) |
 | Composition only | `shared/vector-ai/service.py` (deps, loops, `register_routes`) |
 | Durable state | `continuity.py` or dedicated store |
-| Chipper (rare) | `shared/patches/…` + `linux/install.sh` / `windows/install.ps1` |
+| Chipper (rare) | monorepo `wire-pod/chipper/...` (rebuild); not `shared/patches/` |
 | Tests | `shared/vector-ai/test_behaviors.py`, `test_joke_idle.py`, `test_service_modules.py` |
 | Deploy modules | Install scripts must copy `behaviors/` + `routes/` packages |
 | User / implementer docs | `docs/FSM-*.md`, README snippet |

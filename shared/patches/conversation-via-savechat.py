@@ -7,11 +7,17 @@ multi-turn stays off even when Save Chat is ticked in the UI.
 
 This patch drops the isKG half of the gate so Save Chat alone enables
 conversation mode on every StreamingKGSim path. isKG still controls anims /
-BehaviorControl timing elsewhere — this file only edits CreatePrompt.
+BehaviorControl timing elsewhere — this file only edits CreatePrompt's NOTE
+gate (and leaves needsVoiceRequestBackstop to the in-tree source if already
+SaveChat-only).
 
 Idempotent. Targets chipper/pkg/wirepod/ttr/kgsim_cmds.go only.
 Does not touch ValidLLMCommands, eyeColor, animations, or other kgsim_cmds
-patches (unique anchor: isKG && SaveChat before the conversation NOTE).
+patches.
+
+Recognises both prompt shapes:
+  - legacy:  if isKG && SaveChat { ... "You are in 'conversation' mode"
+  - current: if isKG && SaveChat { ... "NOTE: Conversation mode is ON"
 
 Usage:
     conversation-via-savechat.py <path-to-kgsim_cmds.go>
@@ -22,16 +28,23 @@ import re
 import sys
 from pathlib import Path
 
-# Stock gate (Wire Jul 2024 conversations-via-KG design).
+# Stock gate (Wire Jul 2024 conversations-via-KG design, and post-rewrite
+# CreatePrompt that reintroduced isKG && SaveChat).
 _STOCK = re.compile(
     r"if\s+isKG\s*&&\s*vars\.APIConfig\.Knowledge\.SaveChat\s*\{"
 )
 
-# Already applied: SaveChat alone immediately before conversation-mode NOTE.
-_DONE = re.compile(
+# Already applied — SaveChat alone before either conversation-mode NOTE style.
+_DONE_LEGACY = re.compile(
     r"if\s+vars\.APIConfig\.Knowledge\.SaveChat\s*\{"
     r"\s*\n\s*promptAppentage\s*:="
     r'\s*"\\n\\nNOTE:\s*You are in \'conversation\' mode\.',
+    re.MULTILINE,
+)
+_DONE_CURRENT = re.compile(
+    r"if\s+vars\.APIConfig\.Knowledge\.SaveChat\s*\{"
+    r"\s*\n(?:\s*//[^\n]*\n)*"  # optional comments between if and WriteString
+    r'\s*b\.WriteString\("\\n\\nNOTE:\s*Conversation mode is ON\.',
     re.MULTILINE,
 )
 
@@ -39,12 +52,19 @@ _DONE = re.compile(
 def patch(path: Path) -> bool:
     src = path.read_text(encoding="utf-8")
 
-    if _DONE.search(src) and not _STOCK.search(src):
+    already = (_DONE_LEGACY.search(src) or _DONE_CURRENT.search(src)) and not _STOCK.search(
+        src
+    )
+    if already:
         print(f"[conversation-savechat] {path.name} already patched.")
         return False
 
     m = _STOCK.search(src)
     if not m:
+        # No stock gate and no done marker — either hand-edited oddly or wrong file.
+        if _DONE_LEGACY.search(src) or _DONE_CURRENT.search(src):
+            print(f"[conversation-savechat] {path.name} already patched.")
+            return False
         print(
             f"[conversation-savechat] stock gate not found in {path} "
             f"(expected: if isKG && vars.APIConfig.Knowledge.SaveChat {{)",

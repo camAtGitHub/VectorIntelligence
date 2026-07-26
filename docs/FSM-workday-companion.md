@@ -4,7 +4,7 @@ Optional **desk accountability** for Vector: he notices when your work day start
 
 **Default: off.** Safe for holidays, guests, and other users.
 
-**Requires:** full Vector Intelligence install with a **patched chipper** (behavior-tick loop). Companion mode (stock Wire-Pod) does not run presence ticks, so Work Day will not speak on its own there.
+**Requires:** full Vector Intelligence install with a **VI chipper build** (behavior-tick loop in monorepo `wire-pod/`). Companion mode (stock Wire-Pod) does not run presence ticks, so Work Day will not speak on its own there. Install-time Python patches are archived — body loops are normal in-tree Go.
 
 Related design (deeper “why”): `docs/superpowers/specs/2026-07-18-vector-aliveness-workday-design.md`
 
@@ -182,12 +182,12 @@ You can also set quiet mode as today for ambient-style hush; Work Day respects q
 Work Day has two parts:
 
 1. **Brain** — vector-ai code (ships with this repo; no special compile).  
-2. **Body loop** — chipper **patch** so the robot reports desk presence and can speak lines (only in a **full** Wire-Pod build from this project).
+2. **Body loop** — chipper **behavior-tick** so the robot reports desk presence and can speak lines (only in a **full** VI Wire-Pod build from this project’s monorepo tree).
 
 ### Prerequisites
 
 - Vector Intelligence repo (this tree).  
-- Full install path that **builds patched chipper** (not companion-only stock Wire-Pod).  
+- Full install path that **builds VI monorepo chipper** (not companion-only stock Wire-Pod).  
 - OpenRouter (or other LLM) key already working for normal chat.  
 - Ideally: your face **enrolled** so morning/late arm can recognize you.
 
@@ -196,7 +196,7 @@ Work Day has two parts:
 From an **Admin** PowerShell in the repo (or as your install docs specify):
 
 ```powershell
-# Full install applies all patches including add-behavior-tick.py, then builds chipper
+# Full install builds monorepo chipper (behavior-tick already in-tree)
 .\windows\install.ps1
 # optional ports: -WebPort 9080 -AiPort 8090
 ```
@@ -209,12 +209,12 @@ Then:
 3. Start the stack: `.\windows\start-vector.ps1` (or your usual supervisor start).  
 4. Pair / use as normal. OpenRouter key still lives in `vector-ai\.env`.
 
-**Already installed earlier without this feature?** Re-run full install (or re-apply patches + rebuild chipper) so `shared/patches/add-behavior-tick.py` is applied, then restart. Config-only enable without the patch will not produce presence-driven speech.
+**Already installed earlier without this feature?** Rebuild/redeploy full VI chipper so behavior-tick is present in the binary, then restart. Config-only enable without the body loop will not produce presence-driven speech.
 
 ### Linux (full install)
 
 ```bash
-# From repo; install applies patches including behavior-tick and builds chipper
+# From repo; full install builds monorepo chipper (includes behavior-tick)
 ./linux/install.sh
 ```
 
@@ -266,7 +266,7 @@ This validates the brain FSM and config without a robot.
 
 | Symptom | What to check |
 |---------|----------------|
-| Nothing ever work-related | `WORKDAY_ENABLED=1`? Restarted vector-ai? **Full** patched chipper (not companion-only)? |
+| Nothing ever work-related | `WORKDAY_ENABLED=1`? Restarted vector-ai? **Full** VI chipper with behavior-tick (not companion-only)? |
 | Always silent on “sick” days | Expected if no morning face arm and no late “yes”. |
 | Wrong morning time | Set `WORKDAY_TZ` to your zone, not only wall-clock on the PC if TZ differs. |
 | Too chatty | Raise `WORKDAY_POKE_INTERVAL_S` / `WORKDAY_AWAY_S`, or use quiet / pause, or disable. |
@@ -282,5 +282,5 @@ This validates the brain FSM and config without a robot.
 | What is it? | Optional desk work accountability + day continuity for Vector. |
 | On by default? | **No.** |
 | Where configured? | Runtime `pod.conf` (Windows `%USERPROFILE%\vector-pod\pod.conf`, Linux `~/vector-pod/pod.conf`). See `shared/config/pod.conf-default`. |
-| How to build? | Full Vector Intelligence install (patch + build chipper); enable in pod.conf; restart. |
+| How to build? | Full Vector Intelligence install (build monorepo chipper); enable in pod.conf; restart. |
 | Ambient broken? | No — Work Day is additive. |

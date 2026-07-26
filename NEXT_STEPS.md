@@ -3,7 +3,7 @@
 This guide covers:
 
 1. **Companion mode** (keep packaged Wire-Pod, add OpenRouter brain) - do this first  
-2. **Full build** (compile patched chipper + optional Whisper) - when you want ambient/sensors/Whisper  
+2. **Full build** (compile monorepo VI chipper + optional Whisper) - when you want ambient/sensors/Whisper  
 
 ---
 
@@ -39,15 +39,15 @@ You speak -> chipper STT -> POST :8090/v1/chat/completions
 
 ### What companion vs full gives you
 
-| Feature | Companion (stock chipper.exe) | Full patched build |
-|---------|-------------------------------|--------------------|
+| Feature | Companion (stock chipper.exe) | Full VI chipper build |
+|---------|-------------------------------|------------------------|
 | OpenRouter chat | Yes | Yes |
 | persona.txt + SQLite memory | Yes | Yes |
 | getImage / vision via LLM | Yes (if prompt/config allow) | Yes |
 | Bigger VOSK model | Yes (AppData models) | Yes |
 | Whisper STT | No (need chipper-whisper) | Yes |
-| Ambient / sensor / face-probe loops | No | Yes |
-| Work Day Mode (desk accountability) | No (needs behavior-tick patch) | Yes (default **off** in `pod.conf`) |
+| Ambient / sensor / face-probe loops | No | Yes (in monorepo `wire-pod/`) |
+| Work Day / joke idle (behavior-tick) | No | Yes (default **off** in `pod.conf`) |
 
 ---
 
@@ -182,13 +182,19 @@ Point Wire-Pod's en-US model at a bigger package (e.g. `vosk-model-en-us-0.22-lg
 
 ---
 
-## Part 2 - Compile patched Wire-Pod (full stack)
+## Part 2 - Compile full VI Wire-Pod (full stack)
 
-Do this when you want **Whisper**, **ambient**, **sensor reactions**, **face probe**, leak fixes, etc.
+Do this when you want **Whisper**, **ambient**, **sensor reactions**, **face probe**, behavior-tick, etc.
+
+### Chipper source (patches archived)
+
+- **Source of truth:** monorepo **`wire-pod/`** (this project’s chipper tree). Edit Go there; rebuild.
+- **`shared/patches/*.py` is archived / being removed.** Do not add new install-time patch scripts. Historical scripts are reference-only if still on disk.
+- Full build compiles **that maintained tree** (not “clone stock upstream + mutate with Python”). Companion mode keeps packaged stock `chipper.exe` and never gets VI body loops.
 
 ### What the build produces
 
-Under `%USERPROFILE%\vector-pod\wire-pod\chipper\`:
+Under `%USERPROFILE%\vector-pod\wire-pod\chipper\` (or your runtime layout):
 
 | Output | Role |
 |--------|------|
@@ -196,8 +202,6 @@ Under `%USERPROFILE%\vector-pod\wire-pod\chipper\`:
 | **`chipper-whisper.exe`** | Whisper STT build |
 | Runtime DLLs | vosk / whisper / mingw / opus / ssl as needed |
 | `whisper.cpp` models | e.g. `ggml-base.en.bin` |
-
-Patches in `shared/patches/*.py` are applied to a **pinned** upstream commit, then Go compiles. There is no single "drop one .go file" deliverable.
 
 ### Can you swap into Program Files?
 
@@ -217,7 +221,7 @@ Safer migration: copy pairing/config from AppData into the VI wire-pod tree, or 
    .\windows\install.ps1 -WebPort 9080
    ```
 
-   Installs Go/Python/MSYS2 as needed, clones [kercre123/wire-pod](https://github.com/kercre123/wire-pod) at pinned commit, applies patches, builds both chippers, installs vector-ai, registers supervisor, firewall rules. ~15-25 minutes.
+   Installs Go/Python/MSYS2 as needed, builds chipper from the **VI wire-pod tree**, installs vector-ai, registers supervisor, firewall rules. ~15-25 minutes. (Legacy install paths that still invoke archived patch scripts are transitional; new work goes straight into monorepo Go.)
 
 2. **OpenRouter key** in `%USERPROFILE%\vector-pod\vector-ai\.env` (same as companion).
 
@@ -306,7 +310,7 @@ If you previously set these in `.env`, run opt-in
 ### Full build (later)
 
 - [ ] Stop packaged chipper (free :443)  
-- [ ] `install.ps1` completed without patch/build errors  
+- [ ] `install.ps1` completed without chipper build errors  
 - [ ] Same `.env` / persona as companion (or re-enter key)  
 - [ ] `start-vector.ps1`  
 - [ ] Pair / apply-config if new wire-pod tree  
@@ -322,7 +326,7 @@ If you previously set these in `.env`, run opt-in
 | `windows/start-companion.ps1` | Start vector-ai (EXTERNAL_CHIPPER) |
 | `windows/stop-vector.ps1` | Stop supervisor (companion: brain only) |
 | `windows/apply-wirepod-config.ps1` | Merge knowledge -> vector-ai |
-| `windows/install.ps1` | Full clone, patch, compile, install |
+| `windows/install.ps1` | Full compile + install (monorepo chipper) |
 | `windows/start-vector.ps1` | Full stack via supervisor |
 | `windows/initial-setup.ps1` | Escape-pod / STT wizard helpers |
 
@@ -335,7 +339,7 @@ If you previously set these in `.env`, run opt-in
 | Key empty | Runtime `.env` under `vector-pod\vector-ai`, not only repo |
 | No LLM | custom + `:8090/v1` in **AppData** apiConfig; restart Wire-Pod |
 | Port 443 in use | Two chippers fighting - only one Wire-Pod at a time |
-| Build patches fail | Must use pinned Wire-Pod commit from `install.ps1` |
+| Chipper build fails | Build monorepo `wire-pod/chipper` with Go/MSYS2 as install expects; do not reintroduce Python patches |
 | WinError 10054 in vector-ai | Usually harmless HTTP reset (OpenRouter/client); not robot issue #8 |
 
 ---

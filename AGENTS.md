@@ -9,7 +9,7 @@ Tested on **Windows 10/11** and Debian-family Linux.
 
 | Piece | Role |
 |-------|------|
-| **Wire-Pod (chipper)** | Robot pairing, STT, TTS, optional patched aliveness loops |
+| **Wire-Pod (chipper)** | Robot pairing, STT, TTS, optional full-stack aliveness loops (in monorepo `wire-pod/`) |
 | **vector-ai** | FastAPI brain — persona, SQLite memory, mood, multi-behavior runtime |
 | **LLM** | OpenRouter (OpenAI-compatible HTTPS); no required local Ollama |
 | **supervisor** | Keeps vector-ai (and full-stack chipper/mDNS) alive; log rotation |
@@ -18,8 +18,8 @@ Two install modes:
 
 | Mode | What you get |
 |------|----------------|
-| **Companion** | Packaged Wire-Pod + this brain (chat, persona, memory). No ambient/sensors/behavior-tick. |
-| **Full** | Builds patched chipper: ambient, sensors, face probe, behavior tick, Work Day proactive speech |
+| **Companion** | Packaged stock Wire-Pod + this brain (chat, persona, memory). No ambient/sensors/behavior-tick. |
+| **Full** | Builds **this project’s chipper** (in-tree `wire-pod/`): ambient, sensors, face probe, behavior tick, Work Day / joke proactive speech |
 
 Hands-on install checklist: [NEXT_STEPS.md](NEXT_STEPS.md). User Work Day guide: [docs/FSM-workday-companion.md](docs/FSM-workday-companion.md).
 
@@ -95,8 +95,8 @@ That is a normal Wire-Pod **custom knowledge** endpoint (`knowledge.provider = c
 
 ```text
 Vector  <-->  supervisor
-                ├── chipper (patched Wire-Pod)  :443 / web UI
-                ├── vector-ai                   :8090
+                ├── chipper (VI monorepo wire-pod build)  :443 / web UI
+                ├── vector-ai                              :8090
                 │        └── OpenRouter
                 └── mDNS escapepod.local
 ```
@@ -122,7 +122,7 @@ start or stop packaged Wire-Pod.
 | `%USERPROFILE%\vector-pod\` | **This project’s runtime** (vector-ai, supervisor, logs, `.env`) |
 | This git repo | Source only — not what the scheduled task runs |
 
-### Multi-behavior aliveness (full patched chipper)
+### Multi-behavior aliveness (full chipper build)
 
 ```text
 Chipper (thin body)              vector-ai (brain)
@@ -140,6 +140,20 @@ Legacy chipper loops (ambient, sensors, greeting) still run **outside** the plug
 runtime today. Work Day is the first Behavior plugin. Do not delete those loops
 to “make room”; coordinate via quiet / voice / speech gap. See
 [docs/FSM-implementation.md](docs/FSM-implementation.md).
+
+### Chipper source of truth (patches archived)
+
+- **Edit Go in the monorepo `wire-pod/` tree** (sibling of this folder, or the
+  deploy copy built from it). That is where ambient, sensors, face probe,
+  behavior-tick, speech volume, conversation mode (Save Chat), robotsession,
+  etc. live as normal source.
+- **`shared/patches/` is archived / being removed.** Do **not** add new
+  `*.py` install patches. Do **not** design features as “another patch script.”
+  Historical plans under `docs/superpowers/` may still say “apply patch X”;
+  treat those as history — implement in Go in `wire-pod/` instead.
+- Full install **builds chipper from the maintained tree**, not “clone stock
+  kercre123 + mutate with Python.” Companion mode still uses packaged stock
+  chipper and never gets those loops.
 
 ## Repo layout
 
@@ -178,21 +192,23 @@ shared/
       arbiter.py         Global proactive speech gate
       continuity.py      Durable day/self SQLite helpers
       workday.py         Reference FSM (Work Day Mode)
-  patches/               Applied only by full install (chipper Go source)
+  patches/               ARCHIVED (being removed) — do not add new patch scripts
   supervisor.py          Process manager / health / mDNS / wedge recovery
   config/                Wire-Pod apiConfig + intents templates
   test_supervisor_wedge.py
+../wire-pod/             Monorepo chipper source of truth (full build)
 docs/
   FSM-workday-companion.md
   FSM-implementation.md
-  superpowers/           Design + implementation plans
+  superpowers/           Design + implementation plans (may mention old patches)
 NEXT_STEPS.md            Companion checklist + how to compile chipper
 README.md
 ```
 
-Chipper patches of note (full install only): ambient, sensors, face probe,
-behavior tick (`add-behavior-tick.py`), speech volume bump, connection/stream
-leak fixes, wake-word mute during camera, etc.
+Full-chipper capabilities live **in-tree under `wire-pod/chipper/`** (ambient,
+sensors, face probe, behavior tick, speech volume, conversation-on-SaveChat,
+robotsession, leak fixes, wake-word mute during camera, etc.). Change those
+files directly; rebuild chipper.
 
 ## Config cheatsheet
 
@@ -276,7 +292,8 @@ one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
 Format: one `KEY=value` per line, `#` full-line comments, blank lines OK.
 UTF-8 (BOM stripped if present). Unknown keys are preserved and forwarded.
 
-**Speech volume** (full install + `add-speech-volume-bump.py` patch only):
+**Speech volume** (full VI chipper only — `pkg/wirepod/ttr/speech_volume.go` and
+call sites in the monorepo tree):
 
 Keeps Vector quiet at idle and raises master volume only while he speaks (or
 during a turn/session hold). **Desired speech volume** is the user’s preferred
@@ -307,11 +324,11 @@ Hold sizing note: gRPC SayText returns when the robot **accepts** the request,
 not when speech finishes — there is no end-of-speech callback, so utterance
 holds are always estimated from text length + hang margin.
 
-Chipper reads these process env vars (defaults match the Go in the patch):
+Chipper reads these process env vars (defaults match the Go in-tree):
 
 | Chipper env | Default | Meaning |
 |-------------|---------|---------|
-| `VECTOR_VOLUME_DROP` | `2` | How many master_volume presets below **desired** to idle. Presets: `0` Mute … `5` High. Example: desired 4 → idle 2. **`0` disables the patch** (no volume reads/writes from the duck path). |
+| `VECTOR_VOLUME_DROP` | `2` | How many master_volume presets below **desired** to idle. Presets: `0` Mute … `5` High. Example: desired 4 → idle 2. **`0` disables the duck path** (no volume reads/writes from that path). |
 | `VECTOR_VOLUME_HANG_MS` | `2500` | Extra hold (ms) after the **estimated** speech length before dropping back to idle. Absorbs estimate error **and** gaps between consecutive sentence chunks of one LLM reply. Too short → level pumps mid-answer. |
 | `VECTOR_VOLUME_MS_PER_WORD` | `400` | Assumed TTS rate (ms/word) used to size utterance holds. Vector speaks slowly; erring long only costs a little idle delay, erring short ducks him mid-sentence. |
 | `VECTOR_VOLUME_TURN_MS` | `15000` | Default **turn** hold when caller omits duration. |
@@ -466,19 +483,23 @@ Identity is expensive (firmware face streams). Request only at **junctures** via
 `need_identity`. Negative `face_id` values are stranger-style IDs — do not drop them
 as invalid. Do **not** open continuous `robot_observed_face` streams for occupancy.
 
-### Patches (Go / chipper)
+### Chipper Go (monorepo `wire-pod/` — patches archived)
 
-- Live under `shared/patches/*.py` — they **mutate cloned Wire-Pod source** at full install.
-- Prefer thin body loops: report sensors, speak lines, close SDK connections.
+- **Source of truth:** edit `wire-pod/chipper/...` in this monorepo (or the
+  runtime tree built from it). Rebuild chipper after Go changes.
+- **`shared/patches/*.py` is archived / being removed.** No new install-time
+  patch scripts. Old scripts are reference-only if still present on disk.
+- Prefer thin body loops: report sensors, speak lines; let `robotsession` own
+  connections.
 - **Robot I/O via `robotsession`:** chipper owns one durable session per ESN
   (`pkg/wirepod/robotsession`). Do **not** call `vector.New` in new chipper code;
   obtain a session from `robotsession.Default` and use `WithControl` / `Unary` /
   `Say` / `SubscribeState`. **`Close` is session-owned** — callers must never
   `Close` a shared client from Get/GetRobot (that tears down voice + sensor
-  streams for everyone). Full install still applies `add-sdk-close.py` so the
-  third_party SDK exposes `Close()` for the session package.
+  streams for everyone). SDK `Close()` lives on the third_party tree used by
+  this project’s chipper build (not re-applied via a patch step).
 - No continuous face streams for occupancy (short probes only).
-- Companion mode never applies these patches — design features accordingly.
+- Companion mode uses packaged stock chipper — no VI body loops.
 
 ### Scripts (PowerShell / bash)
 
@@ -533,7 +554,7 @@ There is no CI config in-repo by default; still run the suites before handing wo
 
 ## Critical Learnings
 
-Hard-won knowledge. Read before changing chipper patches, supervisor, or behaviors.
+Hard-won knowledge. Read before changing monorepo chipper Go, supervisor, or behaviors.
 
 ### Source vs runtime
 
