@@ -11,7 +11,7 @@ from typing import Optional
 
 from .config import JokeConfig
 from .continuity import ContinuityStore
-from .joke_sources import pop_line
+from .joke_sources import commit_line, select_line
 from .logutil import blog, short
 from .types import BehaviorContext, FaceIdentity, TickResult
 
@@ -261,13 +261,14 @@ class JokeIdleBehavior:
             # anyone mode: never need_identity
             face = ctx.presence.face if ctx.identity_fresh else None
 
-        # 8. Serve a line (pure SQLite; no network)
+        # 8. Select a line without consuming (pure SQLite; no network).
+        # Queue pop + mark_served only run in on_speak_allowed after arbiter win.
         qlen = 0
         try:
             qlen = int(self.store.joke_queue_len())
         except Exception:
             pass
-        line = pop_line(self.store, cfg, question_ratio_roll=random.random())
+        line = select_line(self.store, cfg, question_ratio_roll=random.random())
         if line is None:
             blog(
                 _TAG,
@@ -289,16 +290,18 @@ class JokeIdleBehavior:
             if not text.lower().startswith(name.lower()):
                 text = f"{name}, {text}"
 
-        # 10–11. Speech + speech-gated daily/cooldown commit
+        # 10–11. Speech + speech-gated queue burn + daily/cooldown commit
         who = face.name if face is not None and (face.name or "").strip() else "unknown"
         kind = line["kind"]
         source = line["source"]
         r.speak = text
         # Capture by value so the callback is stable after return
         spoke_date, spoke_at = date, ctx.now
+        line_commit = dict(line)
         q_left = max(0, qlen - 1)
 
         def _on_allowed() -> None:
+            commit_line(self.store, line_commit, served_at=spoke_at)
             self.store.joke_commit_spoke(spoke_date, spoke_at)
             blog(
                 _TAG,

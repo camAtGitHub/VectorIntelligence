@@ -21,9 +21,11 @@ from behaviors.continuity import ContinuityStore
 from behaviors.joke_idle import JokeIdleBehavior, JOKE_IDLE_ID
 from behaviors.joke_sources import (
     _MAX_GEN_BATCHES,
+    commit_line,
     joke_hash,
     parse_json_array,
     pop_line,
+    select_line,
     refill_joke_queue,
 )
 from behaviors.runtime import BehaviorRuntime
@@ -212,43 +214,50 @@ def test_joke_continuity_push_pop_daily() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Serve (pop_line + parse_json_array)
+# 3. Serve (select_line / commit_line / pop_line + parse_json_array)
 # ---------------------------------------------------------------------------
 
-def test_pop_line_ratio_fallback_served_empty() -> None:
+def test_select_line_ratio_fallback_commit() -> None:
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "joke.db")
         cfg = _joke_cfg(question_ratio=0.6)
         now = 1000.0
 
         # Empty → None
-        check("empty None", pop_line(store, cfg, 0.0) is None)
+        check("empty None", select_line(store, cfg, 0.0) is None)
 
         q_text = "What would you do with a free hour?"
         j_text = "My plans left early without me."
         _push(store, q_text, "question", 0.9, now)
         _push(store, j_text, "joke", 0.9, now)
 
-        # roll < ratio → prefer question
-        line = pop_line(store, cfg, question_ratio_roll=0.1)
+        # roll < ratio → prefer question; select does not consume
+        line = select_line(store, cfg, question_ratio_roll=0.1)
         check("prefer question", line is not None and line["kind"] == "question")
         check("question text", line["text"] == q_text)
-        check("served after pop", joke_hash(q_text) in store.joke_all_served_hashes())
+        check("select leaves queue", store.joke_queue_len() == 2)
+        check("select not served", joke_hash(q_text) not in store.joke_all_served_hashes())
+
+        check("commit question", commit_line(store, line, served_at=now) is True)
+        check("served after commit", joke_hash(q_text) in store.joke_all_served_hashes())
         check("queue lost question", store.joke_queue_len("question") == 0)
+        check("queue still has joke", store.joke_queue_len("joke") == 1)
 
         # Only joke left; prefer question falls back to joke
-        line2 = pop_line(store, cfg, question_ratio_roll=0.0)
+        line2 = select_line(store, cfg, question_ratio_roll=0.0)
         check("fallback to joke", line2 is not None and line2["kind"] == "joke")
         check("fallback text", line2["text"] == j_text)
+        commit_line(store, line2, served_at=now)
         check("both served", len(store.joke_all_served_hashes()) == 2)
         check("queue empty", store.joke_queue_len() == 0)
-        check("empty after drain", pop_line(store, cfg, 0.5) is None)
+        check("empty after drain", select_line(store, cfg, 0.5) is None)
 
-        # Prefer joke path when roll >= ratio
+        # Prefer joke path when roll >= ratio (legacy pop_line = select+commit)
         _push(store, "Another joke line unique.", "joke", 0.8, now)
         _push(store, "Another question unique?", "question", 0.8, now)
         line3 = pop_line(store, cfg, question_ratio_roll=0.9)
         check("prefer joke on high roll", line3 is not None and line3["kind"] == "joke")
+        check("pop_line burned joke", store.joke_queue_len("joke") == 0)
 
 
 def test_parse_json_array_tolerant() -> None:
@@ -483,14 +492,24 @@ def test_fsm_happy_path() -> None:
         check("happy reason spoke", r.debug.get("reason") == "spoke")
         check("happy no need_identity", r.need_identity is False)
 
-        # Daily still zero until commit
+        # Daily + queue still unchanged until speech-gated commit
         d = store.joke_load_daily(date)
         check("pre-commit count 0", d["count"] == 0)
+        check("pre-commit queue still 1", store.joke_queue_len() == 1)
+        check(
+            "pre-commit not served",
+            joke_hash(line_text) not in store.joke_all_served_hashes(),
+        )
 
         _apply_speak(r)
         d = store.joke_load_daily(date)
         check("post-commit count 1", d["count"] == 1)
         check("post-commit last_spoke", d["last_spoke_at"] == now)
+        check("post-commit queue empty", store.joke_queue_len() == 0)
+        check(
+            "post-commit marked served",
+            joke_hash(line_text) in store.joke_all_served_hashes(),
+        )
 
         # Cooldown blocks next tick (re-seed queue so line is not the reason)
         _push(store, "Another unique joke for second tick.", "joke", 0.9, now)
@@ -499,15 +518,131 @@ def test_fsm_happy_path() -> None:
         check("cooldown reason", r2.debug.get("reason") == "cooldown")
 
 
+def test_fsm_runtime_arbiter_deny_leaves_queue() -> None:
+    """Arbiter deny after joke planned → queue + served + daily untouched."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        jcfg = _joke_cfg(
+            enabled=True,
+            audience="anyone",
+            min_dwell_s=1,
+            cooldown_s=9000,
+            max_per_day=4,
+            priority=15,
+        )
+        rcfg = load_runtime_config(
+            {
+                "BEHAVIORS_ENABLED": "joke_idle",
+                "SPEECH_MIN_GAP_S": "90",
+                "SPEECH_SUPPRESS_AFTER_VOICE_S": "0",
+            }
+        )
+        wcfg = WorkdayConfig(enabled=False, tz=ZoneInfo("UTC"))
+        rt = BehaviorRuntime(
+            rcfg, wcfg, store, joke_cfg=jcfg, voice_ts_fn=lambda: 0.0
+        )
+        t0 = datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        # Prior proactive speech within min_gap → deny
+        rt.arbiter.record_speech(t0 - 10.0)
+        line_text = "Arbiter deny must not burn this joke line unique."
+        _push(store, line_text, "joke", 0.9, t0)
+        rt.ingest_tick_payload(now=t0 - 10.0, occupied=True, voice_recent=False)
+        result = rt.tick(t0)
+        check("arbiter denied speak empty", result.speak == "")
+        check("queue unburned", store.joke_queue_len() == 1)
+        check(
+            "not served after deny",
+            joke_hash(line_text) not in store.joke_all_served_hashes(),
+        )
+        d = store.joke_load_daily("2026-07-18")
+        check("daily untouched", d["count"] == 0 and d["last_spoke_at"] == 0.0)
+
+
+def test_fsm_workday_priority_leaves_joke_queue() -> None:
+    """Higher-priority workday speech wins; joke queue stays intact."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "joke.db")
+        from behaviors.config import load_workday_config
+        from behaviors.continuity import WorkdayRecord
+        from behaviors.types import WorkdayMode
+
+        jcfg = _joke_cfg(
+            enabled=True,
+            audience="anyone",
+            min_dwell_s=1,
+            cooldown_s=90,
+            max_per_day=24,
+            priority=15,
+        )
+        wcfg = load_workday_config(
+            {
+                "WORKDAY_ENABLED": "1",
+                "WORKDAY_PRIORITY": "50",
+                "WORKDAY_TZ": "UTC",
+                "WORKDAY_START_BEGIN": "00:00",
+                "WORKDAY_START_END": "01:00",
+                "WORKDAY_END": "23:59",
+                "WORKDAY_POKE_INTERVAL_S": "1",
+                "WORKDAY_AWAY_S": "99999",
+            }
+        )
+        rcfg = load_runtime_config(
+            {
+                "BEHAVIORS_ENABLED": "workday,joke_idle",
+                "SPEECH_MIN_GAP_S": "0",
+                "SPEECH_SUPPRESS_AFTER_VOICE_S": "0",
+            }
+        )
+        rt = BehaviorRuntime(
+            rcfg, wcfg, store, joke_cfg=jcfg, voice_ts_fn=lambda: 0.0
+        )
+        t0 = datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        date = "2026-07-18"
+        # Armed workday with poke due
+        rec = WorkdayRecord(
+            date=date,
+            mode=WorkdayMode.WORKING,
+            primary_face_id=1,
+            primary_face_name="Cam",
+            started_at=t0 - 10_000,
+            arm_source="morning",
+            last_poke_at=t0 - 10_000,
+        )
+        store.save_workday(rec)
+        line_text = "Joke that workday priority must not burn unique."
+        _push(store, line_text, "joke", 0.9, t0)
+        rt.ingest_tick_payload(
+            now=t0 - 5.0,
+            occupied=True,
+            voice_recent=False,
+            face={"face_id": 1, "name": "Cam", "is_stranger": False},
+            hard_face=True,
+        )
+        result = rt.tick(t0)
+        check("workday spoke", len(result.speak) > 0)
+        check(
+            "spoke_from workday",
+            (result.debug or {}).get("spoke_from") == "workday",
+        )
+        check("joke queue unburned", store.joke_queue_len() == 1)
+        check(
+            "joke not served",
+            joke_hash(line_text) not in store.joke_all_served_hashes(),
+        )
+        d = store.joke_load_daily(date)
+        check("joke daily not advanced", d["count"] == 0)
+
+
 def test_fsm_denied_speech_no_commit() -> None:
-    """CRITICAL: not calling on_speak_allowed must leave daily state unchanged."""
+    """CRITICAL: not calling on_speak_allowed leaves daily + queue + served unchanged."""
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "joke.db")
         cfg = _joke_cfg(enabled=True, audience="anyone", min_dwell_s=100, cooldown_s=9000)
         b = JokeIdleBehavior(cfg, store)
         now = datetime(2026, 7, 18, 15, 0, tzinfo=ZoneInfo("UTC")).timestamp()
         date = "2026-07-18"
-        _push(store, "A line that will be denied by arbiter sim.", "joke", 0.9, now)
+        line_text = "A line that will be denied by arbiter sim."
+        _push(store, line_text, "joke", 0.9, now)
 
         r = b.tick(_joke_ctx(b, now, occupied=True, identity_fresh=False))
         check("denied setup spoke planned", len(r.speak) > 0)
@@ -516,14 +651,19 @@ def test_fsm_denied_speech_no_commit() -> None:
         d = store.joke_load_daily(date)
         check("denied count unchanged", d["count"] == 0)
         check("denied last_spoke unchanged", d["last_spoke_at"] == 0.0)
+        check("denied queue intact", store.joke_queue_len() == 1)
+        check(
+            "denied not marked served",
+            joke_hash(line_text) not in store.joke_all_served_hashes(),
+        )
 
-        # A later tick (dwell still ok, no cooldown burned) can still plan speech
-        # if we re-seed (first tick already popped the line)
-        _push(store, "Second attempt line after deny.", "joke", 0.9, now)
+        # Same line still available on the next plan (no re-seed needed)
         r2 = b.tick(_joke_ctx(b, now + 30, occupied=True, identity_fresh=False))
-        check("after deny can speak again", len(r2.speak) > 0)
+        check("after deny can speak same line", line_text in r2.speak)
         d2 = store.joke_load_daily(date)
         check("still no commit without allow", d2["count"] == 0 and d2["last_spoke_at"] == 0.0)
+        check("queue still intact before allow", store.joke_queue_len() == 1)
+
 
 
 def test_fsm_identity_gating() -> None:

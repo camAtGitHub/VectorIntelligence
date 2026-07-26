@@ -297,39 +297,67 @@ class ContinuityStore:
             )
             return True
 
+    def _joke_queue_select_row(
+        self, c: sqlite3.Connection, kind: Optional[str] = None
+    ) -> Optional[sqlite3.Row]:
+        """Highest-score queue row (no delete). Caller holds lock + connection."""
+        if kind is None:
+            return c.execute(
+                """
+                SELECT id, text, kind, source, score, text_hash
+                FROM joke_queue
+                ORDER BY score DESC, id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+        return c.execute(
+            """
+            SELECT id, text, kind, source, score, text_hash
+            FROM joke_queue
+            WHERE kind = ?
+            ORDER BY score DESC, id ASC
+            LIMIT 1
+            """,
+            (kind,),
+        ).fetchone()
+
+    @staticmethod
+    def _joke_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": int(row["id"]),
+            "text": row["text"],
+            "kind": row["kind"],
+            "source": row["source"],
+            "score": float(row["score"] if row["score"] is not None else 0.0),
+            "text_hash": row["text_hash"],
+        }
+
+    def joke_queue_peek(self, kind: Optional[str] = None) -> Optional[dict]:
+        """Select highest-score row without deleting. None if empty."""
+        with self._lock, self._conn() as c:
+            row = self._joke_queue_select_row(c, kind)
+            if not row:
+                return None
+            return self._joke_row_to_dict(row)
+
+    def joke_queue_remove(self, text_hash: str) -> bool:
+        """Delete a queued row by text_hash. Returns True if a row was removed."""
+        if not text_hash:
+            return False
+        with self._lock, self._conn() as c:
+            cur = c.execute(
+                "DELETE FROM joke_queue WHERE text_hash = ?", (text_hash,)
+            )
+            return cur.rowcount > 0
+
     def joke_queue_pop(self, kind: Optional[str] = None) -> Optional[dict]:
         """Atomically select highest-score row and delete it. None if empty."""
         with self._lock, self._conn() as c:
-            if kind is None:
-                row = c.execute(
-                    """
-                    SELECT id, text, kind, source, score, text_hash
-                    FROM joke_queue
-                    ORDER BY score DESC, id ASC
-                    LIMIT 1
-                    """
-                ).fetchone()
-            else:
-                row = c.execute(
-                    """
-                    SELECT id, text, kind, source, score, text_hash
-                    FROM joke_queue
-                    WHERE kind = ?
-                    ORDER BY score DESC, id ASC
-                    LIMIT 1
-                    """,
-                    (kind,),
-                ).fetchone()
+            row = self._joke_queue_select_row(c, kind)
             if not row:
                 return None
             c.execute("DELETE FROM joke_queue WHERE id = ?", (row["id"],))
-            return {
-                "text": row["text"],
-                "kind": row["kind"],
-                "source": row["source"],
-                "score": float(row["score"] if row["score"] is not None else 0.0),
-                "text_hash": row["text_hash"],
-            }
+            return self._joke_row_to_dict(row)
 
     def joke_all_served_hashes(self) -> set[str]:
         with self._lock, self._conn() as c:
