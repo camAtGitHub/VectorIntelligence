@@ -19,6 +19,7 @@ from process_state import (
     _mood_state,
     _set_quiet,
 )
+from image_archive import save_submitted_image
 from prompt_voice import PERSONA_MINI
 from response_cleanup import _strip_for_speech
 from routes.models import AmbientQuietRequest, AmbientRequest
@@ -265,6 +266,8 @@ async def ambient(req: AmbientRequest):
         {"type": "image_url",
          "image_url": {"url": f"data:image/jpeg;base64,{req.image}"}},
     ]
+    # Rolling disk archive (best-effort; never blocks ambient on failure).
+    save_submitted_image(req.image, "ambient")
     debug("HTTP RECV POST /v1/ambient", {
         "image_len": len(req.image or ""),
         "obs_note": obs_note[:500],

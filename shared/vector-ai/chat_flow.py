@@ -26,6 +26,7 @@ from process_state import (
     _ALL_FILLER_PHRASES,
     pick_thinking_phrase,
 )
+from image_archive import save_submitted_image
 from prompt_assembly import _effective_face, prepare_messages
 from response_cleanup import clean_response, strip_markdown
 from vision import _GETIMAGE_PAYLOAD, is_vision_intent
@@ -171,6 +172,15 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
             "messages": _redact_messages(messages),
         },
     )
+    if has_image:
+        # Archive frames attached to this chat turn (Wire-Pod getImage follow-up).
+        for part in messages[-1].content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            iu = part.get("image_url")
+            url = iu.get("url") if isinstance(iu, dict) else iu
+            if isinstance(url, str) and url:
+                save_submitted_image(url, "chat")
 
     # Vision-intent backstop: if the user is clearly asking to look at something
     # and no photo is attached yet, force the camera command rather than letting

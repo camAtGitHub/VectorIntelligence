@@ -11,6 +11,9 @@ venv/
 *.log
 *.log.err
 botSdkInfo.json
+# Camera frame rolling archive (vector-ai/images/) — personal/desk photos
+**/vector-ai/images/
+images/
 
 # ── Things created at install time (not part of the source) ──────
 # Wire-Pod is cloned, Whisper/VOSK downloaded, chipper built — locally.
