@@ -4,10 +4,9 @@ import random
 from fastapi import APIRouter
 
 from debug_log import debug
-from llm import LLM_SENSOR_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
+from llm import LLM_SENSOR_TEMPERATURE, MODEL, _llm_timeout, one_shot_spoken_line
 from logging_util import print  # noqa: F401
 from prompt_voice import PERSONA_MINI
-from response_cleanup import _strip_for_speech
 from routes.models import SensorReactionRequest
 
 router = APIRouter()
@@ -66,26 +65,21 @@ async def sensor_reaction(req: SensorReactionRequest):
         "event": req.event, "avoid": req.avoid, "angle": angle, "user_msg": user_msg,
     })
 
-    try:
-        text = await llm_chat_once(
-            [
-                {"role": "system", "content": _SENSOR_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ],
-            model=MODEL,
-            temperature=LLM_SENSOR_TEMPERATURE,
-            top_p=0.95,
-            seed=random.randint(1, 2**31 - 1),
-            timeout=_llm_timeout(connect=8.0, read=30.0),
-            max_tokens=128,
-            tag="sensor_reaction",
-        )
-    except Exception as e:
-        print(f"[sensor_reaction] error: {e}")
-        debug(f"sensor_reaction error: {e}")
-        return {"text": "", "error": str(e)}
-
-    clean = _strip_for_speech(text)
+    clean = await one_shot_spoken_line(
+        [
+            {"role": "system", "content": _SENSOR_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+        model=MODEL,
+        temperature=LLM_SENSOR_TEMPERATURE,
+        top_p=0.95,
+        seed=random.randint(1, 2**31 - 1),
+        timeout=_llm_timeout(connect=8.0, read=30.0),
+        max_tokens=128,
+        tag="sensor_reaction",
+    )
+    # one_shot returns "" on error (no crash); keep prior shape with optional error
+    # only when empty for hard failures is not distinguishable — empty text is fine.
     print(f"[sensor_reaction] {req.event} -> {clean!r}")
     debug("HTTP SEND /v1/sensor_reaction response", {"text": clean})
     return {"text": clean}

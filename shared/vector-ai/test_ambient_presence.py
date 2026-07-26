@@ -349,6 +349,34 @@ def test_ambient_empty_twice_clears(tmp_path, monkeypatch):
         assert rt.presence.occupied_effective(time.time()) is False
 
 
+def test_ambient_image_too_large_skips_llm(tmp_path, monkeypatch):
+    """Absurd base64 length → no LLM call, safe empty response."""
+    import deps
+    import process_state
+    from memory import MemoryStore
+    from routes.ambient import ambient
+    from routes.models import AmbientRequest
+
+    store = MemoryStore(tmp_path / "mem.db")
+    monkeypatch.setattr(deps, "MEMORY", store, raising=False)
+    process_state._set_quiet(False)
+    process_state._ambient_state["last_ambient_call"] = time.time()
+
+    calls = []
+
+    async def _should_not_run(*a, **k):
+        calls.append(1)
+        return "PRESENCE: empty\nNOTHING"
+
+    monkeypatch.setattr("routes.ambient.llm_chat_once", _should_not_run)
+    # Cap is 5.5M chars; use slightly over without allocating multi-GB.
+    huge = "A" * (5_500_000 + 10)
+    result = asyncio.run(ambient(AmbientRequest(image=huge)))
+    assert result.get("text") == ""
+    assert result.get("error") == "image_too_large"
+    assert calls == []
+
+
 def test_ambient_novelty_still_remembers(tmp_path, monkeypatch):
     import deps
     import process_state

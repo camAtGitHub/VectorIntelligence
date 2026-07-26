@@ -10,7 +10,13 @@ from fastapi import APIRouter
 
 import deps
 from debug_log import debug
-from llm import LLM_AMBIENT_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
+from llm import (
+    LLM_AMBIENT_TEMPERATURE,
+    MODEL,
+    _llm_timeout,
+    image_payload_too_large,
+    llm_chat_once,
+)
 from logging_util import print  # noqa: F401
 from process_state import (
     AMBIENT_QUIET_CAP,
@@ -223,6 +229,17 @@ async def ambient(req: AmbientRequest):
     if _ambient_state["quiet"]:
         # No image processed for presence — do not invent empty/person.
         return {"text": "", "quiet": True}
+
+    # Bound absurd base64 payloads before they hit the LLM / memory path.
+    if image_payload_too_large(req.image):
+        print(
+            f"[ambient] image payload too large "
+            f"(chars={len(req.image or '')}) — skipping glance"
+        )
+        debug("HTTP SEND /v1/ambient image_too_large", {
+            "image_len": len(req.image or ""),
+        })
+        return {"text": "", "error": "image_too_large"}
 
     # Recent observations are the dedup baseline. A 24h lookback (wider than
     # the 6h conversational window) keeps a newly-arrived object from being

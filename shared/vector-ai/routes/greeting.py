@@ -7,7 +7,7 @@ from fastapi import APIRouter
 
 import deps
 from debug_log import debug
-from llm import LLM_GREETING_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
+from llm import LLM_GREETING_TEMPERATURE, MODEL, _llm_timeout, one_shot_spoken_line
 from logging_util import print  # noqa: F401
 from process_state import (
     GREETING_ABSENCE_GAP,
@@ -17,7 +17,6 @@ from process_state import (
 )
 from prompt_assembly import _relative_time, _time_of_day
 from prompt_voice import PERSONA_MINI
-from response_cleanup import _strip_for_speech
 from routes.models import GreetingRequest
 
 router = APIRouter()
@@ -100,26 +99,19 @@ async def proactive_greeting(req: GreetingRequest):
     debug("HTTP RECV POST /v1/proactive_greeting", {
         "face_id": fid, "name": name, "bits": bits,
     })
-    try:
-        text = await llm_chat_once(
-            [
-                {"role": "system", "content": _GREETING_SYSTEM},
-                {"role": "user", "content": " ".join(bits) + " Greet them now."},
-            ],
-            model=MODEL,
-            temperature=LLM_GREETING_TEMPERATURE,
-            top_p=0.95,
-            seed=random.randint(1, 2**31 - 1),
-            timeout=_llm_timeout(connect=8.0, read=30.0),
-            max_tokens=128,
-            tag="greeting",
-        )
-    except Exception as e:
-        print(f"[greeting] error: {e}")
-        debug(f"greeting error: {e}")
-        return {"text": "", "error": str(e)}
-
-    line = _strip_for_speech(text)
+    line = await one_shot_spoken_line(
+        [
+            {"role": "system", "content": _GREETING_SYSTEM},
+            {"role": "user", "content": " ".join(bits) + " Greet them now."},
+        ],
+        model=MODEL,
+        temperature=LLM_GREETING_TEMPERATURE,
+        top_p=0.95,
+        seed=random.randint(1, 2**31 - 1),
+        timeout=_llm_timeout(connect=8.0, read=30.0),
+        max_tokens=128,
+        tag="greeting",
+    )
     if line:
         _recent_greetings.append(line)
         del _recent_greetings[:-6]
