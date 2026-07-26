@@ -9,7 +9,6 @@ import deps
 from debug_log import debug
 from llm import LLM_GREETING_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
 from logging_util import print  # noqa: F401
-from persona import PERSONA
 from process_state import (
     GREETING_ABSENCE_GAP,
     _face_last_seen,
@@ -17,6 +16,7 @@ from process_state import (
     _recent_greetings,
 )
 from prompt_assembly import _relative_time, _time_of_day
+from prompt_voice import PERSONA_MINI
 from response_cleanup import _strip_for_speech
 from routes.models import GreetingRequest
 
@@ -29,7 +29,7 @@ router = APIRouter()
 # person sitting at the desk all day isn't greeted over and over.
 
 _GREETING_SYSTEM = (
-    PERSONA + "\n\n"
+    PERSONA_MINI + "\n\n"
     "Someone you know has just come into view; nobody has "
     "said anything yet. Greet them unprompted with ONE short line, in "
     "character, naming them - acknowledge their return without gushing, "

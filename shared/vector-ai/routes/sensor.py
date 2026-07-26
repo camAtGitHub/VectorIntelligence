@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from debug_log import debug
 from llm import LLM_SENSOR_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
 from logging_util import print  # noqa: F401
-from persona import PERSONA
+from prompt_voice import PERSONA_MINI
 from response_cleanup import _strip_for_speech
 from routes.models import SensorReactionRequest
 
@@ -19,7 +19,7 @@ router = APIRouter()
 # commands - those would never be heard since chipper just calls SayText.
 
 _SENSOR_SYSTEM = (
-    PERSONA + "\n\n"
+    PERSONA_MINI + "\n\n"
     "For this request, respond with ONE short sentence reacting to a physical "
     "event that just happened to you. Speak it aloud - plain text only, no "
     "markdown, no quotes, no special tokens like {{...}}, no preamble. "

@@ -11,7 +11,6 @@ import deps
 from debug_log import debug
 from llm import LLM_AMBIENT_TEMPERATURE, MODEL, _llm_timeout, llm_chat_once
 from logging_util import print  # noqa: F401
-from persona import PERSONA
 from process_state import (
     AMBIENT_QUIET_CAP,
     AMBIENT_SLEEP_GAP,
@@ -19,6 +18,7 @@ from process_state import (
     _mood_state,
     _set_quiet,
 )
+from prompt_voice import PERSONA_MINI
 from response_cleanup import _strip_for_speech
 from routes.models import AmbientQuietRequest, AmbientRequest
 
@@ -29,10 +29,11 @@ router = APIRouter()
 # here. Every glance reports machine PRESENCE (for desk occupancy). Novelty
 # speech remains independent: default spoken answer is NOTHING; only genuine
 # novelty yields a short line for Vector to speak (also stored as a visual
-# observation for later recall).
+# observation for later recall). System voice is PERSONA_MINI only (not full
+# persona calibration).
 
 _AMBIENT_SYSTEM = (
-    PERSONA + "\n\n"
+    PERSONA_MINI + "\n\n"
     "You are idling on your desk, camera open, nobody talking to you. You just "
     "glanced around and are looking at a photo of what is in front of you.\n\n"
     "Reply in this exact shape:\n"
@@ -63,8 +64,8 @@ _AMBIENT_SYSTEM = (
     "Line B - spoken. One dry line in your own voice. Sound like you actually "
     "just noticed it: name the thing so someone who cannot see the desk knows "
     "what you spotted, then turn it. Lead normal, swerve late; deadpan, not "
-    "delighted. One or two sentences, no more. Plain text, no markdown, no "
-    "quotes, no {{...}} tokens.\n"
+    "delighted. One or two sentences, no more. Plain speech only — no markdown, "
+    "no quotes, no {{...}} tokens.\n"
     "If there is nothing new: presence line, then NOTHING."
 )
 
