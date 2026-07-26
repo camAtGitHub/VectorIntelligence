@@ -30,6 +30,14 @@ class Memory(NamedTuple):
 # bounded. (The captured images themselves are never stored at all.)
 _OBSERVATION_RETENTION = 7 * 24 * 3600  # seconds
 
+# Semi-stable desk layout: longer than free-text observations. Pruned on write.
+_DESK_ITEM_RETENTION = 30 * 24 * 3600  # seconds
+
+
+def _normalize_desk_name_key(name: str) -> str:
+    """Strip, collapse whitespace, lower — stable unique key for desk items."""
+    return re.sub(r"\s+", " ", (name or "").strip()).lower()
+
 
 class MemoryStore:
     def __init__(self, db_path: Path):
@@ -99,6 +107,24 @@ class MemoryStore:
                     value      TEXT,
                     updated_at REAL
                 )
+            """)
+            # Semi-stable desk layout map: object name → short free-text
+            # location. Separate lifecycle from durable chat facts and from
+            # free-text visual observations. Occupancy stays in PresenceCache.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS desk_items (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name_key     TEXT NOT NULL COLLATE NOCASE,
+                    name_display TEXT NOT NULL,
+                    location     TEXT NOT NULL,
+                    last_seen    REAL NOT NULL,
+                    missing_since REAL,
+                    updated_at   REAL NOT NULL
+                )
+            """)
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_desk_items_name
+                ON desk_items(name_key)
             """)
 
     def remember(
@@ -317,6 +343,99 @@ class MemoryStore:
                 "WHERE seen_at >= ? ORDER BY id DESC LIMIT ?", (cutoff, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # -- Desk location map -----------------------------------------------------
+
+    def upsert_desk_item(
+        self, name: str, location: str, now: Optional[float] = None
+    ) -> None:
+        """Insert or update a desk item's location. Clears missing_since."""
+        name_key = _normalize_desk_name_key(name)
+        location = re.sub(r"\s+", " ", (location or "").strip())
+        if not name_key or not location:
+            return
+        # Prefer latest sighting's display casing when provided.
+        name_display = re.sub(r"\s+", " ", (name or "").strip()) or name_key
+        ts = float(now) if now is not None else datetime.now().timestamp()
+        with self._lock, self._conn() as c:
+            existing = c.execute(
+                "SELECT id, name_display FROM desk_items WHERE name_key = ?",
+                (name_key,),
+            ).fetchone()
+            if existing:
+                # Keep prior display if new name is all-lower identical key only
+                # and we already have a nicer display; otherwise use latest.
+                display = name_display if name_display else existing["name_display"]
+                c.execute(
+                    "UPDATE desk_items SET name_display = ?, location = ?, "
+                    "last_seen = ?, missing_since = NULL, updated_at = ? "
+                    "WHERE name_key = ?",
+                    (display, location, ts, ts, name_key),
+                )
+            else:
+                c.execute(
+                    "INSERT INTO desk_items "
+                    "(name_key, name_display, location, last_seen, "
+                    "missing_since, updated_at) VALUES (?, ?, ?, ?, NULL, ?)",
+                    (name_key, name_display, location, ts, ts),
+                )
+            c.execute(
+                "DELETE FROM desk_items WHERE last_seen < ?",
+                (ts - _DESK_ITEM_RETENTION,),
+            )
+
+    def mark_desk_item_missing(
+        self, name: str, now: Optional[float] = None
+    ) -> None:
+        """Mark a known desk item as missing (does not delete the row)."""
+        name_key = _normalize_desk_name_key(name)
+        if not name_key:
+            return
+        ts = float(now) if now is not None else datetime.now().timestamp()
+        with self._lock, self._conn() as c:
+            c.execute(
+                "UPDATE desk_items SET missing_since = ?, updated_at = ? "
+                "WHERE name_key = ? AND missing_since IS NULL",
+                (ts, ts, name_key),
+            )
+
+    def list_desk_items(
+        self, *, present_only: bool = True, limit: int = 24
+    ) -> List[dict]:
+        """List desk layout rows, newest last_seen first."""
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        with self._lock, self._conn() as c:
+            if present_only:
+                rows = c.execute(
+                    "SELECT id, name_key, name_display, location, last_seen, "
+                    "missing_since, updated_at FROM desk_items "
+                    "WHERE missing_since IS NULL "
+                    "ORDER BY last_seen DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id, name_key, name_display, location, last_seen, "
+                    "missing_since, updated_at FROM desk_items "
+                    "ORDER BY last_seen DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def desk_map_prompt_lines(self, limit: int = 12) -> str:
+        """Short bullet list for ambient prompts; empty string if no items."""
+        items = self.list_desk_items(present_only=True, limit=limit)
+        if not items:
+            return ""
+        # Stable-ish display order: most recently seen first (already sorted).
+        lines = [
+            f"- {it['name_display']}: {it['location']}"
+            for it in items
+            if it.get("name_display") and it.get("location")
+        ]
+        return "\n".join(lines)
 
     # -- Persistent state (key/value) ------------------------------------------
 

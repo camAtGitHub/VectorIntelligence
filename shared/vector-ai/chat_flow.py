@@ -270,6 +270,17 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
             obs_face = mem_face["face_id"] if mem_face else None
             MEMORY.remember_observation(reply[:300], face_id=obs_face)
             print(f"[memory] +observation: {reply[:80]!r}")
+            # Desk layout map: extract durable object→location pairs in the
+            # background so ambient can treat moves as novelty (3A). Failures
+            # swallowed; must not block the streaming path.
+            try:
+                from desk_extract import extract_and_upsert_desk_items
+
+                asyncio.create_task(
+                    extract_and_upsert_desk_items(reply[:300], MEMORY)
+                )
+            except Exception as e:
+                print(f"[desk] schedule extract failed: {e}")
         elif has_image:
             print(f"[memory] observation skipped (reply too thin): {reply!r}")
         # Conversation memory: distil this exchange in the background.

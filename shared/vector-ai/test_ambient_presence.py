@@ -991,3 +991,109 @@ def test_behaviors_tick_http_hard_face_occupies(monkeypatch):
         assert rt.presence.last_person_at > 0
         assert rt.presence.snapshot.face is not None
         assert rt.presence.snapshot.face.name == "Cam"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: desk layout inject into ambient user prompt (3A)
+# ---------------------------------------------------------------------------
+
+def test_ambient_user_prompt_includes_desk_layout(tmp_path, monkeypatch):
+    """When desk_items exist, ambient user text includes Known desk layout."""
+    import deps
+    import process_state
+    from memory import MemoryStore
+    from routes.ambient import ambient
+    from routes.models import AmbientRequest
+
+    store = MemoryStore(tmp_path / "mem.db")
+    store.upsert_desk_item("mug", "left of monitor")
+    store.upsert_desk_item("headphones", "right edge")
+    monkeypatch.setattr(deps, "MEMORY", store, raising=False)
+
+    with tempfile.TemporaryDirectory() as td:
+        cont = ContinuityStore(Path(td) / "w.db")
+        rt = BehaviorRuntime(
+            RuntimeConfig(behaviors_enabled=()),
+            WorkdayConfig(enabled=False, tz=ZoneInfo("UTC")),
+            cont,
+        )
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        process_state._set_quiet(False)
+        process_state._ambient_state["last_ambient_call"] = time.time()
+
+        captured = {}
+
+        async def _llm(messages, *a, **k):
+            # messages[1] is user; content is multimodal list with text part.
+            user = messages[1]["content"]
+            if isinstance(user, list):
+                text = next(
+                    (p.get("text", "") for p in user if p.get("type") == "text"),
+                    "",
+                )
+            else:
+                text = str(user)
+            captured["user_text"] = text
+            return "PRESENCE: empty\nNOTHING"
+
+        monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+        result = asyncio.run(ambient(AmbientRequest(image="x")))
+        assert result["text"] == ""
+        ut = captured.get("user_text") or ""
+        assert "Known desk layout" in ut
+        assert "mug" in ut.lower()
+        assert "left of monitor" in ut.lower()
+        assert "headphones" in ut.lower()
+
+
+def test_ambient_user_prompt_no_layout_when_empty(tmp_path, monkeypatch):
+    """No desk items → no Known desk layout block in user text."""
+    import deps
+    import process_state
+    from memory import MemoryStore
+    from routes.ambient import ambient
+    from routes.models import AmbientRequest
+
+    store = MemoryStore(tmp_path / "mem.db")
+    monkeypatch.setattr(deps, "MEMORY", store, raising=False)
+
+    with tempfile.TemporaryDirectory() as td:
+        cont = ContinuityStore(Path(td) / "w.db")
+        rt = BehaviorRuntime(
+            RuntimeConfig(behaviors_enabled=()),
+            WorkdayConfig(enabled=False, tz=ZoneInfo("UTC")),
+            cont,
+        )
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        process_state._set_quiet(False)
+        process_state._ambient_state["last_ambient_call"] = time.time()
+
+        captured = {}
+
+        async def _llm(messages, *a, **k):
+            user = messages[1]["content"]
+            if isinstance(user, list):
+                text = next(
+                    (p.get("text", "") for p in user if p.get("type") == "text"),
+                    "",
+                )
+            else:
+                text = str(user)
+            captured["user_text"] = text
+            return "PRESENCE: empty\nNOTHING"
+
+        monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+        asyncio.run(ambient(AmbientRequest(image="x")))
+        ut = captured.get("user_text") or ""
+        assert "Known desk layout" not in ut
+
+
+def test_ambient_system_still_has_presence_protocol():
+    """Desk map work must not drop PRESENCE protocol from system prompt."""
+    from routes.ambient import _AMBIENT_SYSTEM
+
+    assert "PRESENCE: empty" in _AMBIENT_SYSTEM
+    assert "PRESENCE: person" in _AMBIENT_SYSTEM
+    assert "NOTHING" in _AMBIENT_SYSTEM
+    # Positive framing about layout / appear-move-vanish.
+    assert "appeared" in _AMBIENT_SYSTEM.lower() or "moved" in _AMBIENT_SYSTEM.lower()

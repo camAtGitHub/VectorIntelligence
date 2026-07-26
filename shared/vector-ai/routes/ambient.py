@@ -1,4 +1,5 @@
 """Ambient observation + quiet-mode HTTP endpoints."""
+import asyncio
 import random
 import re
 import time as _time
@@ -48,14 +49,15 @@ _AMBIENT_SYSTEM = (
     "After the presence line, either the single word NOTHING, or a novelty in "
     "two further lines.\n\n"
     "Your desk barely changes, and NOTHING is the right answer almost every "
-    "time - the usual monitor, mugs, cables and clutter are not news, an empty "
-    "or dim room is not news, and a person you already noted recently is not "
-    "news (still output PRESENCE for them, then NOTHING - do not re-roast the "
-    "same person every glance). React only to something genuinely new since "
-    "the recent observations you will be given: an object that appeared, moved "
-    "or vanished; an animal; a person arriving for the first time; a real mess "
-    "or event. Never invent detail you cannot actually see. When in any doubt, "
-    "answer NOTHING.\n\n"
+    "time. Known desk layout items that are still where they belong are not "
+    "news; static clutter, cables, and an empty or dim room are not news; a "
+    "person you already noted recently is not news (still output PRESENCE for "
+    "them, then NOTHING - do not re-roast the same person every glance). "
+    "After PRESENCE, answer NOTHING unless something appeared, moved, or "
+    "vanished relative to the known desk layout and recent notes you will be "
+    "given — or an animal, a person arriving for the first time, or a real "
+    "mess or event. Never invent detail you cannot actually see. When in any "
+    "doubt, answer NOTHING.\n\n"
     "When there IS something new, give exactly two lines after the presence "
     "line:\n"
     "Line A - memory note, for your own records, never spoken. Plain and "
@@ -237,13 +239,26 @@ async def ambient(req: AmbientRequest):
     else:
         obs_note = "You have not noted anything recently."
 
+    # Semi-stable desk layout (3A): model sees known items and should answer
+    # NOTHING when they are still in place. Cap kept small on purpose.
+    desk_map = ""
+    try:
+        desk_lines = MEMORY.desk_map_prompt_lines(limit=12)
+        if desk_lines:
+            desk_map = (
+                "\n\nKnown desk layout (stable items → NOTHING after PRESENCE; "
+                "speak only on appear/move/vanish):\n" + desk_lines
+            )
+    except Exception as e:
+        print(f"[ambient] desk map load failed: {e}")
+
     mood_note = ""
     if _mood_state["text"]:
         mood_note = (f"\n\nYour current state of mind: {_mood_state['text']}. "
                      f"If you do react, let it tint your tone; never state it.")
     user_msg = [
         {"type": "text", "text":
-            obs_note + mood_note + "\n\nGlance at what is in front of you now. "
+            obs_note + desk_map + mood_note + "\n\nGlance at what is in front of you now. "
             "First line MUST be PRESENCE: empty or PRESENCE: person "
             "(or person:<NameHint>). Then NOTHING, or the two-line novelty "
             "format. Partial people count (torso/arms/hoodie OK without face)."},
@@ -328,6 +343,14 @@ async def ambient(req: AmbientRequest):
         note = spoken
     note = note[:300]
     MEMORY.remember_observation(note)
+    # Update desk map from novelty note only (not PRESENCE lines). Background
+    # so ambient response stays snappy; extract failures are no-ops.
+    try:
+        from desk_extract import extract_and_upsert_desk_items
+
+        asyncio.create_task(extract_and_upsert_desk_items(note, MEMORY))
+    except Exception as e:
+        print(f"[ambient] desk extract schedule failed: {e}")
     print(f"[ambient] NOVELTY note={note!r} -> spoken={spoken!r}")
     return {
         "text": spoken,
