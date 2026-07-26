@@ -1,11 +1,17 @@
-"""Strip markdown, extract memory/work/quiet tags, clean spoken responses."""
+"""Strip markdown, extract memory/work/quiet tags, clean spoken responses.
+
+Split into pure strip helpers (speech-safe text) and side-effect apply paths
+(remember/forget/quiet/work). ``clean_response`` keeps the same call order as
+before: strip markdown → forbidden cmds → apply tags → phrase fixes → || scrub.
+"""
 import re
 import time
 from datetime import datetime
+from typing import List, Optional, Tuple
 
 import deps
 from logging_util import print  # noqa: F401
-from process_state import _set_quiet, current_face
+from process_state import _set_quiet
 from behaviors.workday import parse_work_commands, pause_until_ts
 
 
@@ -49,47 +55,106 @@ _FORGET_RE          = re.compile(r'\{\{forget\|\|([^}]+)\}\}',           re.IGNO
 _QUIET_RE           = re.compile(r'\{\{quietMode\|\|(on|off)\}\}',        re.IGNORECASE)
 
 
-def extract_memory_commands(text: str) -> str:
-    """Find any {{remember[-shared]||...}} or {{forget||...}} in text, act on
-    them, return the text with those commands removed."""
-    MEMORY = deps.MEMORY
-    # Shared memories first - they have no owner.
-    for fact in _REMEMBER_SHARED_RE.findall(text):
-        stored = MEMORY.remember(fact.strip())
-        if stored:
-            print(f"[memory] +remember-shared #{stored.id}: {stored.text!r}")
-        else:
-            print(f"[memory] remember-shared skipped (dup): {fact!r}")
-    text = _REMEMBER_SHARED_RE.sub('', text)
+def _scrub_double_pipes(text: str) -> str:
+    """Strip leftover ``||`` outside intact ``{{...}}`` command blocks."""
+    segments = re.split(r'(\{\{.*?\}\})', text)
+    return "".join(
+        s if s.startswith("{{") and s.endswith("}}") else s.replace("||", "")
+        for s in segments
+    )
 
-    # Personal memories: auto-tag with whoever Vector is looking at right now.
-    # If no face is current, fall back to shared (NULL owner) - better to keep
-    # the fact untagged than to drop it.
-    face = current_face()
-    if face and not face["is_stranger"]:
-        owner_id, owner_name = face["face_id"], face["name"]
+
+def strip_for_speech_text(text: str) -> str:
+    """Pure strip path for spoken text: markdown, forbidden cmds, memory/work
+    tag shells, phrase fixes, and ``||`` scrub. No side effects / no I/O."""
+    if not text:
+        return text or ""
+    text = strip_markdown(text)
+    text = _FORBIDDEN_COMMAND.sub('', text)
+    # Strip tag shells without applying (parse-only for speech purity).
+    text = _REMEMBER_SHARED_RE.sub('', text)
+    text = _REMEMBER_RE.sub('', text)
+    text = _FORGET_RE.sub('', text)
+    text = _QUIET_RE.sub('', text)
+    if text and "{{work" in text.lower():
+        cleaned, _actions = parse_work_commands(text)
+        text = cleaned
+    for pattern, replacement in _PHRASE_FIXES:
+        text = pattern.sub(replacement, text)
+    return _scrub_double_pipes(text)
+
+
+def _remember_owner_face() -> Optional[dict]:
+    """Same effective face as chat inject / prepare_messages."""
+    try:
+        from prompt_assembly import _effective_face
+        return _effective_face()
+    except Exception:
+        return None
+
+
+def parse_memory_tags(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """Pure parse of memory/quiet tags. Returns (text_without_tags, actions).
+
+    Actions are (kind, payload) where kind is remember_shared | remember |
+    forget | quiet.
+    """
+    actions: List[Tuple[str, str]] = []
+    if not text:
+        return text or "", actions
+    for fact in _REMEMBER_SHARED_RE.findall(text):
+        actions.append(("remember_shared", fact.strip()))
+    text = _REMEMBER_SHARED_RE.sub('', text)
+    for fact in _REMEMBER_RE.findall(text):
+        actions.append(("remember", fact.strip()))
+    text = _REMEMBER_RE.sub('', text)
+    for target in _FORGET_RE.findall(text):
+        actions.append(("forget", target.strip()))
+    text = _FORGET_RE.sub('', text)
+    for state in _QUIET_RE.findall(text):
+        actions.append(("quiet", state.strip().lower()))
+    text = _QUIET_RE.sub('', text)
+    return text, actions
+
+
+def apply_memory_actions(actions: List[Tuple[str, str]]) -> None:
+    """Apply parsed memory/quiet actions (side effects)."""
+    if not actions:
+        return
+    MEMORY = deps.MEMORY
+    face = _remember_owner_face()
+    if face and not face.get("is_stranger"):
+        owner_id, owner_name = face.get("face_id"), face.get("name")
     else:
         owner_id, owner_name = None, None
-    for fact in _REMEMBER_RE.findall(text):
-        stored = MEMORY.remember(fact.strip(), face_id=owner_id, face_name=owner_name)
-        if stored:
-            tag = f" [{owner_name}]" if owner_name else " [shared]"
-            print(f"[memory] +remember #{stored.id}{tag}: {stored.text!r}")
-        else:
-            print(f"[memory] remember skipped (dup or empty): {fact!r}")
-    text = _REMEMBER_RE.sub('', text)
+    for kind, payload in actions:
+        if kind == "remember_shared":
+            stored = MEMORY.remember(payload)
+            if stored:
+                print(f"[memory] +remember-shared #{stored.id}: {stored.text!r}")
+            else:
+                print(f"[memory] remember-shared skipped (dup): {payload!r}")
+        elif kind == "remember":
+            stored = MEMORY.remember(
+                payload, face_id=owner_id, face_name=owner_name
+            )
+            if stored:
+                tag = f" [{owner_name}]" if owner_name else " [shared]"
+                print(f"[memory] +remember #{stored.id}{tag}: {stored.text!r}")
+            else:
+                print(f"[memory] remember skipped (dup or empty): {payload!r}")
+        elif kind == "forget":
+            n = MEMORY.forget(payload)
+            print(f"[memory] -forget matched={n} for {payload!r}")
+        elif kind == "quiet":
+            _set_quiet(payload == "on")
 
-    for target in _FORGET_RE.findall(text):
-        n = MEMORY.forget(target.strip())
-        print(f"[memory] -forget matched={n} for {target!r}")
-    text = _FORGET_RE.sub('', text)
 
-    # Quiet mode: {{quietMode||on}} when asked to stop commenting unprompted,
-    # {{quietMode||off}} when told he may resume.
-    for state in _QUIET_RE.findall(text):
-        _set_quiet(state.strip().lower() == "on")
-    text = _QUIET_RE.sub('', text)
-
+def extract_memory_commands(text: str) -> str:
+    """Find {{remember[-shared]||…}} / {{forget||…}} / quiet / work tags, apply
+    side effects, return speech text with those commands removed."""
+    text, mem_actions = parse_memory_tags(text)
+    apply_memory_actions(mem_actions)
     # Work Day control tags (pause / resume / afternoon yes-no).
     text = _apply_work_commands(text)
     return text
@@ -102,7 +167,9 @@ def _apply_work_commands(text: str) -> str:
     cleaned, actions = parse_work_commands(text)
     BEHAVIOR_RUNTIME = deps.BEHAVIOR_RUNTIME
     _workday_cfg = deps._workday_cfg
-    if not actions or BEHAVIOR_RUNTIME.workday is None:
+    if not actions or BEHAVIOR_RUNTIME is None or getattr(
+        BEHAVIOR_RUNTIME, "workday", None
+    ) is None:
         return cleaned if actions else text
     try:
         local_dt = datetime.now(_workday_cfg.tz)
@@ -133,17 +200,18 @@ def _apply_work_commands(text: str) -> str:
 
 
 def clean_response(text: str) -> str:
+    """Speech cleanup with side effects: markdown → forbidden → apply tags →
+    phrase fixes → || scrub. Same order as before the parse/apply split."""
     text = strip_markdown(text)
     text = _FORBIDDEN_COMMAND.sub('', text)
     text = extract_memory_commands(text)
     for pattern, replacement in _PHRASE_FIXES:
         text = pattern.sub(replacement, text)
-    # Strip leftover `||` outside `{{...}}` blocks.
-    segments = re.split(r'(\{\{.*?\}\})', text)
-    return "".join(s if s.startswith("{{") and s.endswith("}}") else s.replace("||", "") for s in segments)
+    return _scrub_double_pipes(text)
 
 
 def _strip_for_speech(text: str) -> str:
+    """One-shot path: strip markdown + all {{…}} shells (no side effects)."""
     text = strip_markdown(text)
     text = re.sub(r'\{\{[^}]*\}\}', '', text)
     text = text.strip().strip('"').strip("'").strip()

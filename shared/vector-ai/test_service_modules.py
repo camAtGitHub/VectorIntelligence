@@ -208,6 +208,37 @@ def test_strip_markdown():
     assert strip_markdown("- item one\n- item two") == "item one\nitem two"
 
 
+def test_sentence_stream_holds_tags_with_periods():
+    """Periods inside unmatched {{…}} must not fracture the buffer."""
+    from llm import split_sentences_from_buffer
+
+    buf = "Noted. {{remember||Dr. Smith is Cam's dentist}} Done. Next sentence."
+    parts, rest = split_sentences_from_buffer(buf)
+    # First plain sentence
+    assert parts[0].strip().startswith("Noted")
+    # Tag with internal period stays whole in one piece
+    joined = " ".join(parts)
+    assert "{{remember||Dr. Smith is Cam's dentist}}" in joined
+    # No fragment that is only "Smith is Cam's dentist}}" without open
+    for p in parts:
+        assert not (
+            "Smith is Cam" in p and "{{" not in p and "Dr." not in p
+        )
+    assert rest == "" or "Next" in " ".join(parts + ([rest] if rest else []))
+
+
+def test_sentence_stream_abbreviations_still_split():
+    from llm import split_sentences_from_buffer
+
+    parts, rest = split_sentences_from_buffer(
+        "I'll note that. Next sentence. "
+    )
+    assert len(parts) >= 2
+    assert "I'll note that." in parts[0]
+    assert "Next sentence." in parts[1]
+    assert rest == ""
+
+
 def test_clean_response_strips_remember(tmp_path, monkeypatch):
     """clean_response must strip {{remember||…}} when MEMORY is a temp store."""
     from response_cleanup import clean_response
@@ -293,6 +324,41 @@ def test_clean_response_strips_work_tags_without_workday(tmp_path, monkeypatch):
     out = clean_response("Fine {{workResume}} continue")
     assert "{{work" not in out.lower()
     assert "Fine" in out and "continue" in out
+
+
+def test_remember_uses_effective_face_single_user(tmp_path, monkeypatch):
+    """No live face + one enrolled profile → remember is personal for that face."""
+    import prompt_assembly
+    from response_cleanup import clean_response
+
+    store = _patch_deps(monkeypatch, tmp_path)
+    # Seed one enrolled profile with a prior personal fact so distinct_faces=1.
+    store.remember("already known about Cam", face_id=7, face_name="Cam")
+    monkeypatch.setattr(prompt_assembly, "current_face", lambda: None)
+
+    out = clean_response("Ok {{remember||likes dark roast}} bye")
+    assert "{{remember" not in out
+    owned = [m for m in store.list_all(limit=20) if "dark roast" in m.text]
+    assert len(owned) == 1
+    assert owned[0].face_id == 7
+    assert (owned[0].face_name or "") == "Cam"
+
+
+def test_remember_stranger_stays_shared(tmp_path, monkeypatch):
+    """Live stranger face → personal remember falls back to shared ownership."""
+    import prompt_assembly
+    from response_cleanup import clean_response
+
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("Cam private fact", face_id=1, face_name="Cam")
+    stranger = {"face_id": -3, "name": "", "is_stranger": True}
+    monkeypatch.setattr(prompt_assembly, "current_face", lambda: stranger)
+
+    out = clean_response("Hmm {{remember||guest mentioned rain}} ok")
+    assert "{{remember" not in out
+    rain = [m for m in store.list_all(limit=20) if "rain" in m.text]
+    assert len(rain) == 1
+    assert rain[0].face_id is None
 
 
 def test_pick_thinking_phrase_nonempty():
@@ -522,10 +588,10 @@ def test_sensor_reaction_returns_text_with_non_ascii(monkeypatch):
 
     hangul_reply = "Pet protocol \uba7f engaged."
 
-    async def _fake_llm(*a, **k):
+    async def _fake_one_shot(*a, **k):
         return hangul_reply
 
-    monkeypatch.setattr("routes.sensor.llm_chat_once", _fake_llm)
+    monkeypatch.setattr("routes.sensor.one_shot_spoken_line", _fake_one_shot)
     out = asyncio.run(sensor_reaction(SensorReactionRequest(event="pet")))
     assert out.get("error") in (None, "")
     assert "error" not in out or not out["error"]

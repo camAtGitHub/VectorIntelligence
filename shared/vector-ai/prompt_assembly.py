@@ -38,16 +38,37 @@ def _extract_last_user_text(messages: list) -> str:
     return ""
 
 
-def _build_memory_section(last_user_text: str = "") -> str:
-    """Identity branches + top-k retrieved facts + short SAVE line."""
+def _build_memory_section(
+    face: Optional[dict] = None, last_user_text: str = ""
+) -> str:
+    """Identity branches + top-k retrieved facts + short SAVE line.
+
+    ``face`` should be the same effective face used for prepare_messages touch
+    and remember ownership (prefer ``_effective_face()``). When omitted, falls
+    back to resolving once via ``_effective_face()``.
+    """
     MEMORY = deps.MEMORY
-    face = current_face()
+    if face is None:
+        face = _effective_face()
     selected = select_memories_for_turn(MEMORY, face, last_user_text)
 
     sections: List[str] = []
 
-    if face and not face["is_stranger"]:
-        sections.append(f"You are currently looking at {face['name']}.")
+    if face and not face.get("is_stranger"):
+        # Effective face may be live detection or single-user enrolled fallback.
+        live = current_face()
+        is_live = bool(
+            live
+            and live.get("face_id") == face.get("face_id")
+            and not live.get("is_stranger")
+        )
+        if is_live:
+            sections.append(f"You are currently looking at {face['name']}.")
+        else:
+            sections.append(
+                f"You're talking to {face['name']} (your primary user). "
+                f"Address them naturally by name."
+            )
         if selected.personal:
             sections.append(
                 f"Things you know about {face['name']}:\n"
@@ -72,7 +93,7 @@ def _build_memory_section(last_user_text: str = "") -> str:
                     for m in selected.mentions
                 )
             )
-    elif face and face["is_stranger"]:
+    elif face and face.get("is_stranger"):
         sections.append(
             "You are currently looking at someone whose face is NOT in your "
             "enrolled list - a stranger. Don't leak personal facts you "
@@ -85,28 +106,12 @@ def _build_memory_section(last_user_text: str = "") -> str:
             "shows you've already asked, don't repeat it, just converse."
         )
     else:
-        # No live face detection. If exactly one person has stored memories,
-        # this is a single-user setup - it's almost certainly them, so use
-        # their profile fully. Only stay cautious when multiple people are
-        # known and we genuinely can't tell who's present.
-        profiles = MEMORY.distinct_faces()
-        if len(profiles) == 1:
-            _pid, pname = profiles[0]
-            sections.append(
-                f"You're talking to {pname} (your primary user). "
-                f"Address them naturally by name."
-            )
-            if selected.personal:
-                sections.append(
-                    f"Things you know about {pname}:\n"
-                    + "\n".join(f"- {m.text}" for m in selected.personal)
-                )
-        else:
-            sections.append(
-                "You can't tell who you're talking to and several people are "
-                "in your memory - be cautious about name-dropping specific "
-                "personal facts until you know who's there."
-            )
+        # No live face and not a single-user fallback.
+        sections.append(
+            "You can't tell who you're talking to and several people are "
+            "in your memory - be cautious about name-dropping specific "
+            "personal facts until you know who's there."
+        )
 
     if selected.shared:
         sections.append(
@@ -143,14 +148,19 @@ def _relative_time(seconds: float) -> str:
 
 
 def _effective_face() -> Optional[dict]:
-    """Who Vector is effectively addressing - the live detected face, or the
-    sole enrolled profile in a single-user setup. Mirrors the face resolution
-    inside _build_memory_section so the system prompt and the per-turn context
-    note always agree on who is present."""
+    """Who Vector is effectively addressing — single source of truth.
+
+    Prefer the live detected face; when none, fall back to the sole enrolled
+    profile in a single-user setup. Used for prepare_messages touch, memory
+    inject, and remember ownership so all three agree.
+    """
     face = current_face()
     if face is not None:
         return face
-    profiles = deps.MEMORY.distinct_faces()
+    try:
+        profiles = deps.MEMORY.distinct_faces()
+    except Exception:
+        return None
     if len(profiles) == 1:
         pid, pname = profiles[0]
         return {"face_id": pid, "name": pname, "is_stranger": False}
@@ -264,7 +274,9 @@ def prepare_messages(messages: list, face: Optional[dict]) -> list:
 
     context_note = _build_context_note(face, prior_meta, now_dt)
     last_user_text = _extract_last_user_text(messages)
-    memory_section = _build_memory_section(last_user_text)
+    # Same face for memory inject as touch/context (caller should pass
+    # _effective_face(); do not re-resolve independently).
+    memory_section = _build_memory_section(face, last_user_text)
 
     # Wire-Pod's system message holds command/vision mechanics; character
     # comes from PERSONA (persona.txt), prepended below.

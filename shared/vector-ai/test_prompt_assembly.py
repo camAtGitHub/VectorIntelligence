@@ -133,7 +133,7 @@ def test_empty_store_blank_slate_one_liner(tmp_path, monkeypatch):
 
     from prompt_assembly import _build_memory_section
 
-    section = _build_memory_section("hi")
+    section = _build_memory_section(face, "hi")
     assert "blank slate" in section.lower() or "NO long-term facts" in section
     assert "Cam" in section
     assert "{{remember||" in section or "remember||" in section
@@ -154,7 +154,7 @@ def test_build_memory_section_caps_bullets(tmp_path, monkeypatch):
 
     from prompt_assembly import _build_memory_section
 
-    section = _build_memory_section("hello")
+    section = _build_memory_section(face, "hello")
     # Count bullet lines under personal section only loosely: total "-" bullets
     # should be well under the old firehose (100+) and near 8+4.
     bullets = [ln for ln in section.splitlines() if ln.strip().startswith("- ")]
@@ -171,11 +171,26 @@ def test_stranger_section_no_personal_bullets(tmp_path, monkeypatch):
 
     from prompt_assembly import _build_memory_section
 
-    section = _build_memory_section("tell me secrets")
+    section = _build_memory_section(stranger, "tell me secrets")
     assert "stranger" in section.lower()
     assert "Nebula" not in section
     assert "Things you know about Cam" not in section
 
+
+def test_build_memory_section_uses_passed_face_not_current(tmp_path, monkeypatch):
+    """Memory section must honor the resolved face, not re-query current_face."""
+    store = _patch_deps(monkeypatch, tmp_path)
+    store.remember("Cam drinks espresso", face_id=1, face_name="Cam")
+    # Live face is stranger, but prepare_messages passed Cam as effective face
+    _set_face(monkeypatch, {"face_id": 99, "name": "x", "is_stranger": True})
+
+    from prompt_assembly import _build_memory_section
+
+    cam = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    section = _build_memory_section(cam, "coffee?")
+    assert "Cam" in section
+    assert "espresso" in section
+    assert "stranger" not in section.lower()
 
 def test_prepare_messages_passes_user_text_for_ranking(tmp_path, monkeypatch):
     store = _patch_deps(monkeypatch, tmp_path)

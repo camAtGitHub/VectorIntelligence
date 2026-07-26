@@ -27,7 +27,7 @@ from process_state import (
     pick_thinking_phrase,
 )
 from image_archive import save_submitted_image
-from prompt_assembly import _effective_face, prepare_messages
+from prompt_assembly import _effective_face, _extract_last_user_text, prepare_messages
 from response_cleanup import clean_response, strip_markdown
 from vision import _GETIMAGE_PAYLOAD, is_vision_intent
 
@@ -156,11 +156,8 @@ async def _summarise_conversation(messages: list, latest_reply: str,
 async def generate(messages: list, temperature: float | None = None) -> AsyncIterator[str]:
     process_state._LAST_USER_VOICE_TS = time.time()  # suppress proactive speech during chat
     temp = LLM_TEMPERATURE if temperature is None else float(temperature)
-    last_user_text = next(
-        (m.content for m in reversed(messages)
-         if m.role == "user" and isinstance(m.content, str)),
-        "",
-    )
+    # Multimodal-aware (joins text parts); matches prepare_messages ranking.
+    last_user_text = _extract_last_user_text(messages)
     has_image = bool(messages) and isinstance(messages[-1].content, list)
     print(f"[vector-ai] User: {last_user_text!r} (image: {has_image})")
     debug(
