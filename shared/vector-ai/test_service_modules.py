@@ -575,7 +575,11 @@ def test_sanitize_chat_image_parts_oversized():
 
 
 def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
-    """generate() strips huge image before archive + prepare_messages/LLM."""
+    """generate() strips huge image before archive + prepare_messages + stream.
+
+    Use non-vision user text so the vision-intent early return does not fire
+    after has_image becomes False (that path would skip prepare/stream).
+    """
     from chat_flow import _OVERSIZED_IMAGE_PLACEHOLDER, generate
 
     class _Msg:
@@ -585,30 +589,43 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
 
     archive_calls: list = []
     prepared_seen: list = []
+    stream_seen: list = []
 
     def _fake_archive(url, source):
         archive_calls.append((url, source))
 
     def _fake_prepare(messages, face):
-        prepared_seen.append(messages)
-        # Inspect last user content after sanitization
+        prepared_seen.append(list(messages))
+        # No oversized payload on any message after sanitize
+        blob = repr(messages)
+        assert "A" * 200 not in blob
+        assert huge not in blob
+        content = (
+            messages[-1].content
+            if hasattr(messages[-1], "content")
+            else messages[-1]["content"]
+        )
+        assert isinstance(content, list)
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "image_url" for p in content
+        )
+        assert any(
+            isinstance(p, dict)
+            and p.get("type") == "text"
+            and _OVERSIZED_IMAGE_PLACEHOLDER in (p.get("text") or "")
+            for p in content
+        )
         return [
             {"role": "system", "content": "sys"},
-            {
-                "role": "user",
-                "content": (
-                    messages[-1].content
-                    if hasattr(messages[-1], "content")
-                    else messages[-1]["content"]
-                ),
-            },
+            {"role": "user", "content": content},
         ]
 
-    async def _fake_stream(messages, temperature=None):
-        # Must not contain the huge base64 blob
+    async def _fake_stream(messages, temperature=None, filler_enabled=True):
+        stream_seen.append(messages)
         blob = json.dumps(messages)
-        assert "A" * 100 not in blob
-        yield "I see a desk."
+        assert "A" * 200 not in blob
+        assert huge not in blob
+        yield "Hello from the stream."
 
     monkeypatch.setattr("chat_flow.save_submitted_image", _fake_archive)
     monkeypatch.setattr("chat_flow.prepare_messages", _fake_prepare)
@@ -618,10 +635,11 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
     monkeypatch.setattr("chat_flow.LLM_API_KEY", "test-key")
 
     huge = "data:image/jpeg;base64," + ("A" * (5_500_000 + 10))
+    # Non-vision text: "hi" must not match is_vision_intent after image strip.
     msg = _Msg(
         "user",
         [
-            {"type": "text", "text": "describe this"},
+            {"type": "text", "text": "hi"},
             {"type": "image_url", "image_url": {"url": huge}},
         ],
     )
@@ -634,11 +652,17 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
 
     joined = asyncio.run(_collect())
     assert archive_calls == []  # oversized not archived
+    assert huge not in [u for u, _ in archive_calls]
     assert _OVERSIZED_IMAGE_PLACEHOLDER in str(msg.content)
     assert not any(
         isinstance(p, dict) and p.get("type") == "image_url" for p in msg.content
     )
-    assert "desk" in joined.lower() or "Hmm" in joined or "[DONE]" in joined
+    # prepare + stream path actually ran (not getImage early return)
+    assert len(prepared_seen) == 1
+    assert len(stream_seen) == 1
+    assert "Hello from the stream" in joined
+    assert "getImage" not in joined
+    assert "[DONE]" in joined
 
 
 def test_ambient_quiet_short_circuits_without_llm(tmp_path, monkeypatch):
