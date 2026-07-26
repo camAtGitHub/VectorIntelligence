@@ -533,6 +533,114 @@ def test_generate_vision_intent_forces_getimage_no_llm():
     assert "[DONE]" in joined
 
 
+def test_sanitize_chat_image_parts_oversized():
+    """Oversized multimodal image → placeholder; not archived; has_image False."""
+    from chat_flow import (
+        _OVERSIZED_IMAGE_PLACEHOLDER,
+        sanitize_chat_image_parts,
+    )
+
+    huge = "data:image/jpeg;base64," + ("A" * 100)
+    ok_url = "data:image/jpeg;base64,abc"
+    content = [
+        {"type": "text", "text": "what is this"},
+        {"type": "image_url", "image_url": {"url": huge}},
+        {"type": "image_url", "image_url": {"url": ok_url}},
+    ]
+    out, archive_urls, has_image = sanitize_chat_image_parts(content, limit=50)
+    assert has_image is True  # ok_url remains
+    assert archive_urls == [ok_url]
+    assert out[0] == {"type": "text", "text": "what is this"}
+    assert out[1] == {"type": "text", "text": _OVERSIZED_IMAGE_PLACEHOLDER}
+    assert out[2]["type"] == "image_url"
+    assert huge not in archive_urls
+    # No original huge payload in any remaining image part
+    for p in out:
+        if isinstance(p, dict) and p.get("type") == "image_url":
+            iu = p.get("image_url")
+            url = iu.get("url") if isinstance(iu, dict) else iu
+            assert url != huge
+            assert "A" * 100 not in (url or "")
+
+    # All oversized → no archive, no image left for LLM
+    only_huge = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": huge}},
+    ]
+    out2, arch2, has2 = sanitize_chat_image_parts(only_huge, limit=50)
+    assert has2 is False
+    assert arch2 == []
+    assert out2[1]["type"] == "text"
+    assert _OVERSIZED_IMAGE_PLACEHOLDER in out2[1]["text"]
+
+
+def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
+    """generate() strips huge image before archive + prepare_messages/LLM."""
+    from chat_flow import _OVERSIZED_IMAGE_PLACEHOLDER, generate
+
+    class _Msg:
+        def __init__(self, role, content):
+            self.role = role
+            self.content = content
+
+    archive_calls: list = []
+    prepared_seen: list = []
+
+    def _fake_archive(url, source):
+        archive_calls.append((url, source))
+
+    def _fake_prepare(messages, face):
+        prepared_seen.append(messages)
+        # Inspect last user content after sanitization
+        return [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "user",
+                "content": (
+                    messages[-1].content
+                    if hasattr(messages[-1], "content")
+                    else messages[-1]["content"]
+                ),
+            },
+        ]
+
+    async def _fake_stream(messages, temperature=None):
+        # Must not contain the huge base64 blob
+        blob = json.dumps(messages)
+        assert "A" * 100 not in blob
+        yield "I see a desk."
+
+    monkeypatch.setattr("chat_flow.save_submitted_image", _fake_archive)
+    monkeypatch.setattr("chat_flow.prepare_messages", _fake_prepare)
+    monkeypatch.setattr("chat_flow.stream_sentences_with_filler", _fake_stream)
+    monkeypatch.setattr("chat_flow._effective_face", lambda: None)
+    # Avoid openrouter key short-circuit
+    monkeypatch.setattr("chat_flow.LLM_API_KEY", "test-key")
+
+    huge = "data:image/jpeg;base64," + ("A" * (5_500_000 + 10))
+    msg = _Msg(
+        "user",
+        [
+            {"type": "text", "text": "describe this"},
+            {"type": "image_url", "image_url": {"url": huge}},
+        ],
+    )
+
+    async def _collect():
+        out = []
+        async for c in generate([msg], temperature=0.5):
+            out.append(c)
+        return "".join(out)
+
+    joined = asyncio.run(_collect())
+    assert archive_calls == []  # oversized not archived
+    assert _OVERSIZED_IMAGE_PLACEHOLDER in str(msg.content)
+    assert not any(
+        isinstance(p, dict) and p.get("type") == "image_url" for p in msg.content
+    )
+    assert "desk" in joined.lower() or "Hmm" in joined or "[DONE]" in joined
+
+
 def test_ambient_quiet_short_circuits_without_llm(tmp_path, monkeypatch):
     """Quiet mode with a recent ambient call returns quiet=True and no LLM hit."""
     import process_state

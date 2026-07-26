@@ -154,6 +154,53 @@ async def _summarise_conversation(messages: list, latest_reply: str,
 
 # -- Main flow -----------------------------------------------------------------
 
+_OVERSIZED_IMAGE_PLACEHOLDER = "[image omitted: payload too large]"
+
+
+def sanitize_chat_image_parts(
+    content: list, *, limit: Optional[int] = None
+) -> tuple[list, list[str], bool]:
+    """Replace oversized multimodal image_url parts with a text placeholder.
+
+    Returns ``(new_content, archive_urls, has_image)`` where:
+    - ``archive_urls`` are only payloads that passed the size check (safe to
+      archive and send upstream);
+    - ``has_image`` is True if any image_url part remains after sanitization.
+
+    Pure aside from the size check; does not archive or call the LLM.
+    """
+    if not isinstance(content, list):
+        return content, [], False
+    out: list = []
+    archive_urls: list[str] = []
+    has_image = False
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "image_url":
+            out.append(part)
+            continue
+        iu = part.get("image_url")
+        url = iu.get("url") if isinstance(iu, dict) else iu
+        if not isinstance(url, str) or not url:
+            out.append(part)
+            continue
+        too_big = (
+            image_payload_too_large(url, limit=limit)
+            if limit is not None
+            else image_payload_too_large(url)
+        )
+        if too_big:
+            print(
+                f"[vector-ai] chat image too large "
+                f"(chars={len(url)}) — dropping image part"
+            )
+            out.append({"type": "text", "text": _OVERSIZED_IMAGE_PLACEHOLDER})
+            continue
+        out.append(part)
+        archive_urls.append(url)
+        has_image = True
+    return out, archive_urls, has_image
+
+
 async def generate(messages: list, temperature: float | None = None) -> AsyncIterator[str]:
     process_state._LAST_USER_VOICE_TS = time.time()  # suppress proactive speech during chat
     temp = LLM_TEMPERATURE if temperature is None else float(temperature)
@@ -172,34 +219,12 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
     )
     if has_image:
         # Bound absurd payloads; strip oversized image parts before archive/LLM.
-        content = list(messages[-1].content)
-        stripped_any = False
-        for i, part in enumerate(content):
-            if not isinstance(part, dict) or part.get("type") != "image_url":
-                continue
-            iu = part.get("image_url")
-            url = iu.get("url") if isinstance(iu, dict) else iu
-            if not isinstance(url, str) or not url:
-                continue
-            if image_payload_too_large(url):
-                print(
-                    f"[vector-ai] chat image too large "
-                    f"(chars={len(url)}) — dropping image part"
-                )
-                content[i] = {
-                    "type": "text",
-                    "text": "[image omitted: payload too large]",
-                }
-                stripped_any = True
-                continue
+        content, archive_urls, has_image = sanitize_chat_image_parts(
+            list(messages[-1].content)
+        )
+        messages[-1].content = content
+        for url in archive_urls:
             save_submitted_image(url, "chat")
-        if stripped_any:
-            messages[-1].content = content
-            # Re-evaluate: all images may have been dropped.
-            has_image = any(
-                isinstance(p, dict) and p.get("type") == "image_url"
-                for p in content
-            )
 
     # Vision-intent backstop: if the user is clearly asking to look at something
     # and no photo is attached yet, force the camera command rather than letting
