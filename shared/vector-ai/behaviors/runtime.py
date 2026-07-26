@@ -52,8 +52,6 @@ class BehaviorRuntime:
         )
         self.behaviors: List[Any] = []
         self.workday: Optional[WorkDayBehavior] = None
-        # Per-behavior last tick time for min_tick_interval (v1 foundation).
-        self._last_behavior_tick: Dict[str, float] = {}
 
         enabled = set(runtime_cfg.behaviors_enabled)
         if "workday" in enabled and workday_cfg.enabled:
@@ -323,17 +321,9 @@ class BehaviorRuntime:
         for b in self.behaviors:
             if not b.enabled():
                 continue
-            # min_tick_interval: skip plan if invoked too often (clock_tick still runs).
-            min_iv = float(getattr(b, "min_tick_interval", 0) or 0)
-            last = self._last_behavior_tick.get(b.id, 0.0)
-            if min_iv > 0 and last > 0 and (now - last) < min_iv:
-                # Still allow ticks that might need identity urgency? v1: skip fully.
-                # Exception: always allow if identity not fresh and we might need it —
-                # keep simple: honor min interval for speech-heavy plan only by
-                # still running plan (interval is 30s; chipper is 60s). Use as soft
-                # guard for future multi-FSM; workday min is 30s so chipper 60s is fine.
-                pass
-            self._last_behavior_tick[b.id] = now
+            # Note: min_tick_interval attributes on plugins are reserved for a
+            # future multi-FSM throttle; runtime does not skip ticks today
+            # (would change chipper cadence). Always plan when enabled.
             r = b.tick(ctx)
             if r.need_identity:
                 need_identity = True

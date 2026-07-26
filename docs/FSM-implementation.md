@@ -73,7 +73,7 @@ Optional but recommended:
 
 | Piece | Role |
 |--------|------|
-| `min_tick_interval` | Soft throttle (seconds); runtime tracks last tick per id |
+| `min_tick_interval` | Reserved attribute (seconds); **not enforced** by runtime today — do not rely on it for correctness until multi-FSM throttle lands |
 | `clock_tick(now, local_dt)` | Time-only transitions when chipper is quiet (Work Day: morning window → no_show) |
 | `status_summary(now) -> str` | One short string for the shared state **card** (e.g. `"working"`, `"dwell_building"`) |
 | `status(now) -> dict` | Full detail + debug for `GET /v1/behaviors/<id>` (JSON-serializable) |

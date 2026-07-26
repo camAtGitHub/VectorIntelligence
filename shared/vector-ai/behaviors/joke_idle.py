@@ -21,6 +21,7 @@ _TAG = "joke_idle"
 
 class JokeIdleBehavior:
     id = JOKE_IDLE_ID
+    # Reserved for a future multi-FSM throttle; runtime does not honor this yet.
     min_tick_interval: float = 30.0
 
     def __init__(self, cfg: JokeConfig, store: ContinuityStore):

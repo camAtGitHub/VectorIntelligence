@@ -847,16 +847,19 @@ def test_behavior_status_workday_and_404() -> None:
 
 
 def test_build_state_index_does_not_call_tick() -> None:
-    """Index is pure observability — no speech path side effects."""
+    """Index is pure observability — no speech path / arbiter side effects."""
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "w.db")
         rcfg = load_runtime_config({"BEHAVIORS_ENABLED": "workday"})
         wcfg = _wd_cfg(enabled=True)
         rt = BehaviorRuntime(rcfg, wcfg, store)
         now = 1_800_000_000.0
-        ticks_before = dict(rt._last_behavior_tick)
+        date = "2027-01-15"
+        rec_before = store.load_workday(date)
+        mode_before = rec_before.mode
         rt.build_state_index(now)
-        check("no tick times advanced", rt._last_behavior_tick == ticks_before)
+        rec_after = store.load_workday(date)
+        check("workday mode unchanged by index", rec_after.mode == mode_before)
         check("arbiter still never spoke", rt.arbiter.last_speech_at is None)
 
 

@@ -102,14 +102,13 @@ def _identified_primary(face: Optional[FaceIdentity], rec: WorkdayRecord) -> boo
 
 class WorkDayBehavior:
     id = "workday"
-    # Spec §3.4: runtime won't invoke tick more often than this (v1 stub).
+    # Reserved for a future multi-FSM throttle; runtime does not honor this yet.
     min_tick_interval: float = 30.0
 
     def __init__(self, cfg: WorkdayConfig, store: ContinuityStore):
         self.cfg = cfg
         self.store = store
         self.priority = cfg.priority
-        self._last_tick_at: float = 0.0
 
     def enabled(self) -> bool:
         return bool(self.cfg.enabled)
@@ -274,6 +273,61 @@ class WorkDayBehavior:
         with self.store.fsm_lock:
             return self.plan(ctx)
 
+    def _apply_clock_transitions(
+        self, rec: WorkdayRecord, now: float, local_dt: datetime
+    ) -> tuple[WorkdayRecord, bool, str]:
+        """Shared clock-driven mode transitions for plan + clock_tick.
+
+        Returns (rec, dirty, note). Mutates ``rec`` in place when dirty.
+        Does not save; caller persists when dirty (and when plan needs early
+        returns for speech-empty outcomes).
+        """
+        note = ""
+        dirty = False
+        # End-of-day for armed / paused / late_check
+        if rec.mode in (
+            WorkdayMode.WORKING,
+            WorkdayMode.LATE_WORKING,
+            WorkdayMode.PAUSED,
+            WorkdayMode.LATE_CHECK,
+        ) and _past(local_dt, self.cfg.end):
+            rec.mode = WorkdayMode.OFF
+            dirty = True
+            note = "work end → off"
+            return rec, dirty, note
+
+        if rec.mode == WorkdayMode.OFF and not _past(local_dt, self.cfg.end):
+            if rec.started_at <= 0 and not _past(local_dt, self.cfg.start_end):
+                rec.mode = WorkdayMode.WAITING_MORNING
+                dirty = True
+                note = "off → waiting_morning"
+
+        if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
+            rec.mode = WorkdayMode.NO_SHOW
+            dirty = True
+            note = "morning window ended → no_show"
+
+        if rec.mode == WorkdayMode.PAUSED:
+            if rec.pause_until > 0 and now >= rec.pause_until:
+                prev_mode = rec.paused_from or WorkdayMode.WORKING.value
+                try:
+                    rec.mode = WorkdayMode(prev_mode)
+                except ValueError:
+                    rec.mode = WorkdayMode.WORKING
+                rec.pause_until = 0.0
+                rec.paused_from = ""
+                dirty = True
+                note = f"pause expired → {rec.mode.value}"
+
+        if rec.mode == WorkdayMode.LATE_CHECK and rec.late_check_asked_at > 0:
+            if (now - rec.late_check_asked_at) >= self.cfg.late_check_timeout_s:
+                rec.mode = WorkdayMode.NO_SHOW
+                rec.late_check_done = True
+                dirty = True
+                note = "late_check timeout → no_show"
+
+        return rec, dirty, note
+
     def plan(self, ctx: BehaviorContext) -> TickResult:
         """Raw desire: speak text / need_identity.
 
@@ -290,55 +344,22 @@ class WorkDayBehavior:
         now = ctx.now
         presence = ctx.presence
         face = presence.face if ctx.identity_fresh else None
-        if face is None and ctx.identity_fresh and presence.face is not None:
-            face = presence.face
 
-        # Day rollover / end-of-day
-        if rec.mode not in (WorkdayMode.OFF, WorkdayMode.WAITING_MORNING) and _past(
-            local_dt, self.cfg.end
-        ):
-            if rec.mode in (
-                WorkdayMode.WORKING,
-                WorkdayMode.LATE_WORKING,
-                WorkdayMode.PAUSED,
-                WorkdayMode.LATE_CHECK,
-            ):
-                rec.mode = WorkdayMode.OFF
-                self.store.save_workday(rec)
-                return TickResult(debug={"mode": "off", "reason": "work_end"})
-
-        if rec.mode == WorkdayMode.OFF and not _past(local_dt, self.cfg.end):
-            if rec.started_at <= 0 and not _past(local_dt, self.cfg.start_end):
-                rec.mode = WorkdayMode.WAITING_MORNING
-                self.store.save_workday(rec)
-
-        if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
-            rec.mode = WorkdayMode.NO_SHOW
+        rec, dirty, note = self._apply_clock_transitions(rec, now, local_dt)
+        if dirty:
             self.store.save_workday(rec)
+            if note == "work end → off":
+                return TickResult(debug={"mode": "off", "reason": "work_end"})
+            if note == "late_check timeout → no_show":
+                return TickResult(debug={"mode": "no_show", "reason": "late_timeout"})
 
         if rec.mode == WorkdayMode.PAUSED:
-            if rec.pause_until > 0 and now >= rec.pause_until:
-                prev = rec.paused_from or WorkdayMode.WORKING.value
-                try:
-                    rec.mode = WorkdayMode(prev)
-                except ValueError:
-                    rec.mode = WorkdayMode.WORKING
-                rec.pause_until = 0.0
-                rec.paused_from = ""
-                self.store.save_workday(rec)
-            else:
+            # Still paused (pause not expired, or just-expired already resumed).
+            if rec.pause_until > 0 and now < rec.pause_until:
                 return TickResult(debug={"mode": "paused", "reason": "paused"})
-
-        # Late check timeout → no_show + late_check_done (no re-ask)
-        if rec.mode == WorkdayMode.LATE_CHECK:
-            if (
-                rec.late_check_asked_at > 0
-                and (now - rec.late_check_asked_at) >= self.cfg.late_check_timeout_s
-            ):
-                rec.mode = WorkdayMode.NO_SHOW
-                rec.late_check_done = True
-                self.store.save_workday(rec)
-                return TickResult(debug={"mode": "no_show", "reason": "late_timeout"})
+            # If pause_until is 0 we already resumed via clock transitions.
+            if rec.mode == WorkdayMode.PAUSED:
+                return TickResult(debug={"mode": "paused", "reason": "paused"})
 
         result = TickResult(debug={"mode": rec.mode.value})
 
@@ -614,38 +635,8 @@ class WorkDayBehavior:
         with self.store.fsm_lock:
             date = _local_date(local_dt)
             rec = self.store.load_workday(date)
-            dirty = False
             prev = rec.mode.value
-            note = ""
-            if rec.mode == WorkdayMode.WAITING_MORNING and _past(local_dt, self.cfg.start_end):
-                rec.mode = WorkdayMode.NO_SHOW
-                dirty = True
-                note = "morning window ended → no_show"
-            if rec.mode in (
-                WorkdayMode.WORKING,
-                WorkdayMode.LATE_WORKING,
-                WorkdayMode.PAUSED,
-                WorkdayMode.LATE_CHECK,
-            ) and _past(local_dt, self.cfg.end):
-                rec.mode = WorkdayMode.OFF
-                dirty = True
-                note = "work end → off"
-            if rec.mode == WorkdayMode.LATE_CHECK and rec.late_check_asked_at > 0:
-                if (now - rec.late_check_asked_at) >= self.cfg.late_check_timeout_s:
-                    rec.mode = WorkdayMode.NO_SHOW
-                    rec.late_check_done = True
-                    dirty = True
-                    note = "late_check timeout → no_show"
-            if rec.mode == WorkdayMode.PAUSED and rec.pause_until > 0 and now >= rec.pause_until:
-                prev_mode = rec.paused_from or WorkdayMode.WORKING.value
-                try:
-                    rec.mode = WorkdayMode(prev_mode)
-                except ValueError:
-                    rec.mode = WorkdayMode.WORKING
-                rec.pause_until = 0.0
-                rec.paused_from = ""
-                dirty = True
-                note = f"pause expired → {rec.mode.value}"
+            rec, dirty, note = self._apply_clock_transitions(rec, now, local_dt)
             if dirty:
                 self.store.save_workday(rec)
                 blog(_TAG, f"clock_tick: {prev} → {rec.mode.value} ({note}) date={date}")
