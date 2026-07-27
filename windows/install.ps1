@@ -629,7 +629,7 @@ Step "OpenRouter (LLM backend)"
 $envFile = Join-Path $VectorAIDir ".env"
 Info "vector-ai uses OpenRouter (OpenAI-compatible). Edit: $envFile"
 Info "  - Set OPENROUTER_API_KEY=...  (required)"
-Info "  - LLM_MODEL / LLM_SUMMARY_MODEL  (OpenRouter model slugs)"
+Info "  - LLM_MODEL / LLM_VISION_MODEL / LLM_SUMMARY_MODEL  (OpenRouter model slugs)"
 Info "  - Personality: edit persona.txt next to .env (not the API key file)"
 Warn "Without OPENROUTER_API_KEY, Vector will not be able to think."
 
@@ -643,7 +643,7 @@ Write-Host ""
 Write-Host "Before first start - LLM key:" -ForegroundColor Yellow
 Write-Host "  Edit  $env:USERPROFILE\vector-pod\vector-ai\.env"
 Write-Host "  Set   OPENROUTER_API_KEY=sk-or-..."
-Write-Host "  Models / history: LLM_MODEL, LLM_SUMMARY_MODEL, LLM_MAX_HISTORY_MESSAGES"
+Write-Host "  Models / history: LLM_MODEL, LLM_VISION_MODEL, LLM_SUMMARY_MODEL, LLM_MAX_HISTORY_MESSAGES"
 Write-Host "  Personality:      $env:USERPROFILE\vector-pod\vector-ai\persona.txt"
 Write-Host ""
 Write-Host "First-time Wire-Pod setup (one time only):" -ForegroundColor Yellow

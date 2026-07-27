@@ -620,7 +620,7 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
             {"role": "user", "content": content},
         ]
 
-    async def _fake_stream(messages, temperature=None, filler_enabled=True):
+    async def _fake_stream(messages, temperature=None, filler_enabled=True, **kwargs):
         stream_seen.append(messages)
         blob = json.dumps(messages)
         assert "A" * 200 not in blob
@@ -838,3 +838,174 @@ def test_install_scripts_list_required_modules():
         text = script.read_text(encoding="utf-8")
         for name in _REQUIRED_INSTALL_MODULES:
             assert name in text, f"{script.name} missing deploy artifact: {name}"
+
+
+# -- LLM model selection (vision / summary / conversation split) ---------------
+
+
+def test_health_exposes_vision_model():
+    """GET /health must list vision_model alongside model / summary_model."""
+    from routes.health import health
+
+    body = asyncio.run(health())
+    assert body.get("status") == "ok"
+    assert "model" in body
+    assert "vision_model" in body
+    assert "summary_model" in body
+    assert isinstance(body["vision_model"], str) and body["vision_model"]
+
+
+def test_ambient_passes_vision_model(tmp_path, monkeypatch):
+    """Ambient LLM call must use VISION_MODEL (not conversation MODEL)."""
+    import process_state
+    from routes.ambient import ambient
+    from routes.models import AmbientRequest
+
+    _patch_deps(monkeypatch, tmp_path)
+    process_state._set_quiet(False)
+    process_state._ambient_state["last_ambient_call"] = 0.0
+
+    seen = {}
+
+    async def _llm(messages, *, model=None, tag=None, **kw):
+        seen["model"] = model
+        seen["tag"] = tag
+        return "PRESENCE: empty\nNOTHING"
+
+    monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+    monkeypatch.setattr("routes.ambient.VISION_MODEL", "vision/test-slug", raising=False)
+    monkeypatch.setattr(
+        "routes.ambient.image_payload_too_large", lambda *a, **k: False
+    )
+    monkeypatch.setattr("routes.ambient.save_submitted_image", lambda *a, **k: None)
+
+    result = asyncio.run(ambient(AmbientRequest(image="fakejpg")))
+    assert result.get("error") in (None, "")
+    assert seen.get("model") == "vision/test-slug"
+    assert seen.get("tag") == "ambient"
+
+
+def test_greeting_passes_summary_model(tmp_path, monkeypatch):
+    """Proactive greeting must use SUMMARY_MODEL (cheap text path)."""
+    import process_state
+    from routes.greeting import proactive_greeting
+    from routes.models import GreetingRequest
+
+    _patch_deps(monkeypatch, tmp_path)
+    # First-seen face → arrived; no recent conversation meta.
+    process_state._face_last_seen.clear()
+    process_state._recent_greetings.clear()
+
+    seen = {}
+
+    async def _one_shot(*a, **k):
+        seen["model"] = k.get("model")
+        seen["tag"] = k.get("tag")
+        return "Oh. Cam. You again."
+
+    monkeypatch.setattr("routes.greeting.one_shot_spoken_line", _one_shot)
+    monkeypatch.setattr(
+        "routes.greeting.SUMMARY_MODEL", "summary/test-slug", raising=False
+    )
+
+    out = asyncio.run(proactive_greeting(GreetingRequest(face_id=1, name="Cam")))
+    assert "Cam" in (out.get("text") or "") or out.get("text")
+    assert seen.get("model") == "summary/test-slug"
+    assert seen.get("tag") == "greeting"
+
+
+def test_sensor_passes_summary_model(monkeypatch):
+    """Sensor reaction must use SUMMARY_MODEL (cheap text path)."""
+    from routes.models import SensorReactionRequest
+    from routes.sensor import sensor_reaction
+
+    seen = {}
+
+    async def _one_shot(*a, **k):
+        seen["model"] = k.get("model")
+        seen["tag"] = k.get("tag")
+        return "Careful with the merchandise."
+
+    monkeypatch.setattr("routes.sensor.one_shot_spoken_line", _one_shot)
+    monkeypatch.setattr(
+        "routes.sensor.SUMMARY_MODEL", "summary/test-slug", raising=False
+    )
+
+    out = asyncio.run(sensor_reaction(SensorReactionRequest(event="pickup")))
+    assert out.get("text")
+    assert seen.get("model") == "summary/test-slug"
+    assert seen.get("tag") == "sensor_reaction"
+
+
+def test_generate_stream_model_text_vs_image(tmp_path, monkeypatch):
+    """Text-only chat: model=None (→ MODEL). Image chat: VISION_MODEL."""
+    from chat_flow import generate
+
+    class _Msg:
+        def __init__(self, role, content):
+            self.role = role
+            self.content = content
+
+    stream_models: list = []
+
+    async def _fake_stream(messages, temperature=None, filler_enabled=True, *, model=None, **kw):
+        stream_models.append(model)
+        yield "Looks fine."
+
+    monkeypatch.setattr("chat_flow.stream_sentences_with_filler", _fake_stream)
+    monkeypatch.setattr(
+        "chat_flow.prepare_messages",
+        lambda msgs, face: [{"role": "user", "content": "x"}],
+    )
+    monkeypatch.setattr("chat_flow._effective_face", lambda: None)
+    monkeypatch.setattr("chat_flow.LLM_API_KEY", "test-key")
+    monkeypatch.setattr("chat_flow.VISION_MODEL", "vision/stream-slug", raising=False)
+    monkeypatch.setattr("chat_flow.save_submitted_image", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "chat_flow.image_payload_too_large", lambda *a, **k: False
+    )
+
+    async def _collect(msgs):
+        out = []
+        async for c in generate(msgs, temperature=0.5):
+            out.append(c)
+        return "".join(out)
+
+    stream_models.clear()
+    joined = asyncio.run(_collect([_Msg("user", "hello there")]))
+    assert "Looks fine" in joined
+    assert stream_models == [None], f"text-only should pass model=None, got {stream_models}"
+
+    stream_models.clear()
+    img_msg = _Msg(
+        "user",
+        [
+            {"type": "text", "text": "what is this"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,abc"},
+            },
+        ],
+    )
+    joined2 = asyncio.run(_collect([img_msg]))
+    assert "Looks fine" in joined2
+    assert stream_models == ["vision/stream-slug"], (
+        f"image chat should pass VISION_MODEL, got {stream_models}"
+    )
+
+
+def test_vision_model_defaults_to_model():
+    """Unset LLM_VISION_MODEL must fall back to LLM_MODEL (import-time binding)."""
+    import llm as llm_mod
+
+    # Module-level defaults: VISION_MODEL is getenv(..., MODEL); when both
+    # come from the same process env they may match. At minimum the constant
+    # is a non-empty string and the env default pattern is MODEL.
+    assert isinstance(llm_mod.VISION_MODEL, str) and llm_mod.VISION_MODEL
+    assert isinstance(llm_mod.MODEL, str) and llm_mod.MODEL
+    # Documented fallback: getenv default is MODEL (same object source).
+    # If operator did not set LLM_VISION_MODEL, values should be equal.
+    import os
+
+    if not os.getenv("LLM_VISION_MODEL"):
+        assert llm_mod.VISION_MODEL == llm_mod.MODEL

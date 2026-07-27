@@ -16,6 +16,7 @@ from llm import (
     LLM_TEMPERATURE,
     MODEL,
     SUMMARY_MODEL,
+    VISION_MODEL,
     _llm_timeout,
     image_payload_too_large,
     llm_chat_once,
@@ -49,13 +50,19 @@ def sse_chunk(content: str = "", finish: Optional[str] = None) -> str:
 
 
 async def stream_sentences_with_filler(
-    messages: list, temperature: float, filler_enabled: bool
+    messages: list,
+    temperature: float,
+    filler_enabled: bool = True,
+    *,
+    model=None,
 ) -> AsyncIterator[str]:
     """Wrap llm_sentence_stream. If the first sentence takes longer than
     THINKING_DELAY to arrive, yield a short thinking-filler line before it so
     Vector acknowledges the question instead of sitting silent. The filler is
-    just an ordinary sentence chunk - it flows through the normal cleanup."""
-    agen = llm_sentence_stream(messages, temperature).__aiter__()
+    just an ordinary sentence chunk - it flows through the normal cleanup.
+    ``model`` is forwarded to the stream (None → LLM_MODEL; vision turns pass
+    VISION_MODEL)."""
+    agen = llm_sentence_stream(messages, temperature, model=model).__aiter__()
     first_task = asyncio.ensure_future(agen.__anext__())
     try:
         if filler_enabled:
@@ -268,8 +275,10 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
         anims_emitted = 0
         any_emitted   = False
         reply_parts   = []
+        # Multimodal getImage replies use VISION_MODEL; text-only stays on MODEL.
+        stream_model = VISION_MODEL if has_image else None
         async for sentence in stream_sentences_with_filler(
-            prepared, temp, filler_enabled=not has_image
+            prepared, temp, filler_enabled=not has_image, model=stream_model
         ):
             cleaned = clean_response(sentence)
 

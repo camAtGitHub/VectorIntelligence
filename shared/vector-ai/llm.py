@@ -29,8 +29,12 @@ LLM_API_KEY = (
     or ""
 ).strip()
 MODEL = os.getenv("LLM_MODEL", "google/gemini-2.0-flash")
-# Cheap/fast model for mood reflection + conversation summaries.
+# Cheap/fast text model for mood, conversation summaries, desk extract,
+# proactive greetings, and sensor quips. Not for images.
 SUMMARY_MODEL = os.getenv("LLM_SUMMARY_MODEL", MODEL)
+# Multimodal path (ambient glances + chat getImage replies).
+# Falls back to MODEL so existing .env installs behave unchanged.
+VISION_MODEL = os.getenv("LLM_VISION_MODEL", MODEL)
 # Cap user/assistant turns forwarded to the upstream LLM (cost/context guard).
 # Wire-Pod may keep a longer local chat; we only send the tail.
 try:
@@ -299,7 +303,10 @@ def split_sentences_from_buffer(buffer: str) -> tuple[list[str], str]:
 
 
 async def llm_sentence_stream(
-    messages: list, temperature: Optional[float] = None
+    messages: list,
+    temperature: Optional[float] = None,
+    *,
+    model: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Stream chat-completion tokens and yield complete sentences as they arrive.
 
@@ -316,6 +323,8 @@ async def llm_sentence_stream(
     A per-request random seed + top_p<1 keeps responses from converging on the
     same high-probability tokens turn after turn (especially noticeable on
     'tell me a joke'). ``temperature=None`` uses ``LLM_TEMPERATURE`` from env.
+    ``model=None`` uses ``MODEL`` (``LLM_MODEL``); pass ``VISION_MODEL`` for
+    multimodal getImage reply turns.
     """
     temp = LLM_TEMPERATURE if temperature is None else float(temperature)
     buffer = ""
@@ -324,7 +333,7 @@ async def llm_sentence_stream(
     first_sentence_seen = False
     full_reply: list[str] = []
     body = {
-        "model":       MODEL,
+        "model":       model or MODEL,
         "messages":    messages,
         "stream":      True,
         "temperature": temp,

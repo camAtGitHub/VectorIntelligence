@@ -95,6 +95,7 @@ Creates:
 OPENROUTER_API_KEY=sk-or-...
 LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_MODEL=google/gemini-2.0-flash
+LLM_VISION_MODEL=google/gemini-2.0-flash
 LLM_SUMMARY_MODEL=google/gemini-2.0-flash-lite
 LLM_MAX_HISTORY_MESSAGES=24
 ```

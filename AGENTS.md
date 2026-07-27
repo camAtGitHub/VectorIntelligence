@@ -256,8 +256,9 @@ one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
 |----------|---------|
 | `OPENROUTER_API_KEY` | Required (or `LLM_API_KEY`) |
 | `LLM_BASE_URL` | Default `https://openrouter.ai/api/v1` |
-| `LLM_MODEL` | Main multimodal model |
-| `LLM_SUMMARY_MODEL` | Mood + conversation summary |
+| `LLM_MODEL` | Interactive chat only (text stream) |
+| `LLM_VISION_MODEL` | Multimodal: ambient glances + chat-with-image (defaults to `LLM_MODEL`) |
+| `LLM_SUMMARY_MODEL` | Mood, conversation summary, desk extract, proactive greeting, sensor quips |
 | `LLM_MAX_HISTORY_MESSAGES` | Turns sent upstream (default 24) |
 | `LLM_TEMPERATURE` | Knowledge chat sampling (default `1.0`; Wire-Pod request temp ignored) |
 | `LLM_SUMMARY_TEMPERATURE` | Conversation summary (default `0.3`) |

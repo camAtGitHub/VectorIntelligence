@@ -16,6 +16,7 @@ from llm import (
     MAX_HISTORY_MESSAGES,
     MODEL,
     SUMMARY_MODEL,
+    VISION_MODEL,
 )
 
 router = APIRouter()
@@ -26,6 +27,7 @@ async def health():
     return {
         "status": "ok",
         "model": MODEL,
+        "vision_model": VISION_MODEL,
         "summary_model": SUMMARY_MODEL,
         "llm_base": LLM_BASE_URL,
         "api_key_set": bool(LLM_API_KEY),

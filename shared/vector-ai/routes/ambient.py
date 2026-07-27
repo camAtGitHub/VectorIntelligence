@@ -12,7 +12,7 @@ import deps
 from debug_log import debug
 from llm import (
     LLM_AMBIENT_TEMPERATURE,
-    MODEL,
+    VISION_MODEL,
     _llm_timeout,
     image_payload_too_large,
     llm_chat_once,
@@ -298,7 +298,7 @@ async def ambient(req: AmbientRequest):
                 {"role": "system", "content": _AMBIENT_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
-            model=MODEL,
+            model=VISION_MODEL,
             temperature=LLM_AMBIENT_TEMPERATURE,
             top_p=0.9,
             seed=random.randint(1, 2**31 - 1),

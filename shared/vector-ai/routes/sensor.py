@@ -4,7 +4,7 @@ import random
 from fastapi import APIRouter
 
 from debug_log import debug
-from llm import LLM_SENSOR_TEMPERATURE, MODEL, _llm_timeout, one_shot_spoken_line
+from llm import LLM_SENSOR_TEMPERATURE, SUMMARY_MODEL, _llm_timeout, one_shot_spoken_line
 from logging_util import print  # noqa: F401
 from prompt_voice import PERSONA_MINI
 from routes.models import SensorReactionRequest
@@ -70,7 +70,7 @@ async def sensor_reaction(req: SensorReactionRequest):
             {"role": "system", "content": _SENSOR_SYSTEM},
             {"role": "user", "content": user_msg},
         ],
-        model=MODEL,
+        model=SUMMARY_MODEL,
         temperature=LLM_SENSOR_TEMPERATURE,
         top_p=0.95,
         seed=random.randint(1, 2**31 - 1),

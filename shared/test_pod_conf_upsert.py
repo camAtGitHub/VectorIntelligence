@@ -265,6 +265,8 @@ def test_behavior_relocate_keys_full_set() -> None:
     assert BEHAVIOR_RELOCATE_KEYS == expected
     assert "OPENROUTER_API_KEY" not in BEHAVIOR_RELOCATE_KEYS
     assert "LLM_MODEL" not in BEHAVIOR_RELOCATE_KEYS
+    assert "LLM_VISION_MODEL" not in BEHAVIOR_RELOCATE_KEYS
+    assert "LLM_SUMMARY_MODEL" not in BEHAVIOR_RELOCATE_KEYS
 
 
 def test_cli_main_upsert_and_help(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

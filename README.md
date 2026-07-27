@@ -209,8 +209,9 @@ Nothing auto-starts at login unless you add that yourself.
 |----------|---------|
 | `OPENROUTER_API_KEY` | Required |
 | `LLM_BASE_URL` | Default `https://openrouter.ai/api/v1` |
-| `LLM_MODEL` | Main multimodal model (default `google/gemini-2.0-flash`) |
-| `LLM_SUMMARY_MODEL` | Mood + conversation summary |
+| `LLM_MODEL` | Interactive chat only (default `google/gemini-2.0-flash`) |
+| `LLM_VISION_MODEL` | Multimodal: ambient + chat-with-image (defaults to `LLM_MODEL`) |
+| `LLM_SUMMARY_MODEL` | Mood, convo summary, desk extract, greeting, sensor quips |
 | `LLM_MAX_HISTORY_MESSAGES` | Turns sent upstream (default 24) |
 | `LLM_TIMEOUT_CONNECT` / `LLM_TIMEOUT_READ` | HTTP timeouts |
 

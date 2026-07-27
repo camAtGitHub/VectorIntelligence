@@ -11,12 +11,17 @@ OPENROUTER_API_KEY=
 # OpenAI-compatible base URL (no trailing slash required)
 LLM_BASE_URL=https://openrouter.ai/api/v1
 
-# Main multimodal model (chat + vision / ambient / getImage).
+# Main conversation model (interactive chat only).
+# Can be a stronger / non-vision model if LLM_VISION_MODEL is set.
 # Browse: https://openrouter.ai/models
 LLM_MODEL=google/gemini-2.0-flash
 
-# Cheap/fast model for mood reflection + conversation summaries.
-# Can be the same as LLM_MODEL if you prefer.
+# Multimodal vision (ambient camera glances + chat replies that include a photo).
+# Defaults to LLM_MODEL if unset. Prefer a vision-capable OpenRouter slug.
+LLM_VISION_MODEL=google/gemini-2.0-flash
+
+# Cheap/fast text model for: mood, conversation summaries, desk extract,
+# proactive greetings, and sensor quips (pickup/pet/fall). Not for images.
 LLM_SUMMARY_MODEL=google/gemini-2.0-flash-lite
 
 # Max user/assistant turns forwarded to the LLM (Wire-Pod may keep more).

@@ -7,7 +7,7 @@ from fastapi import APIRouter
 
 import deps
 from debug_log import debug
-from llm import LLM_GREETING_TEMPERATURE, MODEL, _llm_timeout, one_shot_spoken_line
+from llm import LLM_GREETING_TEMPERATURE, SUMMARY_MODEL, _llm_timeout, one_shot_spoken_line
 from logging_util import print  # noqa: F401
 from process_state import (
     GREETING_ABSENCE_GAP,
@@ -104,7 +104,7 @@ async def proactive_greeting(req: GreetingRequest):
             {"role": "system", "content": _GREETING_SYSTEM},
             {"role": "user", "content": " ".join(bits) + " Greet them now."},
         ],
-        model=MODEL,
+        model=SUMMARY_MODEL,
         temperature=LLM_GREETING_TEMPERATURE,
         top_p=0.95,
         seed=random.randint(1, 2**31 - 1),
