@@ -620,8 +620,11 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
             {"role": "user", "content": content},
         ]
 
+    stream_models: list = []
+
     async def _fake_stream(messages, temperature=None, filler_enabled=True, **kwargs):
         stream_seen.append(messages)
+        stream_models.append(kwargs.get("model"))
         blob = json.dumps(messages)
         assert "A" * 200 not in blob
         assert huge not in blob
@@ -633,6 +636,8 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
     monkeypatch.setattr("chat_flow._effective_face", lambda: None)
     # Avoid openrouter key short-circuit
     monkeypatch.setattr("chat_flow.LLM_API_KEY", "test-key")
+    # Distinct vision slug so a wrong model=VISION would be visible.
+    monkeypatch.setattr("chat_flow.VISION_MODEL", "vision/must-not-use", raising=False)
 
     huge = "data:image/jpeg;base64," + ("A" * (5_500_000 + 10))
     # Non-vision text: "hi" must not match is_vision_intent after image strip.
@@ -660,6 +665,10 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
     # prepare + stream path actually ran (not getImage early return)
     assert len(prepared_seen) == 1
     assert len(stream_seen) == 1
+    # All images stripped → has_image False → model=None (→ MODEL), not vision.
+    assert stream_models == [None], (
+        f"oversized strip must stream with model=None, got {stream_models}"
+    )
     assert "Hello from the stream" in joined
     assert "getImage" not in joined
     assert "[DONE]" in joined
@@ -844,22 +853,39 @@ def test_install_scripts_list_required_modules():
 
 
 def test_health_exposes_vision_model():
-    """GET /health must list vision_model alongside model / summary_model."""
+    """GET /health must list vision_model equal to llm module constants."""
+    import llm as llm_mod
     from routes.health import health
 
     body = asyncio.run(health())
     assert body.get("status") == "ok"
-    assert "model" in body
-    assert "vision_model" in body
-    assert "summary_model" in body
-    assert isinstance(body["vision_model"], str) and body["vision_model"]
+    assert body["model"] == llm_mod.MODEL
+    assert body["vision_model"] == llm_mod.VISION_MODEL
+    assert body["summary_model"] == llm_mod.SUMMARY_MODEL
+
+
+def test_health_reflects_patched_vision_model(monkeypatch):
+    """Health reads the routes.health.VISION_MODEL binding (restart-level env)."""
+    from routes.health import health
+
+    monkeypatch.setattr("routes.health.VISION_MODEL", "vision/health-slug")
+    body = asyncio.run(health())
+    assert body["vision_model"] == "vision/health-slug"
 
 
 def test_ambient_passes_vision_model(tmp_path, monkeypatch):
-    """Ambient LLM call must use VISION_MODEL (not conversation MODEL)."""
+    """Ambient LLM call must use VISION_MODEL (not conversation or summary)."""
     import process_state
+    from pathlib import Path
+
+    import routes.ambient as ambient_mod
     from routes.ambient import ambient
     from routes.models import AmbientRequest
+
+    # Static lock: ambient must never import/use SUMMARY_MODEL for images.
+    ambient_src = Path(ambient_mod.__file__).read_text(encoding="utf-8")
+    assert "SUMMARY_MODEL" not in ambient_src
+    assert "VISION_MODEL" in ambient_src
 
     _patch_deps(monkeypatch, tmp_path)
     process_state._set_quiet(False)
@@ -882,6 +908,7 @@ def test_ambient_passes_vision_model(tmp_path, monkeypatch):
     result = asyncio.run(ambient(AmbientRequest(image="fakejpg")))
     assert result.get("error") in (None, "")
     assert seen.get("model") == "vision/test-slug"
+    assert seen.get("model") != "summary/test-slug"
     assert seen.get("tag") == "ambient"
 
 
@@ -897,11 +924,12 @@ def test_greeting_passes_summary_model(tmp_path, monkeypatch):
     process_state._recent_greetings.clear()
 
     seen = {}
+    fake_line = "Oh. Cam. You again."
 
     async def _one_shot(*a, **k):
         seen["model"] = k.get("model")
         seen["tag"] = k.get("tag")
-        return "Oh. Cam. You again."
+        return fake_line
 
     monkeypatch.setattr("routes.greeting.one_shot_spoken_line", _one_shot)
     monkeypatch.setattr(
@@ -909,7 +937,7 @@ def test_greeting_passes_summary_model(tmp_path, monkeypatch):
     )
 
     out = asyncio.run(proactive_greeting(GreetingRequest(face_id=1, name="Cam")))
-    assert "Cam" in (out.get("text") or "") or out.get("text")
+    assert out.get("text") == fake_line
     assert seen.get("model") == "summary/test-slug"
     assert seen.get("tag") == "greeting"
 
@@ -920,11 +948,12 @@ def test_sensor_passes_summary_model(monkeypatch):
     from routes.sensor import sensor_reaction
 
     seen = {}
+    fake_line = "Careful with the merchandise."
 
     async def _one_shot(*a, **k):
         seen["model"] = k.get("model")
         seen["tag"] = k.get("tag")
-        return "Careful with the merchandise."
+        return fake_line
 
     monkeypatch.setattr("routes.sensor.one_shot_spoken_line", _one_shot)
     monkeypatch.setattr(
@@ -932,7 +961,7 @@ def test_sensor_passes_summary_model(monkeypatch):
     )
 
     out = asyncio.run(sensor_reaction(SensorReactionRequest(event="pickup")))
-    assert out.get("text")
+    assert out.get("text") == fake_line
     assert seen.get("model") == "summary/test-slug"
     assert seen.get("tag") == "sensor_reaction"
 
@@ -994,18 +1023,141 @@ def test_generate_stream_model_text_vs_image(tmp_path, monkeypatch):
     )
 
 
-def test_vision_model_defaults_to_model():
-    """Unset LLM_VISION_MODEL must fall back to LLM_MODEL (import-time binding)."""
+def test_stream_sentences_with_filler_forwards_model(monkeypatch):
+    """Filler wrapper must pass model= through to llm_sentence_stream."""
+    from chat_flow import stream_sentences_with_filler
+
+    seen = {}
+
+    async def _fake_llm_stream(messages, temperature=None, *, model=None):
+        seen["model"] = model
+        yield "One."
+
+    monkeypatch.setattr("chat_flow.llm_sentence_stream", _fake_llm_stream)
+
+    async def _collect():
+        out = []
+        async for s in stream_sentences_with_filler(
+            [{"role": "user", "content": "x"}],
+            0.5,
+            filler_enabled=False,
+            model="vision/fwd-slug",
+        ):
+            out.append(s)
+        return out
+
+    out = asyncio.run(_collect())
+    assert out == ["One."]
+    assert seen.get("model") == "vision/fwd-slug"
+
+    seen.clear()
+
+    async def _collect_default():
+        out = []
+        async for s in stream_sentences_with_filler(
+            [{"role": "user", "content": "x"}],
+            0.5,
+            filler_enabled=False,
+        ):
+            out.append(s)
+        return out
+
+    asyncio.run(_collect_default())
+    assert seen.get("model") is None
+
+
+def test_llm_sentence_stream_model_body(monkeypatch):
+    """Stream request body uses model override; None/empty fall back to MODEL."""
     import llm as llm_mod
 
-    # Module-level defaults: VISION_MODEL is getenv(..., MODEL); when both
-    # come from the same process env they may match. At minimum the constant
-    # is a non-empty string and the env default pattern is MODEL.
+    captured: list = []
+
+    class _StreamCtx:
+        def __init__(self, resp):
+            self.resp = resp
+
+        async def __aenter__(self):
+            return self.resp
+
+        async def __aexit__(self, *a):
+            return None
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_lines(self):
+            chunk = json.dumps(
+                {"choices": [{"delta": {"content": "Hello world."}}]}
+            )
+            yield f"data: {chunk}"
+            yield "data: [DONE]"
+
+        async def aread(self):
+            return b""
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        def stream(self, method, url, headers=None, json=None):
+            captured.append(json)
+            return _StreamCtx(_Resp())
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _Client)
+
+    async def _run(model=None):
+        out = []
+        async for s in llm_mod.llm_sentence_stream(
+            [{"role": "user", "content": "hi"}],
+            temperature=0.5,
+            model=model,
+        ):
+            out.append(s)
+        return out
+
+    captured.clear()
+    sentences = asyncio.run(_run("vision/slug"))
+    assert captured and captured[0]["model"] == "vision/slug"
+    assert any("Hello" in s for s in sentences)
+
+    captured.clear()
+    asyncio.run(_run(None))
+    assert captured and captured[0]["model"] == llm_mod.MODEL
+
+    # Empty string is falsy → same fallback as None (intentional model or MODEL).
+    captured.clear()
+    asyncio.run(_run(""))
+    assert captured and captured[0]["model"] == llm_mod.MODEL
+
+
+def test_sse_chunk_model_label():
+    """SSE payload model field uses override when provided."""
+    from chat_flow import sse_chunk
+    import llm as llm_mod
+
+    raw = sse_chunk("Hi.", model="vision/sse-slug")
+    payload = json.loads(raw[len("data: "):].strip())
+    assert payload["model"] == "vision/sse-slug"
+
+    raw2 = sse_chunk("Hi.")
+    payload2 = json.loads(raw2[len("data: "):].strip())
+    assert payload2["model"] == llm_mod.MODEL
+
+
+def test_vision_model_defaults_to_model():
+    """VISION_MODEL binding falls back to MODEL via getenv default."""
+    import llm as llm_mod
+
+    src = Path(llm_mod.__file__).read_text(encoding="utf-8")
+    assert 'VISION_MODEL = os.getenv("LLM_VISION_MODEL", MODEL)' in src
     assert isinstance(llm_mod.VISION_MODEL, str) and llm_mod.VISION_MODEL
     assert isinstance(llm_mod.MODEL, str) and llm_mod.MODEL
-    # Documented fallback: getenv default is MODEL (same object source).
-    # If operator did not set LLM_VISION_MODEL, values should be equal.
-    import os
-
-    if not os.getenv("LLM_VISION_MODEL"):
-        assert llm_mod.VISION_MODEL == llm_mod.MODEL

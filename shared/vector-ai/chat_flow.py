@@ -34,12 +34,20 @@ from response_cleanup import clean_response, strip_markdown
 from vision import _GETIMAGE_PAYLOAD, is_vision_intent
 
 
-def sse_chunk(content: str = "", finish: Optional[str] = None) -> str:
+def sse_chunk(
+    content: str = "",
+    finish: Optional[str] = None,
+    *,
+    model: Optional[str] = None,
+) -> str:
+    """Build one OpenAI-compatible SSE chunk. ``model`` labels the effective
+    upstream model for this turn (None → MODEL); vision image turns pass
+    VISION_MODEL for debug parity with the stream body."""
     payload = {
         "id":      f"chatcmpl-{uuid.uuid4().hex[:8]}",
         "object":  "chat.completion.chunk",
         "created": int(time.time()),
-        "model":   MODEL,
+        "model":   model or MODEL,
         "choices": [{
             "index":         0,
             "delta":         {"content": content} if content else {},
@@ -54,7 +62,7 @@ async def stream_sentences_with_filler(
     temperature: float,
     filler_enabled: bool = True,
     *,
-    model=None,
+    model: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Wrap llm_sentence_stream. If the first sentence takes longer than
     THINKING_DELAY to arrive, yield a short thinking-filler line before it so
@@ -287,8 +295,8 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
                 # us asking. Switch to camera trigger immediately, stop.
                 if "{{getImage" in cleaned:
                     print("[vector-ai] LLM emitted getImage mid-stream - switching to camera")
-                    yield sse_chunk(_GETIMAGE_PAYLOAD)
-                    yield sse_chunk("", finish="stop")
+                    yield sse_chunk(_GETIMAGE_PAYLOAD, model=stream_model)
+                    yield sse_chunk("", finish="stop", model=stream_model)
                     yield "data: [DONE]\n\n"
                     return
             else:
@@ -309,7 +317,7 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
                 # actually said, so keep them out of memory/observations.
                 if cleaned.strip() not in _ALL_FILLER_PHRASES:
                     reply_parts.append(cleaned.strip())
-                yield sse_chunk(cleaned)
+                yield sse_chunk(cleaned, model=stream_model)
                 any_emitted = True
 
         print(f"[vector-ai] timing: full response {time.monotonic() - t_req:.2f}s")
@@ -352,8 +360,8 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
                 list(messages), reply, mem_face["face_id"], mem_face.get("name")))
 
         if not any_emitted:
-            yield sse_chunk("Hmm.")
-        yield sse_chunk("", finish="stop")
+            yield sse_chunk("Hmm.", model=stream_model)
+        yield sse_chunk("", finish="stop", model=stream_model)
         yield "data: [DONE]\n\n"
     except Exception as e:
         print(f"[vector-ai] Error: {e}")
