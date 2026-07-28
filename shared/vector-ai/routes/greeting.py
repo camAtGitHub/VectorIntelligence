@@ -116,6 +116,9 @@ async def proactive_greeting(req: GreetingRequest):
     if line:
         _recent_greetings.append(line)
         del _recent_greetings[:-6]
+        from speech_notify import schedule_speech_notify
+
+        schedule_speech_notify(line, source="greeting")
     print(f"[greeting] {name} (arrived) -> {line!r}")
     debug("HTTP SEND /v1/proactive_greeting", {"text": line})
     return {"text": line}

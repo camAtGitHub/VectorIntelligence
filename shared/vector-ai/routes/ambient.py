@@ -374,6 +374,10 @@ async def ambient(req: AmbientRequest):
     except Exception as e:
         print(f"[ambient] desk extract schedule failed: {e}")
     print(f"[ambient] NOVELTY note={note!r} -> spoken={spoken!r}")
+    if spoken:
+        from speech_notify import schedule_speech_notify
+
+        schedule_speech_notify(spoken, source="ambient")
     return {
         "text": spoken,
         "presence": presence_kind,

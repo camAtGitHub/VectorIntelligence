@@ -79,6 +79,10 @@ async def sensor_reaction(req: SensorReactionRequest):
         tag="sensor_reaction",
     )
     # Intentional: failures → empty text only (chipper uses text; no error field).
+    if clean:
+        from speech_notify import schedule_speech_notify
+
+        schedule_speech_notify(clean, source="sensor")
     print(f"[sensor_reaction] {req.event} -> {clean!r}")
     debug("HTTP SEND /v1/sensor_reaction response", {"text": clean})
     return {"text": clean}

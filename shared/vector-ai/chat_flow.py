@@ -337,6 +337,11 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
         # eye-colour/animation directives chipper consumed.
         reply = re.sub(r'\{\{[^}]*\}\}', '', " ".join(reply_parts))
         reply = re.sub(r'\s+', ' ', reply).strip()
+        # Mirror spoken chat text to Pushover (fire-and-forget; no TTS wait).
+        if reply:
+            from speech_notify import schedule_speech_notify
+
+            schedule_speech_notify(reply, source="chat")
         mem_face = eff_face if (eff_face and not eff_face.get("is_stranger")
                                 and eff_face.get("face_id")) else None
         MEMORY = deps.MEMORY

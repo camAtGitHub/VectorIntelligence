@@ -63,6 +63,9 @@ async def behaviors_tick(req: BehaviorTickRequest):
     result = deps.BEHAVIOR_RUNTIME.tick(now)
     if result.speak:
         print(f"[behaviors] speak: {result.speak!r} debug={result.debug}")
+        from speech_notify import schedule_speech_notify
+
+        schedule_speech_notify(result.speak, source="behavior")
     elif result.need_identity:
         print(f"[behaviors] need_identity debug={result.debug}")
     out = {

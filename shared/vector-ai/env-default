@@ -64,6 +64,14 @@ LLM_TIMEOUT_READ=120
 # LLM_HTTP_REFERER=https://github.com/yourname/VectorIntelligence
 # LLM_APP_TITLE=VectorIntelligence
 
+# Pushover: mirror every TTS line from vector-ai (chat, greeting, sensor,
+# ambient novelty, workday/joke behaviors). Both keys required; empty = off.
+# App token from https://pushover.net/apps/build → PUSHOVER_APP_KEY
+# User/group key from dashboard → PUSHOVER_USER_KEY
+# PUSHOVER_APP_KEY=
+# PUSHOVER_USER_KEY=
+# PUSHOVER_TIMEOUT_S=3
+
 # Behavior FSMs (Work Day, Joke idle, speech gap, BEHAVIORS_ENABLED, …):
 # configure in pod.conf next to supervisor (vector-pod/pod.conf), NOT here.
 # See shared/config/pod.conf-default and AGENTS.md.
