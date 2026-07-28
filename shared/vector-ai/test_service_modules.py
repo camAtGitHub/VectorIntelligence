@@ -348,6 +348,97 @@ def test_clean_response_strips_work_tags_without_workday(tmp_path, monkeypatch):
     assert "Fine" in out and "continue" in out
 
 
+def test_clean_response_work_afternoon_yes_arms_late_working(tmp_path, monkeypatch):
+    """Model tag path: clean_response → on_afternoon_yes with live WorkDayBehavior."""
+    import time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import deps
+    from behaviors.config import WorkdayConfig
+    from behaviors.continuity import ContinuityStore, WorkdayRecord
+    from behaviors.types import WorkdayMode
+    from behaviors.workday import WorkDayBehavior
+    from response_cleanup import clean_response
+
+    _patch_deps(monkeypatch, tmp_path)
+
+    cont = ContinuityStore(tmp_path / "workday.db")
+    wcfg = WorkdayConfig(enabled=True, tz=ZoneInfo("UTC"))
+    b = WorkDayBehavior(wcfg, cont)
+    today = datetime.now(wcfg.tz).strftime("%Y-%m-%d")
+    now = time.time()
+    cont.save_workday(
+        WorkdayRecord(
+            date=today,
+            mode=WorkdayMode.LATE_CHECK,
+            late_check_asked_at=now,
+            primary_face_id=1,
+            primary_face_name="Cam",
+        )
+    )
+
+    class _RT:
+        workday = b
+
+    monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT(), raising=False)
+    monkeypatch.setattr(deps, "_workday_cfg", wcfg, raising=False)
+
+    out = clean_response("Sure thing. {{workAfternoon||yes}}")
+    assert "{{" not in out
+    assert "workAfternoon" not in out
+    assert "Sure thing" in out
+    rec = cont.load_workday(today)
+    assert rec.mode == WorkdayMode.LATE_WORKING
+    assert rec.late_check_done is True
+    assert rec.arm_source == "late_yes"
+
+
+def test_clean_response_work_afternoon_no_to_no_show(tmp_path, monkeypatch):
+    """Model tag path: clean_response → on_afternoon_no → NO_SHOW."""
+    import time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import deps
+    from behaviors.config import WorkdayConfig
+    from behaviors.continuity import ContinuityStore, WorkdayRecord
+    from behaviors.types import WorkdayMode
+    from behaviors.workday import WorkDayBehavior
+    from response_cleanup import clean_response
+
+    _patch_deps(monkeypatch, tmp_path)
+
+    cont = ContinuityStore(tmp_path / "workday.db")
+    wcfg = WorkdayConfig(enabled=True, tz=ZoneInfo("UTC"))
+    b = WorkDayBehavior(wcfg, cont)
+    today = datetime.now(wcfg.tz).strftime("%Y-%m-%d")
+    now = time.time()
+    cont.save_workday(
+        WorkdayRecord(
+            date=today,
+            mode=WorkdayMode.LATE_CHECK,
+            late_check_asked_at=now,
+            primary_face_id=1,
+            primary_face_name="Cam",
+        )
+    )
+
+    class _RT:
+        workday = b
+
+    monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT(), raising=False)
+    monkeypatch.setattr(deps, "_workday_cfg", wcfg, raising=False)
+
+    out = clean_response("Alright. {{workAfternoon||no}}")
+    assert "{{" not in out
+    assert "workAfternoon" not in out
+    assert "Alright" in out
+    rec = cont.load_workday(today)
+    assert rec.mode == WorkdayMode.NO_SHOW
+    assert rec.late_check_done is True
+
+
 def test_remember_uses_effective_face_single_user(tmp_path, monkeypatch):
     """No live face + one enrolled profile → remember is personal for that face."""
     import prompt_assembly

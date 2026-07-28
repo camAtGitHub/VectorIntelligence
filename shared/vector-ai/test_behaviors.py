@@ -23,7 +23,12 @@ from behaviors.types import (
     WorkdayMode,
 )
 from behaviors.continuity import ContinuityStore, WorkdayRecord
-from behaviors.workday import WorkDayBehavior, parse_work_commands
+from behaviors.workday import (
+    WorkDayBehavior,
+    classify_afternoon_reply,
+    maybe_apply_afternoon_from_user_text,
+    parse_work_commands,
+)
 from behaviors.runtime import BehaviorRuntime
 from behaviors.config import RuntimeConfig, load_runtime_config
 
@@ -341,6 +346,196 @@ def test_parse_work_commands() -> None:
     check("resume", actions == [("resume", "")])
     text, actions = parse_work_commands("{{workAfternoon||no}}")
     check("no action", actions == [("afternoon", "no")])
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: user-text afternoon yes/no backstop
+# ---------------------------------------------------------------------------
+
+def test_classify_afternoon_reply_yes() -> None:
+    yes_cases = [
+        "yes",
+        "Yeah",
+        "yep",
+        "yup",
+        "affirmative",
+        "yes I'm here to work",
+        "yeah i'm working",
+        "working this afternoon",
+        "working afternoon",
+        "I'm here to work",
+        "i am working",
+        "half-day",
+        "half day",
+        "reporting in",
+        "report in",
+        "I'll work",
+    ]
+    for s in yes_cases:
+        check(f"yes: {s!r}", classify_afternoon_reply(s) == "yes")
+
+
+def test_classify_afternoon_reply_no() -> None:
+    no_cases = [
+        "no",
+        "Nope",
+        "nah",
+        "not working",
+        "day off",
+        "off sick",
+        "off today",
+        "not today",
+        "no day off",
+    ]
+    for s in no_cases:
+        check(f"no: {s!r}", classify_afternoon_reply(s) == "no")
+
+
+def test_classify_afternoon_reply_none_and_both() -> None:
+    none_cases = [
+        "",
+        "   ",
+        "what time is it",
+        "tell me a joke",
+        "hello vector",
+        "x" * 300,  # too long free-form
+    ]
+    for s in none_cases:
+        check(f"none: {s!r}"[:60], classify_afternoon_reply(s) is None)
+
+    # Both match → prefer clear decline (exclusive-no wins over yes tokens)
+    both_prefer_no = [
+        "yes but not today",
+        "yeah no day off",
+        "yes not working",
+        "no I'm not working",
+    ]
+    for s in both_prefer_no:
+        check(f"both→no: {s!r}", classify_afternoon_reply(s) == "no")
+
+
+def test_user_text_afternoon_late_check_yes(monkeypatch) -> None:
+    """LATE_CHECK + natural yes → LATE_WORKING without model tags."""
+    import deps
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        wcfg = _wd_cfg()
+        b = WorkDayBehavior(wcfg, store)
+        today = datetime.now(wcfg.tz).strftime("%Y-%m-%d")
+        now = 1_800_000_000.0
+        store.save_workday(WorkdayRecord(
+            date=today,
+            mode=WorkdayMode.LATE_CHECK,
+            late_check_asked_at=now,
+            primary_face_id=1,
+            primary_face_name="Cam",
+        ))
+
+        class _RT:
+            workday = b
+
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT(), raising=False)
+        monkeypatch.setattr(deps, "_workday_cfg", wcfg, raising=False)
+
+        applied = maybe_apply_afternoon_from_user_text(
+            "yes I'm here to work", now=now
+        )
+        check("applied yes", applied == "yes")
+        rec = store.load_workday(today)
+        check("late_working without tags", rec.mode == WorkdayMode.LATE_WORKING)
+        check("late_check_done", rec.late_check_done is True)
+        check("arm late_yes", rec.arm_source == "late_yes")
+
+
+def test_user_text_afternoon_working_yes_no_change(monkeypatch) -> None:
+    """WORKING + 'yes' must not change mode (mode guard)."""
+    import deps
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        wcfg = _wd_cfg()
+        b = WorkDayBehavior(wcfg, store)
+        today = datetime.now(wcfg.tz).strftime("%Y-%m-%d")
+        store.save_workday(WorkdayRecord(
+            date=today,
+            mode=WorkdayMode.WORKING,
+            primary_face_id=1,
+            started_at=1000.0,
+            arm_source="morning",
+        ))
+
+        class _RT:
+            workday = b
+
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT(), raising=False)
+        monkeypatch.setattr(deps, "_workday_cfg", wcfg, raising=False)
+
+        applied = maybe_apply_afternoon_from_user_text("yes", now=2000.0)
+        check("ignored in working", applied is None)
+        rec = store.load_workday(today)
+        check("still working", rec.mode == WorkdayMode.WORKING)
+
+
+def test_user_text_afternoon_late_check_no(monkeypatch) -> None:
+    """LATE_CHECK + 'no' → NO_SHOW + late_check_done."""
+    import deps
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        wcfg = _wd_cfg()
+        b = WorkDayBehavior(wcfg, store)
+        today = datetime.now(wcfg.tz).strftime("%Y-%m-%d")
+        now = 1_800_000_000.0
+        store.save_workday(WorkdayRecord(
+            date=today,
+            mode=WorkdayMode.LATE_CHECK,
+            late_check_asked_at=now,
+            primary_face_id=1,
+        ))
+
+        class _RT:
+            workday = b
+
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT(), raising=False)
+        monkeypatch.setattr(deps, "_workday_cfg", wcfg, raising=False)
+
+        applied = maybe_apply_afternoon_from_user_text("no", now=now)
+        check("applied no", applied == "no")
+        rec = store.load_workday(today)
+        check("no_show after decline", rec.mode == WorkdayMode.NO_SHOW)
+        check("late_check_done after no", rec.late_check_done is True)
+
+
+def test_user_text_afternoon_disabled_or_no_runtime(monkeypatch) -> None:
+    import deps
+
+    class _RT:
+        workday = None
+
+    monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT(), raising=False)
+    monkeypatch.setattr(
+        deps,
+        "_workday_cfg",
+        _wd_cfg(enabled=True),
+        raising=False,
+    )
+    check("no workday plugin", maybe_apply_afternoon_from_user_text("yes") is None)
+
+    monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", None, raising=False)
+    check("no runtime", maybe_apply_afternoon_from_user_text("yes") is None)
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        wcfg = _wd_cfg(enabled=False)
+        b = WorkDayBehavior(wcfg, store)
+
+        class _RT2:
+            workday = b
+
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", _RT2(), raising=False)
+        monkeypatch.setattr(deps, "_workday_cfg", wcfg, raising=False)
+        check("disabled cfg", maybe_apply_afternoon_from_user_text("yes") is None)
 
 
 # ---------------------------------------------------------------------------

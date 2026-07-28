@@ -20,6 +20,21 @@ _SAVE_LINE = (
     "remember; household/world facts with remember-shared."
 )
 
+# Work Day silent tags — only injected when Work Day is live (same gate as day_strip).
+_WORK_LINE = (
+    "WORK DAY (silent tags — never speak them): "
+    "if the user confirms they are working this afternoon or reporting in for half a day, "
+    "include {{workAfternoon||yes}} once; if they decline afternoon work, "
+    "{{workAfternoon||no}}; break until a clock time → {{workPause||until=HH:MM}} (24h); "
+    "back to work → {{workResume}}."
+)
+
+# Emit hint for LATE_CHECK context note (ops day_strip stays status-only).
+_WORK_AWAITING_EMIT = (
+    "If they affirm work / half-day, emit {{workAfternoon||yes}} once; "
+    "if not, {{workAfternoon||no}}."
+)
+
 
 def _extract_last_user_text(messages: list) -> str:
     """Latest user turn as plain text (string content or joined multimodal text)."""
@@ -118,6 +133,12 @@ def _build_memory_section(
         )
 
     sections.append(_SAVE_LINE)
+
+    # WORK silent-tag teach line: stable system prefix, only when Work Day is live.
+    _workday_cfg = deps._workday_cfg
+    BEHAVIOR_RUNTIME = deps.BEHAVIOR_RUNTIME
+    if _workday_cfg.enabled and BEHAVIOR_RUNTIME.workday is not None:
+        sections.append(_WORK_LINE)
 
     return "\n\n".join(sections)
 
@@ -242,6 +263,9 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
                     f"{strip} Use this only if it fits the conversation; "
                     f"do not announce 'work day mode'."
                 )
+                # LATE_CHECK ops strip is status-only; teach emit grammar here.
+                if "awaiting answer" in strip:
+                    bits.append(_WORK_AWAITING_EMIT)
         except Exception as e:
             print(f"[behaviors] day_strip inject failed: {e}")
 

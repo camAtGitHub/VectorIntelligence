@@ -173,6 +173,8 @@ When you talk to Vector, the model may emit short tags (stripped from speech) th
 | `{{workPause\|\|until=14:00}}` | Pause pokes until that local time |
 | `{{workResume}}` | Resume after a pause |
 
+Tags are still preferred for **pause/resume**. **Afternoon yes/no is also accepted from natural short affirmations** (e.g. “yes”, “yeah I’m here to work”, “no”, “day off”) when a late question is open (`late_check` / eligible `no_show`) — applied in vector-ai from user text, without requiring the model to emit a tag. Pause/resume still depend on model tags (or future backstops).
+
 You can also set quiet mode as today for ambient-style hush; Work Day respects quiet for unprompted lines.
 
 ---
@@ -268,6 +270,8 @@ This validates the brain FSM and config without a robot.
 |---------|----------------|
 | Nothing ever work-related | `WORKDAY_ENABLED=1`? Restarted vector-ai? **Full** VI chipper with behavior-tick (not companion-only)? |
 | Always silent on “sick” days | Expected if no morning face arm and no late “yes”. |
+| Said “yes” but day never armed | Chat must hit vector-ai; look for `[workday] user-text afternoon YES` or `[workday] afternoon YES` in logs; mode must be `late_check` or `no_show` (`curl …/v1/behaviors/workday`) |
+| Model never emits tags | User-text backstop should still arm; teaching is in system WORK line when enabled |
 | Wrong morning time | Set `WORKDAY_TZ` to your zone, not only wall-clock on the PC if TZ differs. |
 | Too chatty | Raise `WORKDAY_POKE_INTERVAL_S` / `WORKDAY_AWAY_S`, or use quiet / pause, or disable. |
 | Arms for someone else | Only enrolled primary-style recognition should arm; strangers should not start the day. |

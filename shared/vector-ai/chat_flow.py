@@ -29,6 +29,7 @@ from process_state import (
     pick_thinking_phrase,
 )
 from image_archive import save_submitted_image
+from behaviors.workday import maybe_apply_afternoon_from_user_text
 from prompt_assembly import _effective_face, _extract_last_user_text, prepare_messages
 from response_cleanup import clean_response, strip_markdown
 from vision import _GETIMAGE_PAYLOAD, is_vision_intent
@@ -252,6 +253,11 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
         yield sse_chunk("", finish="stop")
         yield "data: [DONE]\n\n"
         return
+
+    # Work Day afternoon yes/no backstop: apply LATE_CHECK/NO_SHOW arming from
+    # short user affirmations without requiring model tags. Does not short-circuit
+    # the LLM — conversational reply still streams after this.
+    maybe_apply_afternoon_from_user_text(last_user_text)
 
     try:
         if not LLM_API_KEY and "openrouter.ai" in LLM_BASE_URL:

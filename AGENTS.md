@@ -411,7 +411,7 @@ Target **readable, explicit Python 3.11+** suitable for a long-lived desk daemon
 | Config | Load from env with **safe defaults**; never crash import on a bad optional value. |
 | Logging | Prefer timestamped `print` / stdlib logging patterns already in `service.py`. |
 | Persona vs commands | **Prose** in `persona.txt` (full chat pack). Non-chat one-shots use `PERSONA_MINI` from `prompt_voice.py`. Command/vision rules live in Wire-Pod `openai_prompt`. API keys and models stay in `.env`. |
-| LLM tags | Chat may emit structured tags (`{{remember\|\|…}}`, `{{workAfternoon\|\|yes\|no}}`, `{{workPause\|\|until=HH:MM}}`, `{{workResume}}`). **Strip before speech.** Keep real chipper commands such as `{{newVoiceRequest\|\|…}}` / `{{getImage\|\|…}}` for execution. |
+| LLM tags | Chat may emit structured tags (`{{remember\|\|…}}`, `{{workAfternoon\|\|yes\|no}}`, `{{workPause\|\|until=HH:MM}}`, `{{workResume}}`). **Strip before speech.** Keep real chipper commands such as `{{newVoiceRequest\|\|…}}` / `{{getImage\|\|…}}` for execution. Work Day also has a **user-text backstop** for afternoon yes/no when mode allows (`late_check` / eligible `no_show`) — brain only, no chipper tags. |
 | Side effects | Speech-gated commits via `TickResult.on_speak_allowed` — do not advance poke/away/late timers when the arbiter denied speech. |
 
 ### Behavior plugin contract

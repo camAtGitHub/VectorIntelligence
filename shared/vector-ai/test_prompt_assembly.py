@@ -227,3 +227,167 @@ def test_extract_last_user_text_multimodal():
         )
     ]
     assert _extract_last_user_text(messages) == "what is this"
+
+
+# --- Work Day silent-tag teaching (Phase 1) ---------------------------------
+
+
+def test_work_line_absent_when_workday_disabled(tmp_path, monkeypatch):
+    """Workday disabled (default _patch_deps) → no _WORK_LINE teach string.
+
+    Persona may still mention workAfternoon (leave persona as-is); this test
+    only asserts the gated _WORK_LINE is not injected into memory/system.
+    """
+    _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import _WORK_LINE, _build_memory_section, prepare_messages
+
+    section = _build_memory_section(face, "hi")
+    assert _WORK_LINE not in section
+    assert "WORK DAY (silent tags" not in section
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="hello"),
+    ]
+    out = prepare_messages(messages, face)
+    system = out[0]["content"]
+    assert _WORK_LINE not in system
+    assert "WORK DAY (silent tags" not in system
+
+
+def test_work_line_present_when_workday_enabled(tmp_path, monkeypatch):
+    """Workday enabled + non-None runtime → stable prefix has WORK silent tags."""
+    import deps
+
+    store = _patch_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        deps,
+        "_workday_cfg",
+        type("C", (), {"tz": None, "enabled": True})(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        deps,
+        "BEHAVIOR_RUNTIME",
+        type("RT", (), {"workday": object()})(),
+        raising=False,
+    )
+    # Continuity may be touched by prepare_messages context note; stub empty strip.
+    monkeypatch.setattr(
+        deps,
+        "_continuity",
+        type("Cont", (), {"day_strip": staticmethod(lambda _d: "")})(),
+        raising=False,
+    )
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import _build_memory_section, prepare_messages
+
+    section = _build_memory_section(face, "hi")
+    assert "{{workAfternoon||yes}}" in section
+    assert "{{workAfternoon||no}}" in section
+    assert "{{workResume}}" in section
+    assert "WORK DAY" in section
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="hello"),
+    ]
+    out = prepare_messages(messages, face)
+    system = out[0]["content"]
+    assert "{{workAfternoon||yes}}" in system
+    assert "WORK DAY" in system
+    # Memory store was used; keep lint quiet if unused path changes.
+    assert store is not None
+
+
+def test_context_note_emit_when_awaiting_answer(tmp_path, monkeypatch):
+    """LATE_CHECK strip with 'awaiting answer' → context note gets emit instruction."""
+    import deps
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        deps,
+        "_workday_cfg",
+        type("C", (), {"tz": None, "enabled": True})(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        deps,
+        "BEHAVIOR_RUNTIME",
+        type("RT", (), {"workday": object()})(),
+        raising=False,
+    )
+    late_strip = (
+        "Work day: asked if user is working this afternoon (awaiting answer)."
+    )
+    monkeypatch.setattr(
+        deps,
+        "_continuity",
+        type("Cont", (), {"day_strip": staticmethod(lambda _d: late_strip)})(),
+        raising=False,
+    )
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import _build_context_note, prepare_messages
+
+    note = _build_context_note(face, None, datetime.now())
+    assert "awaiting answer" in note
+    assert "{{workAfternoon||yes}}" in note
+    assert "{{workAfternoon||no}}" in note
+    assert "emit" in note.lower()
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="yes I'm working"),
+    ]
+    out = prepare_messages(messages, face)
+    # Context note rides on the latest user turn, not system.
+    user_content = out[-1]["content"]
+    assert isinstance(user_content, str)
+    assert "{{workAfternoon||yes}}" in user_content
+    assert "awaiting answer" in user_content
+
+
+def test_context_note_no_emit_when_not_awaiting(tmp_path, monkeypatch):
+    """Non-late strip still injects status but no emit-tag sentence."""
+    import deps
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        deps,
+        "_workday_cfg",
+        type("C", (), {"tz": None, "enabled": True})(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        deps,
+        "BEHAVIOR_RUNTIME",
+        type("RT", (), {"workday": object()})(),
+        raising=False,
+    )
+    working_strip = "Work day: user is working."
+    monkeypatch.setattr(
+        deps,
+        "_continuity",
+        type("Cont", (), {"day_strip": staticmethod(lambda _d: working_strip)})(),
+        raising=False,
+    )
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+
+    from prompt_assembly import _build_context_note
+
+    note = _build_context_note(face, None, datetime.now())
+    assert "working" in note.lower()
+    # WORK line is in memory/system, not this emit-only sentence.
+    assert "If they affirm work / half-day, emit" not in note

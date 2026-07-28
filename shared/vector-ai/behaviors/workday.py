@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime, timedelta, tzinfo
 from enum import Enum
 from typing import List, Optional, Tuple
+
+import deps
 
 from .config import WorkdayConfig, minutes_since_midnight, parse_hhmm
 from .continuity import ContinuityStore, WorkdayRecord
@@ -679,3 +682,117 @@ def pause_until_ts(local_dt: datetime, until_hhmm: str, tz: tzinfo) -> float:
     if target.timestamp() <= local_dt.timestamp():
         target = target + timedelta(days=1)
     return target.timestamp()
+
+
+# -- User-text afternoon yes/no backstop (copy vision-intent pattern) --------
+# Deterministic apply from spoken/chat user text so half-day report-in does
+# not depend on the model emitting {{workAfternoon||yes}}. Mode guards stay
+# on WorkDayBehavior.on_afternoon_yes / on_afternoon_no.
+
+_AFTERNOON_YES_RE = re.compile(
+    r"\b("
+    r"yes|yeah|yep|yup|affirmative"
+    r"|working\s+(?:this\s+)?afternoon"
+    r"|i(?:'m|\s+am)\s+(?:here\s+)?(?:to\s+)?work(?:ing)?"
+    r"|half[- ]?day"
+    r"|report(?:ing)?\s+in"
+    r"|i\s+am\s+working"
+    r"|i(?:'ll|\s+will)\s+work"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_AFTERNOON_NO_RE = re.compile(
+    r"\b("
+    r"no|nope|nah"
+    r"|not\s+working"
+    r"|day\s+off"
+    r"|off\s+(?:sick|today)"
+    r"|not\s+today"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Short STT-style affirmations only; long free-form → None (LLM + tags).
+_AFTERNOON_REPLY_MAX_LEN = 240
+
+
+def classify_afternoon_reply(user_text: str) -> Optional[str]:
+    """Return 'yes' | 'no' | None from user utterance. Pure. No I/O.
+
+    If both yes and no patterns match, prefer clear decline ('no') so phrases
+    like "yes but not today" / "no I'm not working" do not arm the day.
+    Exclusive yes or exclusive no returns that label; empty / too long → None.
+    """
+    if not user_text:
+        return None
+    text = user_text.strip()
+    if not text or len(text) > _AFTERNOON_REPLY_MAX_LEN:
+        return None
+    yes = bool(_AFTERNOON_YES_RE.search(text))
+    no = bool(_AFTERNOON_NO_RE.search(text))
+    if yes and no:
+        # Prefer exclusive-decline: clear no phrase wins over yes tokens.
+        return "no"
+    if yes:
+        return "yes"
+    if no:
+        return "no"
+    return None
+
+
+def maybe_apply_afternoon_from_user_text(
+    user_text: str, *, now: float | None = None
+) -> Optional[str]:
+    """If workday enabled and mode allows, apply yes/no from user text.
+
+    Returns 'yes'|'no'|None for logging/tests. Does not short-circuit the LLM.
+    Delegates mode guards to on_afternoon_yes / on_afternoon_no (no bypass).
+    """
+    rt = deps.BEHAVIOR_RUNTIME
+    cfg = deps._workday_cfg
+    if rt is None or getattr(rt, "workday", None) is None:
+        return None
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return None
+
+    decision = classify_afternoon_reply(user_text)
+    if decision is None:
+        return None
+
+    try:
+        local_dt = datetime.now(cfg.tz)
+        date_s = local_dt.strftime("%Y-%m-%d")
+        ts = float(now) if now is not None else time.time()
+        rec = rt.workday.store.load_workday(date_s)
+        mode = rec.mode
+
+        if decision == "yes":
+            if mode not in (WorkdayMode.LATE_CHECK, WorkdayMode.NO_SHOW):
+                blog(
+                    _TAG,
+                    f"user-text afternoon YES ignored (mode={mode.value})",
+                    verbose=True,
+                )
+                return None
+            rt.workday.on_afternoon_yes(date_s, now=ts)
+            blog(_TAG, f"user-text afternoon YES for {date_s}")
+            print(f"[workday] user-text afternoon YES for {date_s}")
+            return "yes"
+
+        if decision == "no":
+            if mode != WorkdayMode.LATE_CHECK:
+                blog(
+                    _TAG,
+                    f"user-text afternoon NO ignored (mode={mode.value})",
+                    verbose=True,
+                )
+                return None
+            rt.workday.on_afternoon_no(date_s)
+            blog(_TAG, f"user-text afternoon NO for {date_s}")
+            print(f"[workday] user-text afternoon NO for {date_s}")
+            return "no"
+    except Exception as e:
+        blog(_TAG, f"user-text afternoon apply failed: {e}")
+        print(f"[workday] user-text afternoon apply failed: {e}")
+    return None
