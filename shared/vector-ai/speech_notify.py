@@ -71,6 +71,7 @@ async def send_speech_pushover(
         "message": message,
         "title": title,
         "timestamp": str(int(time.time())),
+        "sound": "none",
     }
     try:
         async with httpx.AsyncClient(timeout=_timeout_s()) as client:
