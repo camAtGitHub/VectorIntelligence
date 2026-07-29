@@ -4,8 +4,9 @@
 **Branch:** `growBotHarness`  
 **Repo:** VectorIntelligence (`shared/vector-ai/`)  
 **Spec prior art:** `docs/superpowers/specs/2026-07-29-soul-melting-pot-design.md` (v1 melting pot)  
-**Goal:** Make SOUL durable across restarts; expose a **self-explanatory, relative-time** view for ops and LLMs; inject more soul context into chat (full) and thinner slices into one-shots; add **goals[3]** and **last night I dreamed about**.  
-**Execute with:** `/do` after review.
+**Goal:** Make SOUL durable across restarts; expose a **self-explanatory, relative-time** view for ops and LLMs; inject soul context into chat (full) / greeting (lite); add **goals[3]** and **last night I dreamed about**; and provide **explicit LLM-triggerable paths** to **dream**, **set/update goals**, and **aspire/grow** — always with a **full soul view** in those jobs, guided by GrowBot-style dream/goals prompts.  
+**Execute with:** `/do` after review.  
+**GrowBot prior art:** conversation soul snapshot (`soul_format` 3) — `dream.system_prompt`, `goals.wants` / `nextTry` / `fun`, identity patch rules; VectorIntelligence melting pot design GrowBot mapping.
 
 ---
 
@@ -36,10 +37,14 @@
 | D2 | **Internal** Python attrs may keep short names (`last_spoke_at`); **export views** (`llm_view` / GET body) use **long snake_case keys** that read as English. |
 | D3 | All timestamps in LLM/ops export views are **elapsed-time English sentences** generated at read time — **no raw unix**. Preferred shapes (pick one family and stick to it in `soul/view.py`): **“It has been X minutes/hours/days since …”**, **“Time since …: X minutes/hours/days”**, or **“… was X minutes/hours/days ago”**. Never bare numbers or epoch. Internal `soul.json` may still store unix for reload. |
 | D4 | **Full soul strip** on interactive **chat** (`prepare_messages` / context note). **Lite strip** on greeting (and optionally mood digest). **None/minimal** on ambient/sensor one-shots (cost + length). |
-| D5 | **goals**: exactly **3** string slots (pad/truncate). Persist. Editable later via API optional in phase; seed empty or sensible defaults. |
-| D6 | **last_night_i_dreamed_about**: one string field (empty default). Persist. No dream LLM job in this plan — field only (populate later or manually via POST). |
-| D7 | Save strategy: **debounced** write after mutations (e.g. 2s coalesce) + **force save** on set_mood / set_goals / set_dream / shutdown best-effort. Load once at Soul construction in `service.py`. |
+| D5 | **goals**: exactly **3** string slots (pad/truncate). Persist. Seed empty or mild defaults; LLM + ops may rewrite. |
+| D6 | **last_night_i_dreamed_about**: one string field (empty default). Persist. **Dream is an LLM job** (not field-only) — see D9. |
+| D7 | Save strategy: **debounced** write after mutations (e.g. 2s coalesce) + **force save** on set_mood / set_goals / set_dream / dream-job complete / shutdown best-effort. Load once at Soul construction in `service.py`. |
 | D8 | Do **not** persist full `image_b64` or huge buffers; cap face buffer / notify / eye digests on disk (same ring limits as RAM). |
+| D9 | **LLM growth jobs (required):** dedicated mechanisms so the model can **dream**, **set/update goals**, and **aspire for more**. Triggers: (a) **HTTP ops** `POST /v1/soul/dream`, `POST /v1/soul/reflect_goals`; (b) **scheduled/sleep** hook (ambient sleep gap / charger / end-of-day — at least one automatic path); (c) **chat silent tags** + optional user-text backstop so conversation can request a dream or goal refresh. |
+| D10 | **Full soul always** for dream + goal-setting LLM calls: `llm_view(detail="full")` (or richer “growth” pack) is the **user** content / primary data block. Lite strips must **not** be used for these jobs. Chat normal turns may stay full strip; one-shots stay lite/none. |
+| D11 | **Growth ethos in instructions** (GrowBot-aligned): curious desk robot; process the day honestly; **aspire to learn and do more** with the human; update goals toward concrete tiny next tries; **growth not despair** (no night-after-night darker spiral); patch goals/dream, do not dump the whole persona. |
+| D12 | Dream/goal LLM uses **`SUMMARY_MODEL`** (cheap background text), like mood/convo summary — not vision. Structured JSON reply only; apply to soul + `save_now()`. |
 
 ### Allowed APIs (use only these)
 
@@ -60,10 +65,13 @@
 - Put raw unix timestamps in LLM-facing JSON **values** or keys (ok inside private `_persist_blob` only).
 - Export bare `"3 minutes ago"` / `"12m"` without naming the event (always **It has been X since Y** or **Time since Y: X**).
 - Inject full soul into every ambient glance (cost/spam).
+- Run dream/goal jobs with **lite** soul or empty context (must be **full** soul view).
+- Let chat free-text silently overwrite goals without tags/JSON apply path (need parse + apply).
+- GrowBot body/servos/reflex JSON; continuous face stream.
 - Import `service` from soul or prompt_assembly.
 - Break `GET /v1/soul` without updating `test_service_modules` route list.
-- GrowBot body/dream LLM sleep job (field only this plan).
 - Second PresenceCache.
+- Dream prompts that encourage despair spirals or rewriting constitution/persona wholesale.
 
 ### Architectural target
 
@@ -303,8 +311,132 @@ Omit from LLM full view unless useful: raw face buffer IDs dump (or include last
 
 ### Anti-pattern guards
 
-- Do not run dream LLM in this phase  
-- Do not put goals in persona.txt  
+- Fields only here if Phase 3.5 not yet merged — dream **job** is Phase 3.5, not optional forever  
+- Do not put goals grammar only in persona.txt (use teach lines + jobs)  
+
+---
+
+## Phase 3.5 — Dream + goals LLM jobs (GrowBot-guided) **[required growth path]**
+
+### Why
+
+v1 left dream as a dead field. Product need: the robot must **periodically or on demand** consolidate the day, **rewrite `last_night_i_dreamed_about`**, and **refresh the three goals** toward curiosity, growth, and concrete next tries — with **full soul** in context so the model sees continuity clocks, mood, speech, workday, recent lines, and current goals.
+
+### GrowBot harness guidance (copy spirit, adapt voice)
+
+From GrowBot `dream.system_prompt` / goals shape (user-supplied soul snapshot):
+
+| GrowBot idea | Vector adaptation |
+|--------------|-------------------|
+| Dreaming mind consolidates diary → chapter | Dream job reads **full `llm_view` + short day log/observations** |
+| ONLY thing that changes who it is — **patch**, don’t rewrite | Vector: patch **goals[3]** + **dream text** (+ optional mood line); **do not** rewrite `persona.txt` |
+| Voice anchor: resilient, curious; process hard day honestly; **no despair spiral** | Same: sardonic desk robot may be dry, but goals/dream stay growth-oriented |
+| Promote recurring themes into wants (≤4) | Vector: **exactly 3 goals**, replace list as a set |
+| `tomorrow_try` one tiny concrete thing | Prefer one goal slot or a line inside dream ending on a tiny try |
+| `dream_say` short vivid recap (spoken on wake) | Vector: store as `last_night_i_dreamed_about` (≤ ~40–80 words); optional later wake_say / TTS |
+| `fun` 0..1 honesty | Optional number in JSON; not required to persist |
+| Rules prune only person-given | Out of scope unless we add standing rules later |
+
+**Instruction themes the system prompt MUST include:**
+
+1. **What to do:** Review the full soul snapshot (desk presence, last contact times as *It has been X since Y*, mood, goals, recent speech, workday status, glances).  
+2. **Aspire for more:** Prefer goals that expand sensing, learning, play, or useful companionship with the human — not stagnation or pure complaint.  
+3. **Grow:** If the day was quiet, goals may seek novelty; if social, deepen a thread; if workday armed, one goal may support focus without nagging.  
+4. **Update goals:** Return a full replacement list of **3 short concrete goals** (not essays). Drop goals that are done or stale; keep ones still alive.  
+5. **Dream:** One short first-person or close third dream recap naming **one particular** moment from the data (not generic fog).  
+6. **Never:** Invent calendar facts not in the soul; never claim camera events not in digests; never emit speech tags for chipper.
+
+### Triggers (implement at least A + B; C strongly recommended)
+
+| ID | Trigger | When |
+|----|---------|------|
+| **A. Ops HTTP** | `POST /v1/soul/dream` | Manual / cron / testing — always full soul |
+| **A2. Ops HTTP** | `POST /v1/soul/reflect_goals` | Goals-only refresh (same full soul; tighter JSON) — or fold into dream |
+| **B. Automatic** | On **ambient sleep gap** clear path and/or first mood loop after long quiet, and/or once near `WORKDAY_END` if workday enabled | At least one; debounce so dream runs **at most once per local night** (store `last_dream_job_at` on soul) |
+| **C. Chat tags** | Silent tags in assistant reply (brain-only, strip before speech): `{{soulDream}}`, `{{soulGoals\|\|g1\|\|g2\|\|g3}}` or structured `{{soulGoalsUpdate}}` after a goals job | Teach in `_build_memory_section` when soul live (like `_WORK_LINE` / `_SAVE_LINE`) |
+| **C2. User backstop** | User says “what did you dream” / “set a goal to …” — optional regex backstop scheduling dream job or parsing one goal (Phase stretch) | Copy vision/workday user-text backstop pattern |
+
+Prefer **one combined dream job** that returns both dream text + goals (fewer LLM calls), with separate goals-only endpoint as thin wrapper.
+
+### Implementation sketch
+
+1. **`soul/growth.py`** (or `routes/soul_growth.py` + pure functions):
+   ```python
+   async def run_dream_job(soul, *, now: float, reason: str) -> dict:
+       """Build full llm_view; call SUMMARY_MODEL; apply JSON; save_now(); return applied."""
+   ```
+
+2. **Prompt pack** (`soul/growth_prompts.py` or constants):
+   - `_DREAM_SYSTEM`: GrowBot-adapted Vector voice (dry, curious, growth, patch-only goals/dream).
+   - User message structure:
+     ```
+     FULL SOUL SNAPSHOT (authoritative data — times are already English elapsed phrases):
+     {json.dumps(llm_view(detail="full"), indent=2)}
+
+     OPTIONAL EXTRA DAY NOTES:
+     {observations / day_strip already inside view}
+
+     Reply ONLY minified JSON:
+     {
+       "last_night_i_dreamed_about": "1-2 short sentences, particular, ≤80 words",
+       "three_goals_i_currently_hold": ["…","…","…"],
+       "tomorrow_try": "≤10 words optional tiny next try",
+       "growth_note": "≤12 words internal why goals shifted (not spoken)"
+     }
+     ```
+
+3. **Apply:**
+   - `soul.set_dreamed_about(...)`
+   - `soul.set_goals(list of 3)`
+   - Optionally fold `tomorrow_try` into goal[0] or append to dream sentence if goals full
+   - `soul.save_now()`; `last_dream_job_at = now`
+   - Optional: `append_log(now, "dreamed: …")`
+
+4. **Chat teach line** (stable system prefix when soul enabled):
+   ```text
+   SOUL GROWTH (silent tags — never speak them):
+   When the human asks what you dreamed, or after a long day feels closed, you may emit {{soulDream}} once so a background dream consolidates (do not narrate the tag).
+   To propose three updated goals after they explicitly want new aims, emit
+   {{soulGoals||goal one||goal two||goal three}} (three short phrases).
+   Prefer aspiring, concrete, grow-with-the-human goals over sulking.
+   ```
+   Parse in `response_cleanup` / dedicated apply (like work tags): strip tags; on `soulDream` schedule `asyncio.create_task(run_dream_job)`; on `soulGoals` apply immediately if three parts present.
+
+5. **Wire automatic trigger:** e.g. in ambient sleep-gap path after `apply_sleep_clear`, if `now - last_dream_job_at > 20h`, schedule dream job (fire-and-forget). Or mood loop once per local date after 22:00. Document choice in code comment.
+
+6. **Models:** `SUMMARY_MODEL`, temperature ~0.7 dream / ~0.4 goals-only; `tag="soul_dream"` / `soul_goals` for debug logs.
+
+7. **Tests:**
+   - Mock `llm_chat_once` → assert full soul JSON appears in messages (long keys / “It has been”)
+   - Apply path updates goals length 3 + dream string + save called
+   - Tag parse strips `{{soulDream}}` / `{{soulGoals||…}}`
+   - Debounce: second dream within window skipped
+   - System prompt contains aspire/grow language (substring asserts)
+
+### Documentation references
+
+- GrowBot dream system prompt (user session prior art; paste key constraints into `growth_prompts.py` comments)
+- Melting pot design GrowBot mapping  
+- `_SAVE_LINE` / `_WORK_LINE` teach pattern: `prompt_assembly.py`  
+- Work tag apply: `response_cleanup.py` / `parse_work_commands`  
+- Mood loop / sleep gap: `routes/mood.py`, `routes/ambient.py` `AMBIENT_SLEEP_GAP`  
+- `llm_chat_once` + `SUMMARY_MODEL`: `llm.py`  
+
+### Verification checklist
+
+- [ ] `POST /v1/soul/dream` returns applied dream + goals; soul.json updated  
+- [ ] Dream request messages include **full** soul (not lite)  
+- [ ] Chat teach line present when soul wired  
+- [ ] Tags stripped from spoken path  
+- [ ] Auto trigger exists and is debounced  
+- [ ] `pytest` for growth apply + tag parse + prompt contains “aspire”/“grow”/“goals”  
+
+### Anti-pattern guards
+
+- No dream job without full soul view  
+- No rewriting persona/constitution from dream JSON  
+- No blocking chat stream on dream LLM (always background task)  
+- No ambient-every-glance dream  
 
 ---
 
