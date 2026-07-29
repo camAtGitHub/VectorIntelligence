@@ -34,7 +34,7 @@
 |---|----------|
 | D1 | Persist soul to **`ROOT/soul.json`** (single JSON file, atomic write). Not SQLite for v2 (simpler; mood still may dual-write memory.db). |
 | D2 | **Internal** Python attrs may keep short names (`last_spoke_at`); **export views** (`llm_view` / GET body) use **long snake_case keys** that read as English. |
-| D3 | All timestamps in LLM/ops export views are **relative phrases** generated at read time (“about 3 minutes ago”, “never”, “moments ago”) via existing `_relative_time` pattern — **no raw unix** in those views. Internal file may still store unix for reload. |
+| D3 | All timestamps in LLM/ops export views are **elapsed-time English sentences** generated at read time — **no raw unix**. Preferred shapes (pick one family and stick to it in `soul/view.py`): **“It has been X minutes/hours/days since …”**, **“Time since …: X minutes/hours/days”**, or **“… was X minutes/hours/days ago”**. Never bare numbers or epoch. Internal `soul.json` may still store unix for reload. |
 | D4 | **Full soul strip** on interactive **chat** (`prepare_messages` / context note). **Lite strip** on greeting (and optionally mood digest). **None/minimal** on ambient/sensor one-shots (cost + length). |
 | D5 | **goals**: exactly **3** string slots (pad/truncate). Persist. Editable later via API optional in phase; seed empty or sensible defaults. |
 | D6 | **last_night_i_dreamed_about**: one string field (empty default). Persist. No dream LLM job in this plan — field only (populate later or manually via POST). |
@@ -57,7 +57,8 @@
 ### Anti-patterns (do not)
 
 - Store base64 frames in `soul.json`.
-- Put raw unix timestamps in LLM-facing JSON keys (ok inside private `_persist_blob` only).
+- Put raw unix timestamps in LLM-facing JSON **values** or keys (ok inside private `_persist_blob` only).
+- Export bare `"3 minutes ago"` / `"12m"` without naming the event (always **It has been X since Y** or **Time since Y: X**).
 - Inject full soul into every ambient glance (cost/spam).
 - Import `service` from soul or prompt_assembly.
 - Break `GET /v1/soul` without updating `test_service_modules` route list.
@@ -85,33 +86,87 @@
    ambient/sensor        ──► no strip (or mood line only if already present)
 ```
 
+### Time phrasing convention (binding for all LLM/GET outputs)
+
+Every elapsed duration shown to an LLM or via `GET /v1/soul` MUST be a **full English clause**, not a bare quantity and not a raw timestamp.
+
+**Canonical helpers** (implement once in `soul/view.py`):
+
+```text
+# Gap known (seconds ≥ 0):
+time_since(event_label, seconds) ->
+  "It has been {N} minute(s)|hour(s)|day(s) since {event_label}."
+  # units: <90s → "moments" / "less than a minute"
+  #        <1h  → rounded minutes
+  #        <24h → rounded hours
+  #        else → rounded days
+  # singular/plural correct: 1 minute, 2 minutes
+
+# Alternate compact form (lists / nested items only):
+time_since_compact(event_label, seconds) ->
+  "Time since {event_label}: {N} min|hours|days"
+
+# Past-event form (when subject is the event itself):
+was_ago(subject_clause, seconds) ->
+  "{subject_clause} was {N} minutes|hours|days ago."
+  # e.g. "Last contact with the human was 3 hours ago."
+```
+
+**Never / unknown:**
+
+| Situation | Phrase |
+|-----------|--------|
+| ts ≤ 0 or missing | `"It has never been recorded this session."` or field-specific: `"I have not spoken aloud yet this session."` |
+| future clock skew (ts > now + 5s) | treat as moments / clamp to 0 |
+
+**Examples (copy these tones in tests):**
+
+| Field meaning | Example value string |
+|---------------|----------------------|
+| Last spoke | `"It has been 12 minutes since I last spoke aloud."` |
+| Last human voice | `"It has been 2 hours since the human last spoke to me."` |
+| Last visual person | `"It has been 45 minutes since I last visually detected a person."` |
+| Desk session start | `"It has been 3 hours since this continuous desk session started."` |
+| Mood reflected | `"It has been 28 minutes since my mood was last reflected."` |
+| Camera glance | `"It has been 4 minutes since that camera glance."` |
+| Notify list item | `"Time since I said this: 6 minutes"` + text preview |
+| Last contact (composite, optional) | `"Last contact was 2 hours ago."` |
+
+**Forbidden in export views:**
+
+- Unix epochs (`1753…`, `1.75e9`)
+- ISO timestamps alone as the only time signal for “how long”
+- Bare `"12m"` / `"0.5h"` without surrounding words
+- Ambiguous `"about 3 minutes ago"` **as the only form** — prefer the **“It has been X since Y”** template so the event Y is always named (LLMs do not need to invent what “ago” refers to)
+
+Reuse unit breakpoints from `_relative_time` (`prompt_assembly.py` L157–166) but **rephrase** into the templates above; do not ship `"about N units ago"` as the default export string.
+
 ### Proposed long field names (LLM / GET)
 
-Self-explanatory with **zero** prior context:
+Self-explanatory with **zero** prior context. **Values for time fields are full sentences** per the convention above (the key names the concept; the value states elapsed time in English).
 
-| Internal / short | Long export key |
-|------------------|-----------------|
-| `now` | `snapshot_generated_at_wall_clock` (human local string, e.g. `"Tuesday July 29, 2026, 03:15 PM"`) — optional |
-| `occupied` | `a_person_is_currently_at_the_desk` |
-| `session_started_at` | `how_long_ago_this_continuous_desk_session_started` (relative or `"unknown"`) |
-| `last_seen_at` | `how_long_ago_i_last_visually_detected_a_person` |
-| `last_spoke_at` | `how_long_ago_i_last_spoke_aloud` |
-| `last_user_voice_at` | `how_long_ago_the_human_last_spoke_to_me` |
-| `face.current` | `person_i_currently_believe_i_am_looking_at` `{name, is_stranger, face_id}` |
-| `mood.text` | `my_current_inner_mood_in_one_phrase` |
-| `mood.updated` | `how_long_ago_my_mood_was_last_reflected` |
-| `eye.last_vision.note` | `what_i_noted_in_my_most_recent_camera_glance` |
-| `eye.last_vision.t` | `how_long_ago_that_camera_glance_was` |
-| `eye.last_vision.presence` | `whether_that_glance_saw_a_person_or_empty_desk` |
-| workday strip | `work_day_accountability_status_for_today` |
-| goals | `three_goals_i_currently_hold` (array len 3) |
-| dream | `last_night_i_dreamed_about` |
-| notify.recent | `recent_things_i_said_aloud` (list of `{how_long_ago, source, text_preview}`) |
-| presence soft_name | `soft_name_hint_from_presence` |
+| Internal / short | Long export key | Example value |
+|------------------|-----------------|---------------|
+| `now` | `snapshot_generated_at_wall_clock` | `"Tuesday July 29, 2026, 03:15 PM"` (wall clock OK; not a duration) |
+| `occupied` | `a_person_is_currently_at_the_desk` | `true` / `false` |
+| `session_started_at` | `time_since_this_continuous_desk_session_started` | `"It has been 3 hours since this continuous desk session started."` |
+| `last_seen_at` | `time_since_i_last_visually_detected_a_person` | `"It has been 45 minutes since I last visually detected a person."` |
+| `last_spoke_at` | `time_since_i_last_spoke_aloud` | `"It has been 12 minutes since I last spoke aloud."` |
+| `last_user_voice_at` | `time_since_the_human_last_spoke_to_me` | `"It has been 2 hours since the human last spoke to me."` |
+| `face.current` | `person_i_currently_believe_i_am_looking_at` | `{name, is_stranger, face_id}` |
+| `mood.text` | `my_current_inner_mood_in_one_phrase` | `"quietly content after a sociable morning"` |
+| `mood.updated` | `time_since_my_mood_was_last_reflected` | `"It has been 28 minutes since my mood was last reflected."` |
+| `eye.last_vision.note` | `what_i_noted_in_my_most_recent_camera_glance` | prose note |
+| `eye.last_vision.t` | `time_since_my_most_recent_camera_glance` | `"It has been 4 minutes since my most recent camera glance."` |
+| `eye.last_vision.presence` | `whether_that_glance_saw_a_person_or_empty_desk` | `"person"` / `"empty"` |
+| workday strip | `work_day_accountability_status_for_today` | existing day_strip prose |
+| goals | `three_goals_i_currently_hold` | array length 3 |
+| dream | `last_night_i_dreamed_about` | string |
+| notify.recent | `recent_things_i_said_aloud` | list of `{time_since_i_said_this, speech_source, text_preview}` |
+| presence soft_name | `soft_name_hint_from_presence` | string |
+| (optional composite) | `time_since_last_contact_with_the_human` | max(spoke, voice, seen) → `"Last contact was 2 hours ago."` or `"It has been 2 hours since last contact with the human."` |
 
-Omit from LLM full view unless useful: raw face buffer IDs dump (or include last 3 as `recent_face_sightings` with relative times + names only).
-
-**Relative never:** if ts ≤ 0 → `"never"` or `"not yet this session"`.
+Omit from LLM full view unless useful: raw face buffer IDs dump (or include last 3 as `recent_face_sightings` with **time_since_…** sentences + names only).
 
 ---
 
@@ -178,10 +233,13 @@ Omit from LLM full view unless useful: raw face buffer IDs dump (or include last
 ### What to implement
 
 1. New `soul/view.py`:
-   - `relative_phrase(now, ts) -> str` (copy `_relative_time` logic + never)
+   - `format_duration_units(seconds) -> (n, unit_word)` — unit breakpoints copied from `_relative_time` (`prompt_assembly.py` L157–166)
+   - `it_has_been_since(event_label, now, ts) -> str` → `"It has been {N} {units} since {event_label}."` or never-phrase
+   - `time_since_compact(event_label, now, ts) -> str` → `"Time since {event_label}: {N} min|hours|days"` (list items)
+   - `was_ago(subject, now, ts) -> str` → `"{subject} was {N} … ago."` (optional composite contact)
    - `llm_view(soul, now, *, detail: Literal["full","lite","ops"] = "full") -> dict`
-   - Keys = long names from Phase 0 table  
-   - `detail="lite"`: mood, goals, dreamed_about, last spoke/seen/voice relatives, person looking at, desk occupied — **no** notify ring, no face buffer, no full eye buffer  
+   - Keys = long names from Phase 0 table; **all duration values** use the templates above  
+   - `detail="lite"`: mood, goals, dreamed_about, last spoke/seen/voice **sentences**, person looking at, desk occupied — **no** notify ring, no face buffer, no full eye buffer  
    - `detail="full"`: lite + workday strip + last glance + recent speech previews + goals + dream  
    - `detail="ops"`: same as full for GET (or full + soft_name / presence debug as long names)
 
@@ -189,25 +247,30 @@ Omit from LLM full view unless useful: raw face buffer IDs dump (or include last
    - **Option A (preferred):** `snapshot` becomes alias of `llm_view(..., detail="ops")` for GET, **or**
    - **Option B:** keep internal `snapshot_raw` for tests; GET uses `llm_view`
 
-   Update tests that assert short keys (`test_soul_core.test_snapshot_shape`, `test_get_v1_soul_snapshot`) to long keys.
+   Update tests that assert short keys (`test_soul_core.test_snapshot_shape`, `test_get_v1_soul_snapshot`) to long keys **and** assert time values match `It has been` / `Time since` / `was … ago` / never phrases.
 
-3. `routes/soul.py`: return `soul.llm_view(time.time(), detail="ops")`; docstring lists long keys.
+3. `routes/soul.py`: return `soul.llm_view(time.time(), detail="ops")`; docstring lists long keys + time convention.
+
+4. Unit tests for phrasing edge cases: 0s → moments/less than a minute; 1 minute singular; 90 minutes → hours; never ts; no digit-only duration strings.
 
 ### Documentation references
 
+- **Time phrasing convention** in this plan Phase 0 (binding)  
 - Long key table in this plan Phase 0  
-- `_relative_time` in `prompt_assembly.py` L157–166  
+- Unit breakpoints: `_relative_time` in `prompt_assembly.py` L157–166  
 
 ### Verification checklist
 
-- [ ] GET /v1/soul JSON has **zero** values that look like raw unix epoch numbers for time fields (allow integers only for face_id)  
-- [ ] Keys include `how_long_ago_i_last_spoke_aloud`, `three_goals_i_currently_hold`, `last_night_i_dreamed_about`  
+- [ ] GET /v1/soul JSON has **zero** raw unix epoch numbers for time fields (allow integers only for `face_id`)  
+- [ ] Every duration string matches one of: `It has been … since …`, `Time since …: …`, `… was … ago.`, or a never-phrase  
+- [ ] Keys include `time_since_i_last_spoke_aloud`, `three_goals_i_currently_hold`, `last_night_i_dreamed_about`  
 - [ ] `pytest shared/vector-ai/test_service_modules.py -k soul -q`  
-- [ ] `pytest shared/vector-ai/test_soul_core.py -q`  
+- [ ] `pytest shared/vector-ai/test_soul_core.py shared/vector-ai/test_soul_view.py -q`  
 
 ### Anti-pattern guards
 
-- Do not put `t: 1753...` in notify.recent for LLM view — use `how_long_ago`  
+- Do not put `t: 1753...` in notify.recent for LLM view — use `time_since_i_said_this` full sentence  
+- Do not export bare `"12 minutes ago"` without naming the event (prefer **It has been X since Y**)  
 - Do not rename internal Python attributes in a big-bang if it breaks writers; map at view boundary  
 
 ---
