@@ -685,6 +685,7 @@ needs care if multiple Vectors share one brain.
 | [docs/superpowers/specs/2026-07-18-vector-aliveness-workday-design.md](docs/superpowers/specs/2026-07-18-vector-aliveness-workday-design.md) | Product design (continuity, junctures) |
 | [docs/superpowers/specs/2026-07-29-soul-melting-pot-design.md](docs/superpowers/specs/2026-07-29-soul-melting-pot-design.md) | Soul melting pot (one desk-day continuity: face/eye/notify) |
 | [docs/plans/2026-07-29-soul-melting-pot.md](docs/plans/2026-07-29-soul-melting-pot.md) | Executable phases for soul rewrite + sensor TTS cooldown |
+| [docs/plans/2026-07-29-soul-v2-persist-llm-view.md](docs/plans/2026-07-29-soul-v2-persist-llm-view.md) | Soul v2: soul.json persist, LLM long-key view, goals, dream |
 
 ## Agent checklist (before you stop)
 
