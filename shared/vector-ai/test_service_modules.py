@@ -116,6 +116,84 @@ def test_llm_chat_once_reexport_identity():
     assert llm_chat_once is l2
 
 
+def test_reasoning_config_and_llm_body_includes_reasoning(monkeypatch):
+    """Default LLM_REASONING_EFFORT=none; explicit None omits; dict overrides."""
+    import asyncio
+
+    import llm as llm_mod
+
+    assert llm_mod.reasoning_config(effort="none") == {"effort": "none"}
+    assert llm_mod.reasoning_config(effort="minimal", exclude=True) == {
+        "effort": "minimal",
+        "exclude": True,
+    }
+    assert llm_mod.reasoning_config() is None
+    assert llm_mod.default_reasoning() == {"effort": "none"}
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {},
+            }
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def post(self, *a, **k):
+            captured["json"] = k.get("json")
+            return _Resp()
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _Client)
+
+    # Default (unset): disable reasoning
+    text = asyncio.run(
+        llm_mod.llm_chat_once(
+            [{"role": "user", "content": "hi"}],
+            tag="test_default_reasoning",
+        )
+    )
+    assert text == "ok"
+    assert captured["json"]["reasoning"] == {"effort": "none"}
+
+    # Explicit override
+    captured.clear()
+    asyncio.run(
+        llm_mod.llm_chat_once(
+            [{"role": "user", "content": "hi"}],
+            reasoning={"effort": "low"},
+            tag="test_override_reasoning",
+        )
+    )
+    assert captured["json"]["reasoning"] == {"effort": "low"}
+
+    # Explicit None: omit field
+    captured.clear()
+    asyncio.run(
+        llm_mod.llm_chat_once(
+            [{"role": "user", "content": "hi"}],
+            reasoning=None,
+            tag="test_omit_reasoning",
+        )
+    )
+    assert "reasoning" not in captured["json"]
+
+
 def test_route_registry():
     import service
 

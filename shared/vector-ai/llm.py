@@ -125,6 +125,76 @@ def _llm_timeout(connect: Optional[float] = None, read: Optional[float] = None) 
     )
 
 
+# OpenRouter unified reasoning.effort values (see reasoning-tokens docs).
+_REASONING_EFFORTS = frozenset(
+    {"max", "xhigh", "high", "medium", "low", "minimal", "none"}
+)
+# Sentinel: caller did not pass ``reasoning=`` → apply default_reasoning().
+_REASONING_UNSET: Any = object()
+
+
+def reasoning_config(
+    *,
+    effort: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    enabled: Optional[bool] = None,
+    exclude: Optional[bool] = None,
+) -> Optional[dict[str, Any]]:
+    """Build an OpenRouter ``reasoning`` request object, or None if empty.
+
+    Prefer one of ``effort`` or ``max_tokens`` (not both). ``effort="none"``
+    disables reasoning on models that accept it. Models with
+    ``reasoning.mandatory`` reject ``effort: "none"`` — use ``minimal`` or omit.
+    """
+    out: dict[str, Any] = {}
+    if effort is not None:
+        e = str(effort).strip().lower()
+        if e:
+            if e not in _REASONING_EFFORTS:
+                print(f"[llm] ignoring unknown reasoning effort {effort!r}")
+            else:
+                out["effort"] = e
+    if max_tokens is not None:
+        try:
+            mt = int(max_tokens)
+        except (TypeError, ValueError):
+            mt = 0
+        if mt > 0:
+            out["max_tokens"] = mt
+    if enabled is not None:
+        out["enabled"] = bool(enabled)
+    if exclude is not None:
+        out["exclude"] = bool(exclude)
+    return out or None
+
+
+def default_reasoning() -> Optional[dict[str, Any]]:
+    """Default OpenRouter reasoning block for all LLM calls.
+
+    Controlled by ``LLM_REASONING_EFFORT`` (default ``none`` = disable thinking).
+    Set to empty / ``omit`` to leave the field off the request entirely.
+    Set ``minimal`` / ``low`` / … if a model rejects ``none`` (mandatory).
+    """
+    s = str(os.getenv("LLM_REASONING_EFFORT", "none")).strip().lower()
+    if s in ("", "omit"):
+        return None
+    if s in ("off", "false", "disabled", "disable"):
+        s = "none"
+    return reasoning_config(effort=s)
+
+
+def _resolve_reasoning(reasoning: Any) -> Optional[dict[str, Any]]:
+    """Map call-site arg to body value: unset → default; explicit None → omit."""
+    if reasoning is _REASONING_UNSET:
+        return default_reasoning()
+    if reasoning is None:
+        return None
+    if isinstance(reasoning, dict):
+        return reasoning
+    print(f"[llm] ignoring non-dict reasoning arg {type(reasoning)!r}")
+    return default_reasoning()
+
+
 def _message_content(data: dict) -> str:
     """Extract assistant text from an OpenAI-compatible non-stream response."""
     try:
@@ -158,11 +228,14 @@ async def llm_chat_once(
     seed: Optional[int] = None,
     timeout: Optional[httpx.Timeout] = None,
     max_tokens: Optional[int] = None,
+    reasoning: Any = _REASONING_UNSET,
     tag: str = "llm_chat_once",
 ) -> str:
     """Single non-streaming chat completion against the configured LLM backend.
 
     ``temperature=None`` uses ``LLM_TEMPERATURE`` from the environment.
+    ``reasoning`` defaults from ``LLM_REASONING_EFFORT`` (usually ``none`` =
+    disable). Pass an explicit dict to override, or ``None`` to omit the field.
     """
     temp = LLM_TEMPERATURE if temperature is None else float(temperature)
     body: dict[str, Any] = {
@@ -176,6 +249,9 @@ async def llm_chat_once(
         body["seed"] = seed
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
+    resolved = _resolve_reasoning(reasoning)
+    if resolved is not None:
+        body["reasoning"] = resolved
     url = _chat_completions_url()
     debug(f"UPSTREAM SEND [{tag}] POST {url}", _redact_body(body))
     t0 = time.monotonic()
@@ -218,12 +294,14 @@ async def one_shot_spoken_line(
     top_p: float = 0.95,
     seed: Optional[int] = None,
     model: Optional[str] = None,
+    reasoning: Any = _REASONING_UNSET,
     tag: str = "one_shot",
 ) -> str:
     """Non-stream LLM call + speech strip; errors → \"\" (never raises).
 
     Shared by sensor / greeting (and similar one-line spoken paths). Preserves
-    each caller's temperature / token / timeout knobs.
+    each caller's temperature / token / timeout knobs. Reasoning defaults from
+    ``LLM_REASONING_EFFORT`` like ``llm_chat_once``.
     """
     try:
         from response_cleanup import _strip_for_speech
@@ -236,6 +314,7 @@ async def one_shot_spoken_line(
             seed=seed,
             timeout=timeout,
             max_tokens=max_tokens,
+            reasoning=reasoning,
             tag=tag,
         )
         return _strip_for_speech(text or "")
@@ -307,6 +386,7 @@ async def llm_sentence_stream(
     temperature: Optional[float] = None,
     *,
     model: Optional[str] = None,
+    reasoning: Any = _REASONING_UNSET,
 ) -> AsyncIterator[str]:
     """Stream chat-completion tokens and yield complete sentences as they arrive.
 
@@ -324,7 +404,8 @@ async def llm_sentence_stream(
     same high-probability tokens turn after turn (especially noticeable on
     'tell me a joke'). ``temperature=None`` uses ``LLM_TEMPERATURE`` from env.
     ``model=None`` uses ``MODEL`` (``LLM_MODEL``); pass ``VISION_MODEL`` for
-    multimodal getImage reply turns.
+    multimodal getImage reply turns. Reasoning defaults from
+    ``LLM_REASONING_EFFORT`` like ``llm_chat_once``.
     """
     temp = LLM_TEMPERATURE if temperature is None else float(temperature)
     buffer = ""
@@ -332,7 +413,7 @@ async def llm_sentence_stream(
     first_token_seen = False
     first_sentence_seen = False
     full_reply: list[str] = []
-    body = {
+    body: dict[str, Any] = {
         "model":       model or MODEL,
         "messages":    messages,
         "stream":      True,
@@ -340,6 +421,9 @@ async def llm_sentence_stream(
         "top_p":       0.95,
         "seed":        random.randint(1, 2**31 - 1),
     }
+    resolved = _resolve_reasoning(reasoning)
+    if resolved is not None:
+        body["reasoning"] = resolved
     url = _chat_completions_url()
     debug("UPSTREAM SEND [stream] POST " + url, _redact_body(body))
     async with httpx.AsyncClient(timeout=_llm_timeout()) as client:

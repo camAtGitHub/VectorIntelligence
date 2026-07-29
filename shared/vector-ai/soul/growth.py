@@ -169,6 +169,7 @@ async def run_dream_job(
     ]
 
     try:
+        # reasoning defaults via LLM_REASONING_EFFORT (none) in llm_chat_once
         raw = await llm_chat_once(
             messages,
             model=SUMMARY_MODEL,

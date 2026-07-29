@@ -24,6 +24,12 @@ LLM_VISION_MODEL=google/gemini-2.0-flash
 # proactive greetings, and sensor quips (pickup/pet/fall). Not for images.
 LLM_SUMMARY_MODEL=google/gemini-2.0-flash-lite
 
+# OpenRouter reasoning.effort for almost all LLM calls (chat stream, one-shots,
+# mood, ambient, dream/goals, …). Default "none" disables thinking tokens
+# (faster/cheaper). Use "minimal" if a model has mandatory reasoning and
+# rejects "none". Empty or "omit" leaves the reasoning field off the request.
+# LLM_REASONING_EFFORT=none
+
 # Max user/assistant turns forwarded to the LLM (Wire-Pod may keep more).
 LLM_MAX_HISTORY_MESSAGES=24
 
