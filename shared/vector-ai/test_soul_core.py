@@ -162,3 +162,68 @@ def test_face_sighting_dataclass():
     d = s.to_dict()
     assert d["name"] == "Cam"
     assert d["face_id"] == 1
+
+
+def test_eye_note_frame_and_image_fresh():
+    now = 8_000_000.0
+    soul = Soul(presence=PresenceCache(), image_max_age_s=45)
+    assert soul.image_fresh(now) is False
+    d = soul.note_eye_frame(now, reason="chat", frame_path="/tmp/x.jpg", note="chat frame")
+    assert d.reason == "chat"
+    assert d.frame_path == "/tmp/x.jpg"
+    assert soul.last_vision() is not None
+    assert soul.last_vision().note == "chat frame"
+    assert soul.image_fresh(now) is True
+    assert soul.image_fresh(now + 46) is False
+    snap = soul.snapshot(now)
+    assert snap["eye"]["last_vision"]["reason"] == "chat"
+    assert snap["eye"]["image_fresh"] is True
+
+
+def test_eye_see_ambient_updates_presence(monkeypatch):
+    """Mocked VISION_MODEL path still writes sticky person presence."""
+    import asyncio
+
+    now = 9_000_000.0
+    presence = PresenceCache(sticky_s=1800, empty_streak_clear=2)
+    soul = Soul(presence=presence)
+
+    async def _llm(*a, **k):
+        return "PRESENCE: person:Cam\nNOTHING"
+
+    monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
+    monkeypatch.setattr("soul.eye.save_submitted_image", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "soul.eye.image_payload_too_large", lambda *a, **k: False
+    )
+
+    digest = asyncio.run(soul.see(now, image="fakejpg", reason="ambient"))
+    assert digest.presence == "person"
+    assert digest.name_hint == "Cam"
+    assert digest.error == ""
+    assert soul.occupied(now) is True
+    assert soul.last_seen_at == now
+    assert soul.last_vision() is digest
+
+
+def test_eye_see_oversized_skips_llm(monkeypatch):
+    import asyncio
+
+    now = 10_000_000.0
+    soul = Soul(presence=PresenceCache())
+    calls = []
+
+    async def _should_not(*a, **k):
+        calls.append(1)
+        return "PRESENCE: empty\nNOTHING"
+
+    monkeypatch.setattr("soul.eye.llm_chat_once", _should_not)
+    # Force too-large via helper (avoid multi-MB strings).
+    monkeypatch.setattr(
+        "soul.eye.image_payload_too_large", lambda *a, **k: True
+    )
+
+    digest = asyncio.run(soul.see(now, image="x", reason="ambient"))
+    assert digest.error == "image_too_large"
+    assert calls == []
+    assert soul.occupied(now) is False

@@ -82,6 +82,7 @@ SOUL = Soul(
     presence=_presence_cache,
     memory=MEMORY,
     continuity=_continuity,
+    image_max_age_s=_runtime_cfg.image_cache_max_age_s,
 )
 deps.SOUL = SOUL
 BEHAVIOR_RUNTIME = BehaviorRuntime(

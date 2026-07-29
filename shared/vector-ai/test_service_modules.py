@@ -29,6 +29,7 @@ EXPECTED_ROUTES = {
     "/v1/behaviors/state",
     "/v1/behaviors/{behavior_id}",
     "/v1/proactive_greeting",
+    "/v1/soul",
 }
 
 # path -> allowed HTTP methods (business endpoints only).
@@ -51,6 +52,7 @@ EXPECTED_ROUTE_METHODS = {
     "/v1/behaviors/state": {"GET"},
     "/v1/behaviors/{behavior_id}": {"GET"},
     "/v1/proactive_greeting": {"POST"},
+    "/v1/soul": {"GET"},
 }
 
 _REQUIRED_INSTALL_MODULES = (
@@ -130,6 +132,43 @@ def test_route_registry():
     for path, want in EXPECTED_ROUTE_METHODS.items():
         got = by_path.get(path, set())
         assert want <= got, f"{path}: expected methods {want}, got {got}"
+
+
+def test_get_v1_soul_snapshot(monkeypatch):
+    """GET /v1/soul returns SOUL.snapshot keys; no base64 frame payloads."""
+    import deps
+    from behaviors.presence import PresenceCache
+    from fastapi.testclient import TestClient
+    from soul import Soul
+
+    import service
+
+    soul = Soul(presence=PresenceCache())
+    # Use wall clock so sticky occupancy / face window still warm at GET time.
+    now = time.time()
+    soul.note_face(now, face_id=1, name="Cam", is_stranger=False, source="test")
+    soul.note_person(now, source="test")
+    soul.set_mood("quietly amused", now)
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+
+    client = TestClient(service.app)
+    r = client.get("/v1/soul")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("occupied") is True
+    assert "face" in body and body["face"].get("current") is not None
+    assert body["face"]["current"].get("name") == "Cam"
+    assert "mood" in body
+    assert body["mood"].get("text") == "quietly amused"
+    assert "last_seen_at" in body
+    assert "last_spoke_at" in body
+    assert "presence" in body
+    assert "notify" in body and "recent" in body["notify"]
+    assert "eye" in body
+    # Anti-pattern: snapshot must not dump full image payloads.
+    blob = json.dumps(body)
+    assert "image_b64" not in blob
+    assert "data:image" not in blob
 
 
 def test_behavior_detail_http_404_and_200(tmp_path, monkeypatch):
@@ -781,7 +820,7 @@ def test_ambient_quiet_short_circuits_without_llm(tmp_path, monkeypatch):
         called["n"] += 1
         raise AssertionError("llm should not run while quiet")
 
-    monkeypatch.setattr("routes.ambient.llm_chat_once", _boom)
+    monkeypatch.setattr("soul.eye.llm_chat_once", _boom)
 
     result = asyncio.run(ambient(AmbientRequest(image="not-a-real-jpeg")))
     assert result.get("quiet") is True
@@ -808,7 +847,7 @@ def test_ambient_quiet_expires_on_sleep_gap(tmp_path, monkeypatch):
     async def _nothing(*a, **k):
         return "NOTHING"
 
-    monkeypatch.setattr("routes.ambient.llm_chat_once", _nothing)
+    monkeypatch.setattr("soul.eye.llm_chat_once", _nothing)
 
     result = asyncio.run(ambient(AmbientRequest(image="x")))
     assert process_state._ambient_state["quiet"] is False
@@ -970,13 +1009,16 @@ def test_ambient_passes_vision_model(tmp_path, monkeypatch):
     from pathlib import Path
 
     import routes.ambient as ambient_mod
+    import soul.eye as eye_mod
     from routes.ambient import ambient
     from routes.models import AmbientRequest
 
-    # Static lock: ambient must never import/use SUMMARY_MODEL for images.
+    # Static lock: ambient / eye must never use SUMMARY_MODEL for images.
     ambient_src = Path(ambient_mod.__file__).read_text(encoding="utf-8")
+    eye_src = Path(eye_mod.__file__).read_text(encoding="utf-8")
     assert "SUMMARY_MODEL" not in ambient_src
-    assert "VISION_MODEL" in ambient_src
+    assert "SUMMARY_MODEL" not in eye_src
+    assert "VISION_MODEL" in ambient_src or "VISION_MODEL" in eye_src
 
     _patch_deps(monkeypatch, tmp_path)
     process_state._set_quiet(False)
@@ -989,12 +1031,12 @@ def test_ambient_passes_vision_model(tmp_path, monkeypatch):
         seen["tag"] = tag
         return "PRESENCE: empty\nNOTHING"
 
-    monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
-    monkeypatch.setattr("routes.ambient.VISION_MODEL", "vision/test-slug", raising=False)
+    monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
+    monkeypatch.setattr("soul.eye.VISION_MODEL", "vision/test-slug", raising=False)
     monkeypatch.setattr(
-        "routes.ambient.image_payload_too_large", lambda *a, **k: False
+        "soul.eye.image_payload_too_large", lambda *a, **k: False
     )
-    monkeypatch.setattr("routes.ambient.save_submitted_image", lambda *a, **k: None)
+    monkeypatch.setattr("soul.eye.save_submitted_image", lambda *a, **k: None)
 
     result = asyncio.run(ambient(AmbientRequest(image="fakejpg")))
     assert result.get("error") in (None, "")

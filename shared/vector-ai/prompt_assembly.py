@@ -269,15 +269,16 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
             if spoke_ts > 0:
                 gap_spoke = now_ts - spoke_ts
             else:
-                # No speech clock: fall back to prior interaction time for
-                # session gating only (worded as last contact, not pure visual).
+                # No speech clock: prior interaction time for session gating only.
+                # Do not emit "last spoke" wording from last_seen alone.
                 gap_spoke = now_ts - (
                     prior.get("last_seen") or now_ts
                 )
             if gap_spoke > 90:  # a fresh session, not a mid-conversation turn
-                bits.append(
-                    f"You last spoke with {name} {_relative_time(gap_spoke)}."
-                )
+                if spoke_ts > 0:
+                    bits.append(
+                        f"You last spoke with {name} {_relative_time(gap_spoke)}."
+                    )
                 if gap_spoke > SESSION_GREETING_GAP:
                     bits.append(
                         f"This is the first thing you've said to {name} in a "
@@ -288,7 +289,12 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
                         f"You've only met {name} a handful of times so far."
                     )
                 summ = (prior.get("last_convo_summary") or "").strip().rstrip(".")
-                if summ and gap_spoke > 900:  # 15 min+ => genuinely a new session
+                # Summary only when we have a real speech/convo clock.
+                if (
+                    spoke_ts > 0
+                    and summ
+                    and gap_spoke > 900
+                ):  # 15 min+ => genuinely a new session
                     bits.append(
                         f"Last time you spoke with {name}, the conversation "
                         f"was about: {summ}."

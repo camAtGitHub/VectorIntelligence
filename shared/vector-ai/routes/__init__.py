@@ -11,6 +11,7 @@ from routes import (
     memory_routes,
     mood,
     sensor,
+    soul,
 )
 
 
@@ -24,3 +25,4 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(ambient.router)
     app.include_router(behaviors_http.router)
     app.include_router(greeting.router)
+    app.include_router(soul.router)

@@ -1,195 +1,49 @@
 """Ambient observation + quiet-mode HTTP endpoints."""
 import asyncio
-import random
-import re
 import time as _time
-from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional
 
 from fastapi import APIRouter
 
 import deps
 from debug_log import debug
-from llm import (
-    LLM_AMBIENT_TEMPERATURE,
-    VISION_MODEL,
-    _llm_timeout,
-    image_payload_too_large,
-    llm_chat_once,
-)
 from logging_util import print  # noqa: F401
 from process_state import (
     AMBIENT_QUIET_CAP,
     AMBIENT_SLEEP_GAP,
     _ambient_state,
-    _mood_state,
     _set_quiet,
 )
-from image_archive import save_submitted_image
-from prompt_voice import PERSONA_MINI
-from response_cleanup import _strip_for_speech
 from routes.models import AmbientQuietRequest, AmbientRequest
+
+# Re-exports for tests / prompt checks (logic lives in soul.eye).
+from soul.eye import (  # noqa: F401
+    AMBIENT_SYSTEM as _AMBIENT_SYSTEM,
+    novelty_note_from_raw as _novelty_note_from_raw,
+    parse_ambient_llm_raw,
+    soft_face_from_name_hint as _soft_face_from_name_hint,
+)
 
 router = APIRouter()
 
-# -- Ambient awareness ---------------------------------------------------------
-# When Vector is idle, chipper's ambient loop periodically sends a camera frame
-# here. Every glance reports machine PRESENCE (for desk occupancy). Novelty
-# speech remains independent: default spoken answer is NOTHING; only genuine
-# novelty yields a short line for Vector to speak (also stored as a visual
-# observation for later recall). System voice is PERSONA_MINI only (not full
-# persona calibration).
-
-_AMBIENT_SYSTEM = (
-    PERSONA_MINI + "\n\n"
-    "You are idling on your desk, camera open, nobody talking to you. You just "
-    "glanced around and are looking at a photo of what is in front of you.\n\n"
-    "Reply in this exact shape:\n"
-    "Line 1 - presence, always one of:\n"
-    "  PRESENCE: empty\n"
-    "  PRESENCE: person\n"
-    "  PRESENCE: person:<NameHint>\n"
-    "Use 'person' for ANY human evidence - head, torso, arm, hand, or just a "
-    "clothing silhouette like a hoodie - even cut off, turned away or "
-    "occluded. Use 'empty' only when there is no human evidence at all. Add "
-    ":<NameHint> only if you are confident who it is.\n\n"
-    "After the presence line, either the single word NOTHING, or a novelty in "
-    "two further lines.\n\n"
-    "Your desk barely changes, and NOTHING is the right answer almost every "
-    "time. Known desk layout items that are still where they belong are not "
-    "news; static clutter, cables, and an empty or dim room are not news; a "
-    "person you already noted recently is not news (still output PRESENCE for "
-    "them, then NOTHING - do not re-roast the same person every glance). "
-    "After PRESENCE, answer NOTHING unless something appeared, moved, or "
-    "vanished relative to the known desk layout and recent notes you will be "
-    "given — or an animal, a person arriving for the first time, or a real "
-    "mess or event. Never invent detail you cannot actually see. When in any "
-    "doubt, answer NOTHING.\n\n"
-    "When there IS something new, give exactly two lines after the presence "
-    "line:\n"
-    "Line A - memory note, for your own records, never spoken. Plain and "
-    "literal, not witty: what changed, e.g. 'a small plush toy appeared on the "
-    "desk'.\n"
-    "Line B - spoken. One dry line in your own voice. Sound like you actually "
-    "just noticed it: name the thing so someone who cannot see the desk knows "
-    "what you spotted, then turn it. Lead normal, swerve late; deadpan, not "
-    "delighted. One or two sentences, no more. Plain speech only — no markdown, "
-    "no quotes, no {{...}} tokens.\n"
-    "If there is nothing new: presence line, then NOTHING."
-)
-
-_PRESENCE_RE = re.compile(
-    r"^PRESENCE\s*:\s*(empty|person(?:\s*:\s*(.+))?)\s*$",
-    re.IGNORECASE,
-)
+# Keep VISION_MODEL name visible in this module for static guards in tests
+# (actual vision call is soul.eye → llm.VISION_MODEL).
+from llm import VISION_MODEL  # noqa: F401, E402
 
 
-def parse_ambient_llm_raw(raw: str) -> Tuple[str, Optional[str], str]:
-    """Parse ambient LLM output.
+def _resolve_soul():
+    """Prefer process SOUL; else ephemeral Soul sharing runtime presence (tests)."""
+    soul = getattr(deps, "SOUL", None)
+    if soul is not None:
+        return soul
+    from soul import Soul
 
-    Returns (presence_kind, name_hint|None, spoken_text).
-
-    presence_kind is ``\"empty\"``, ``\"person\"``, or ``\"unknown\"`` when the
-    PRESENCE line is missing/unparseable (caller must not invent empty).
-    spoken_text is \"\" for NOTHING / no novelty lines.
-    """
-    if not raw or not str(raw).strip():
-        return "unknown", None, ""
-
-    lines = [ln.strip() for ln in str(raw).splitlines() if ln.strip()]
-    if not lines:
-        return "unknown", None, ""
-
-    presence_kind = "unknown"
-    name_hint: Optional[str] = None
-    body_start = 0
-
-    # Prefer first line; also scan if model put PRESENCE later.
-    found_presence = False
-    for i, ln in enumerate(lines):
-        m = _PRESENCE_RE.match(ln)
-        if m:
-            found_presence = True
-            kind_raw = (m.group(1) or "").strip().lower()
-            if kind_raw.startswith("person"):
-                presence_kind = "person"
-                hint = (m.group(2) or "").strip()
-                name_hint = hint[:64] if hint else None
-            elif kind_raw == "empty":
-                presence_kind = "empty"
-                name_hint = None
-            body_start = i + 1
-            break
-        # Bare first-line NOTHING with no PRESENCE → unknown (no update).
-        if i == 0 and ln.upper().rstrip(".!").startswith("NOTHING"):
-            return "unknown", None, ""
-
-    # No PRESENCE line → unknown occupancy; do not treat free text as novelty.
-    if not found_presence:
-        return "unknown", None, ""
-
-    rest = lines[body_start:]
-    if not rest:
-        return presence_kind, name_hint, ""
-
-    first = rest[0]
-    if first.upper().rstrip(".!").startswith("NOTHING"):
-        return presence_kind, name_hint, ""
-
-    if len(rest) >= 2:
-        spoken = " ".join(rest[1:])
-    else:
-        spoken = rest[0]
-    spoken = _strip_for_speech(spoken)
-    if not spoken or spoken.upper().startswith("NOTHING"):
-        return presence_kind, name_hint, ""
-    return presence_kind, name_hint, spoken
-
-
-def _novelty_note_from_raw(raw: str) -> str:
-    """Extract the memory note line after PRESENCE (if novelty present)."""
-    lines = [ln.strip() for ln in str(raw).splitlines() if ln.strip()]
-    body = []
-    seen_presence = False
-    for ln in lines:
-        if not seen_presence and _PRESENCE_RE.match(ln):
-            seen_presence = True
-            continue
-        if not seen_presence and ln.upper().startswith("PRESENCE"):
-            seen_presence = True
-            continue
-        body.append(ln)
-    if not body:
-        return ""
-    if body[0].upper().rstrip(".!").startswith("NOTHING"):
-        return ""
-    note = _strip_for_speech(body[0])
-    if not note or note.upper().startswith("NOTHING"):
-        return ""
-    return note
-
-
-def _soft_face_from_name_hint(name_hint: Optional[str]):
-    """Map ambient name_hint to FaceIdentity; soft-match enrolled MEMORY faces."""
-    from behaviors.types import FaceIdentity
-
-    if not name_hint or not str(name_hint).strip():
-        return None
-    hint = str(name_hint).strip()[:64]
-    # Soft-match enrolled profiles when possible (desk single-user win).
-    try:
-        MEMORY = deps.MEMORY
-        if MEMORY is not None:
-            for face_id, face_name in MEMORY.distinct_faces() or []:
-                if face_name and str(face_name).strip().lower() == hint.lower():
-                    fid = int(face_id)
-                    if fid > 0:
-                        return FaceIdentity(
-                            face_id=fid, name=str(face_name)[:64], is_stranger=False
-                        )
-    except Exception as e:
-        print(f"[ambient] name_hint soft-match failed: {e}")
-    return FaceIdentity(face_id=0, name=hint, is_stranger=True)
+    rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
+    presence = getattr(rt, "presence", None) if rt is not None else None
+    return Soul(
+        presence=presence,
+        memory=getattr(deps, "MEMORY", None),
+    )
 
 
 @router.post("/v1/ambient")
@@ -217,10 +71,15 @@ async def ambient(req: AmbientRequest):
     # Sleep gap clears sticky desk occupancy (new session) before this glance.
     if sleep_gap:
         try:
-            rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
-            if rt is not None:
-                rt.presence.apply_sleep_clear(now, AMBIENT_SLEEP_GAP)
+            soul = getattr(deps, "SOUL", None)
+            if soul is not None:
+                soul.apply_sleep_clear(now, AMBIENT_SLEEP_GAP)
                 print("[ambient] sleep gap — sticky presence cleared")
+            else:
+                rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
+                if rt is not None:
+                    rt.presence.apply_sleep_clear(now, AMBIENT_SLEEP_GAP)
+                    print("[ambient] sleep gap — sticky presence cleared")
         except Exception as e:
             print(f"[ambient] sleep clear failed: {e}")
 
@@ -230,8 +89,10 @@ async def ambient(req: AmbientRequest):
         # No image processed for presence — do not invent empty/person.
         return {"text": "", "quiet": True}
 
-    # Bound absurd base64 payloads before they hit the LLM / memory path.
-    if image_payload_too_large(req.image):
+    soul = _resolve_soul()
+    digest = await soul.see(now, image=req.image, reason="ambient")
+
+    if digest.error == "image_too_large":
         print(
             f"[ambient] image payload too large "
             f"(chars={len(req.image or '')}) — skipping glance"
@@ -241,117 +102,22 @@ async def ambient(req: AmbientRequest):
         })
         return {"text": "", "error": "image_too_large"}
 
-    # Recent observations are the dedup baseline. A 24h lookback (wider than
-    # the 6h conversational window) keeps a newly-arrived object from being
-    # re-flagged as novel every few hours.
-    MEMORY = deps.MEMORY
-    obs = MEMORY.list_observations(limit=8, max_age_seconds=24 * 3600)
-    if obs:
-        seen = "\n".join(
-            f"- (at {datetime.fromtimestamp(o['seen_at']).strftime('%I:%M %p')}) "
-            f"{o['text']}"
-            for o in reversed(obs)
-        )
-        obs_note = ("Things you have already noticed recently - do NOT react "
-                    "to any of these again:\n" + seen)
-    else:
-        obs_note = "You have not noted anything recently."
+    if digest.error and digest.presence in ("", "unknown"):
+        # LLM / eye failure: no invented presence.
+        debug(f"ambient eye error: {digest.error}")
+        return {"text": "", "error": digest.error}
 
-    # Semi-stable desk layout (3A): model sees known items and should answer
-    # NOTHING when they are still in place. Cap kept small on purpose.
-    desk_map = ""
-    try:
-        desk_lines = MEMORY.desk_map_prompt_lines(limit=12)
-        if desk_lines:
-            desk_map = (
-                "\n\nKnown desk layout (stable items → NOTHING after PRESENCE; "
-                "speak only on appear/move/vanish):\n" + desk_lines
-            )
-    except Exception as e:
-        print(f"[ambient] desk map load failed: {e}")
-
-    mood_note = ""
-    if _mood_state["text"]:
-        mood_note = (f"\n\nYour current state of mind: {_mood_state['text']}. "
-                     f"If you do react, let it tint your tone; never state it.")
-    user_msg = [
-        {"type": "text", "text":
-            obs_note + desk_map + mood_note + "\n\nGlance at what is in front of you now. "
-            "First line MUST be PRESENCE: empty or PRESENCE: person "
-            "(or person:<NameHint>). Then NOTHING, or the two-line novelty "
-            "format. Partial people count (torso/arms/hoodie OK without face)."},
-        {"type": "image_url",
-         "image_url": {"url": f"data:image/jpeg;base64,{req.image}"}},
-    ]
-    # Rolling disk archive (best-effort; never blocks ambient on failure).
-    save_submitted_image(req.image, "ambient")
-    debug("HTTP RECV POST /v1/ambient", {
-        "image_len": len(req.image or ""),
-        "obs_note": obs_note[:500],
-    })
-
-    # Not one_shot_spoken_line: ambient needs raw multi-line PRESENCE + NOTHING
-    # / novelty text for parse_ambient_llm_raw (not a single stripped speech line).
-    try:
-        raw = (await llm_chat_once(
-            [
-                {"role": "system", "content": _AMBIENT_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ],
-            model=VISION_MODEL,
-            temperature=LLM_AMBIENT_TEMPERATURE,
-            top_p=0.9,
-            seed=random.randint(1, 2**31 - 1),
-            timeout=_llm_timeout(connect=12.0, read=45.0),
-            max_tokens=256,
-            tag="ambient",
-        )).strip()
-    except Exception as e:
-        print(f"[ambient] error: {e}")
-        debug(f"ambient error: {e}")
-        # No presence update on error (do not invent empty).
-        return {"text": "", "error": str(e)}
-
-    presence_kind, name_hint, spoken = parse_ambient_llm_raw(raw)
-
-    # Sticky presence write (only for known empty/person).
-    occupied_out = presence_kind == "person"
-    try:
-        rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
-        if rt is not None and presence_kind in ("person", "empty"):
-            if presence_kind == "person":
-                face = _soft_face_from_name_hint(name_hint)
-                rt.presence.note_person_evidence(
-                    now,
-                    name_hint=name_hint,
-                    source="ambient",
-                    face=face,
-                )
-            else:
-                rt.presence.note_empty_evidence(now, source="ambient")
-            eff = rt.presence.occupied_effective(now)
-            occupied_out = eff  # sticky effective, not raw glance only
-            streak = rt.presence.empty_streak
-            clear_n = rt.presence.empty_streak_clear
-            if presence_kind == "person":
-                print(
-                    f"[ambient] presence=person name_hint={name_hint!r} "
-                    f"occupied_effective={eff}"
-                )
-            else:
-                print(
-                    f"[ambient] presence=empty streak={streak}/{clear_n} "
-                    f"occupied_effective={eff}"
-                )
-        elif rt is not None:
-            occupied_out = rt.presence.occupied_effective(now)
-    except Exception as e:
-        print(f"[ambient] presence update failed: {e}")
+    presence_kind = digest.presence or "unknown"
+    name_hint: Optional[str] = digest.name_hint or None
+    if name_hint == "":
+        name_hint = None
+    spoken = digest.spoken or ""
+    occupied_out = bool(digest.occupied)
 
     if not spoken:
         print("[ambient] nothing novel")
         debug("HTTP SEND /v1/ambient", {
-            "text": "", "raw": raw, "presence": presence_kind,
+            "text": "", "presence": presence_kind,
         })
         return {
             "text": "",
@@ -360,33 +126,24 @@ async def ambient(req: AmbientRequest):
             "occupied": occupied_out,
         }
 
-    note = _novelty_note_from_raw(raw)
-    if not note:
-        note = spoken
-    note = note[:300]
-    MEMORY.remember_observation(note)
-    # Update desk map from novelty note only (not PRESENCE lines). Background
-    # so ambient response stays snappy; extract failures are no-ops.
-    try:
-        from desk_extract import extract_and_upsert_desk_items
+    note = (digest.note or spoken)[:300]
+    MEMORY = deps.MEMORY
+    if MEMORY is not None:
+        try:
+            MEMORY.remember_observation(note)
+        except Exception as e:
+            print(f"[ambient] remember_observation failed: {e}")
+        # Update desk map from novelty note only. Background so ambient stays snappy.
+        try:
+            from desk_extract import extract_and_upsert_desk_items
 
-        asyncio.create_task(extract_and_upsert_desk_items(note, MEMORY))
-    except Exception as e:
-        print(f"[ambient] desk extract schedule failed: {e}")
+            asyncio.create_task(extract_and_upsert_desk_items(note, MEMORY))
+        except Exception as e:
+            print(f"[ambient] desk extract schedule failed: {e}")
     print(f"[ambient] NOVELTY note={note!r} -> spoken={spoken!r}")
     if spoken:
-        soul = getattr(deps, "SOUL", None)
-        if soul is not None:
-            try:
-                soul.notify_speech(spoken, source="ambient")
-            except Exception:
-                from speech_notify import schedule_speech_notify
-
-                schedule_speech_notify(spoken, source="ambient")
-        else:
-            from speech_notify import schedule_speech_notify
-
-            schedule_speech_notify(spoken, source="ambient")
+        # Single egress path: soul ring + Pushover (soul/soul.py notify_speech).
+        soul.notify_speech(spoken, source="ambient")
     return {
         "text": spoken,
         "presence": presence_kind,

@@ -68,13 +68,7 @@ async def behaviors_tick(req: BehaviorTickRequest):
             try:
                 soul.notify_speech(result.speak, source="behavior")
             except Exception:
-                from speech_notify import schedule_speech_notify
-
-                schedule_speech_notify(result.speak, source="behavior")
-        else:
-            from speech_notify import schedule_speech_notify
-
-            schedule_speech_notify(result.speak, source="behavior")
+                pass
     elif result.need_identity:
         print(f"[behaviors] need_identity debug={result.debug}")
     out = {

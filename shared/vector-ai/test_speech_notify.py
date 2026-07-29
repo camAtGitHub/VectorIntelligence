@@ -230,8 +230,8 @@ def test_schedule_creates_task(monkeypatch):
     assert scheduled == [("Work time?", "behavior")]
 
 
-def test_behaviors_route_schedules_on_speak(monkeypatch):
-    """Tick with non-empty speak must call schedule_speech_notify."""
+def test_behaviors_route_no_direct_schedule_without_soul(monkeypatch):
+    """Without SOUL, speak still returns but must not call schedule_speech_notify."""
     import deps
     from routes import behaviors_http
     from routes.models import BehaviorTickRequest
@@ -249,7 +249,7 @@ def test_behaviors_route_schedules_on_speak(monkeypatch):
             return _Result()
 
     monkeypatch.setattr("deps.BEHAVIOR_RUNTIME", _Runtime())
-    # Force legacy path (no SOUL) so schedule is called directly.
+    # No pot → no notify path (schedule is soul-only implementation detail).
     monkeypatch.setattr(deps, "SOUL", None, raising=False)
     calls: List[tuple] = []
 
@@ -267,7 +267,7 @@ def test_behaviors_route_schedules_on_speak(monkeypatch):
         assert out["speak"] == "Time for a break."
 
     asyncio.run(_run())
-    assert calls == [("Time for a break.", "behavior")]
+    assert calls == []
 
 
 def test_behaviors_route_via_soul_notify(monkeypatch):

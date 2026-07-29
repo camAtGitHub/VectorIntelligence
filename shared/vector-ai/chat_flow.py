@@ -249,7 +249,18 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
         )
         messages[-1].content = content
         for url in archive_urls:
-            save_submitted_image(url, "chat")
+            path = save_submitted_image(url, "chat")
+            # Light eye frame on soul (no second LLM; chat stream owns reply).
+            if soul is not None:
+                try:
+                    soul.note_eye_frame(
+                        now_voice,
+                        reason="chat",
+                        frame_path=str(path) if path else "",
+                        note="chat frame",
+                    )
+                except Exception:
+                    pass
 
     # Vision-intent backstop: if the user is clearly asking to look at something
     # and no photo is attached yet, force the camera command rather than letting
@@ -346,20 +357,14 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
         # eye-colour/animation directives chipper consumed.
         reply = re.sub(r'\{\{[^}]*\}\}', '', " ".join(reply_parts))
         reply = re.sub(r'\s+', ' ', reply).strip()
-        # Mirror spoken chat text to pot + Pushover (fire-and-forget; no TTS wait).
+        # Mirror spoken chat text via pot (last_spoke + Pushover); single path.
         if reply:
             soul_out = getattr(deps, "SOUL", None)
             if soul_out is not None:
                 try:
                     soul_out.notify_speech(reply, source="chat")
                 except Exception:
-                    from speech_notify import schedule_speech_notify
-
-                    schedule_speech_notify(reply, source="chat")
-            else:
-                from speech_notify import schedule_speech_notify
-
-                schedule_speech_notify(reply, source="chat")
+                    pass
         mem_face = eff_face if (eff_face and not eff_face.get("is_stranger")
                                 and eff_face.get("face_id")) else None
         MEMORY = deps.MEMORY

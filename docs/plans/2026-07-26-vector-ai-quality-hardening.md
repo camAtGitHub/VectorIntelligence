@@ -28,7 +28,7 @@ The brain is already well modularized (composition root, routes, behaviors plugi
 
 - Global UNIQUE on `memories(text)` schema change / multi-user ownership index
 - Forget substring → exact-match overhaul (would change ops + LLM forget UX)
-- Full presence-clock unification (chat / PresenceCache / greeting)
+- Full presence-clock unification (chat / PresenceCache / greeting) — **addressed by soul melting pot** (`docs/plans/2026-07-29-soul-melting-pot.md`; design: `docs/superpowers/specs/2026-07-29-soul-melting-pot-design.md`)
 - Shared httpx client lifecycle (nice; not correctness)
 - Ambient route full service extraction (optional if time)
 - Implementing `min_tick_interval` throttle (would change tick frequency)

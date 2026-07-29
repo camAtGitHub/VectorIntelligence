@@ -226,6 +226,8 @@ Before any proactive line is returned as the tick’s winner:
 
 ### 3.6 Presence cache (shared)
 
+**Soul owns presence / face / eye clocks.** The process-wide `deps.SOUL` melting pot holds one shared `PresenceCache` (same instance as `BehaviorRuntime`), face buffer + effective face, vision digests (`eye`), and speech/presence clocks (`last_seen_at`, `last_spoke_at`, `last_user_voice_at`). Greeting, ambient, face_seen, mood, and notify write through soul rather than private module clocks. Ops: `GET /v1/soul` → `SOUL.snapshot(now)` (no base64 frames).
+
 | Layer | Use for | Do not use for |
 |--------|---------|----------------|
 | **Occupancy** | “Desk not empty,” away timers, sticky presence | “This is Cam” |

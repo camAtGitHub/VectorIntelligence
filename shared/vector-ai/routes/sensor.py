@@ -86,13 +86,7 @@ async def sensor_reaction(req: SensorReactionRequest):
             try:
                 soul.notify_speech(clean, source="sensor")
             except Exception:
-                from speech_notify import schedule_speech_notify
-
-                schedule_speech_notify(clean, source="sensor")
-        else:
-            from speech_notify import schedule_speech_notify
-
-            schedule_speech_notify(clean, source="sensor")
+                pass
     print(f"[sensor_reaction] {req.event} -> {clean!r}")
     debug("HTTP SEND /v1/sensor_reaction response", {"text": clean})
     return {"text": clean}

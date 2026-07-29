@@ -37,6 +37,8 @@ class VisionDigest:
     spoken: str = ""
     model: str = ""
     frame_path: str = ""
+    error: str = ""
+    occupied: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -293,7 +293,7 @@ def test_ambient_person_soft_match_enrolled(tmp_path, monkeypatch):
         async def _llm(*a, **k):
             return "PRESENCE: person:Cam\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
 
         result = asyncio.run(ambient(AmbientRequest(image="fakejpg")))
         assert result["text"] == ""
@@ -338,7 +338,7 @@ def test_ambient_empty_twice_clears(tmp_path, monkeypatch):
         async def _empty(*a, **k):
             return "PRESENCE: empty\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _empty)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _empty)
 
         r1 = asyncio.run(ambient(AmbientRequest(image="x")))
         assert r1["presence"] == "empty"
@@ -368,7 +368,7 @@ def test_ambient_image_too_large_skips_llm(tmp_path, monkeypatch):
         calls.append(1)
         return "PRESENCE: empty\nNOTHING"
 
-    monkeypatch.setattr("routes.ambient.llm_chat_once", _should_not_run)
+    monkeypatch.setattr("soul.eye.llm_chat_once", _should_not_run)
     # Cap is 5.5M chars; use slightly over without allocating multi-GB.
     huge = "A" * (5_500_000 + 10)
     result = asyncio.run(ambient(AmbientRequest(image=huge)))
@@ -405,7 +405,7 @@ def test_ambient_novelty_still_remembers(tmp_path, monkeypatch):
                 "A rubber duck. Of course."
             )
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _novel)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _novel)
         result = asyncio.run(ambient(AmbientRequest(image="x")))
         assert "duck" in result["text"].lower() or "Of course" in result["text"]
         assert result["presence"] == "empty"
@@ -437,7 +437,7 @@ def test_ambient_llm_error_no_presence_update(tmp_path, monkeypatch):
         async def _boom(*a, **k):
             raise RuntimeError("llm down")
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _boom)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _boom)
         result = asyncio.run(ambient(AmbientRequest(image="x")))
         assert result.get("text") == ""
         assert "error" in result
@@ -692,7 +692,7 @@ def test_ambient_unknown_presence_no_sticky_write(tmp_path, monkeypatch):
         async def _bare(*a, **k):
             return "NOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _bare)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _bare)
         result = asyncio.run(ambient(AmbientRequest(image="x")))
         assert result["presence"] == "unknown"
         assert result["text"] == ""
@@ -725,7 +725,7 @@ def test_ambient_first_empty_occupied_effective_true(tmp_path, monkeypatch):
         async def _empty(*a, **k):
             return "PRESENCE: empty\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _empty)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _empty)
         result = asyncio.run(ambient(AmbientRequest(image="x")))
         assert result["presence"] == "empty"
         assert result["occupied"] is True  # sticky still warm
@@ -754,7 +754,7 @@ def test_ambient_unmatched_soft_stranger(tmp_path, monkeypatch):
         async def _llm(*a, **k):
             return "PRESENCE: person:NobodyKnown\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
         result = asyncio.run(ambient(AmbientRequest(image="x")))
         assert result["presence"] == "person"
         face = rt.presence.snapshot.face
@@ -788,7 +788,7 @@ def test_ambient_soft_match_case_insensitive(tmp_path, monkeypatch):
         async def _llm(*a, **k):
             return "PRESENCE: person:cam\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
         asyncio.run(ambient(AmbientRequest(image="x")))
         face = rt.presence.snapshot.face
         assert face is not None
@@ -823,7 +823,7 @@ def test_presence_line_not_in_observations(tmp_path, monkeypatch):
                 "A duck. Lovely."
             )
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _novel)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _novel)
         asyncio.run(ambient(AmbientRequest(image="x")))
         obs = store.list_observations(limit=10)
         assert obs
@@ -858,7 +858,7 @@ def test_ambient_sleep_gap_clears_sticky(tmp_path, monkeypatch):
         async def _person(*a, **k):
             return "PRESENCE: empty\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _person)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _person)
         # Sleep clear runs before glance; then empty may re-set streak from cleared state.
         asyncio.run(ambient(AmbientRequest(image="x")))
         # After sleep clear + one empty: not sticky from pre-sleep person.
@@ -1083,7 +1083,7 @@ def test_ambient_user_prompt_includes_desk_layout(tmp_path, monkeypatch):
             captured["user_text"] = text
             return "PRESENCE: empty\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
         result = asyncio.run(ambient(AmbientRequest(image="x")))
         assert result["text"] == ""
         ut = captured.get("user_text") or ""
@@ -1129,7 +1129,7 @@ def test_ambient_user_prompt_no_layout_when_empty(tmp_path, monkeypatch):
             captured["user_text"] = text
             return "PRESENCE: empty\nNOTHING"
 
-        monkeypatch.setattr("routes.ambient.llm_chat_once", _llm)
+        monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
         asyncio.run(ambient(AmbientRequest(image="x")))
         ut = captured.get("user_text") or ""
         assert "Known desk layout" not in ut

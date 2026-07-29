@@ -212,13 +212,7 @@ async def proactive_greeting(req: GreetingRequest):
             try:
                 soul_out.notify_speech(line, source="greeting")
             except Exception:
-                from speech_notify import schedule_speech_notify
-
-                schedule_speech_notify(line, source="greeting")
-        else:
-            from speech_notify import schedule_speech_notify
-
-            schedule_speech_notify(line, source="greeting")
+                pass
     print(f"[greeting] {name} (arrived) -> {line!r}")
     debug("HTTP SEND /v1/proactive_greeting", {"text": line})
     return {"text": line}

@@ -1,4 +1,4 @@
-"""Soul facade: one hot scratch for presence, face, speech clocks, mood."""
+"""Soul facade: one hot scratch for presence, face, eye, speech clocks, mood."""
 from __future__ import annotations
 
 from collections import deque
@@ -7,6 +7,7 @@ from typing import Any, Deque, Optional
 from behaviors.presence import PresenceCache
 from behaviors.types import FaceIdentity
 
+from .eye import EyeService
 from .face import FaceService
 from .types import VisionDigest, build_soul_snapshot
 
@@ -17,8 +18,9 @@ _LOG_MAX = 64
 class Soul:
     """Desk-day continuity brain (scratch).
 
-    Owns one PresenceCache (shared with BehaviorRuntime) and one FaceService.
-    Policies read via occupied / current_face / snapshot; writers call note_*.
+    Owns one PresenceCache (shared with BehaviorRuntime), one FaceService,
+    and one EyeService. Policies read via occupied / current_face / snapshot;
+    writers call note_* / see.
     """
 
     def __init__(
@@ -33,6 +35,7 @@ class Soul:
         sticky_s: int = 1800,
         empty_streak_clear: int = 2,
         face_recent_window_s: Optional[float] = None,
+        eye: Optional[EyeService] = None,
     ):
         if presence is not None:
             self.presence = presence
@@ -46,6 +49,7 @@ class Soul:
         self.face = face or FaceService(recent_window_s=face_recent_window_s)
         self.memory = memory
         self.continuity = continuity
+        self.eye = eye or EyeService(image_max_age_s=image_max_age_s)
 
         # Speech / presence clocks (floats; 0 = never).
         self._last_seen_at: float = 0.0
@@ -56,8 +60,6 @@ class Soul:
         self._mood_text: str = ""
         self._mood_updated: float = 0.0
 
-        # Eye / notify stubs (filled in later phases).
-        self._last_vision: Optional[VisionDigest] = None
         self._notify_recent: Deque[dict] = deque(maxlen=_NOTIFY_RING_MAX)
         self._log: Deque[dict] = deque(maxlen=_LOG_MAX)
 
@@ -165,8 +167,8 @@ class Soul:
         except Exception:
             pass
 
-    def apply_sleep_clear(self, now: float) -> None:
-        self.presence.apply_sleep_clear(float(now))
+    def apply_sleep_clear(self, now: float, sleep_gap_s: float = 0.0) -> None:
+        self.presence.apply_sleep_clear(float(now), sleep_gap_s)
         self.face.apply_sleep_clear()
 
     # -- readers ----------------------------------------------------------------
@@ -229,22 +231,52 @@ class Soul:
             {"t": float(now), "txt": str(txt or "")[:500], "amb": bool(amb)}
         )
 
-    # -- stubs (later phases fill real eye / notify) ----------------------------
+    # -- eye --------------------------------------------------------------------
 
-    def see(
+    async def see(
         self,
         now: float,
         *,
+        image: str = "",
+        reason: str = "ambient",
         frame_b64_or_url: str = "",
-        reason: str = "",
         **kwargs: Any,
-    ) -> Optional[VisionDigest]:
-        """Stub: eye.see implemented in a later phase. Returns None."""
-        del now, frame_b64_or_url, reason, kwargs
-        return None
+    ) -> VisionDigest:
+        """Vision path: archive + (ambient) VISION_MODEL PRESENCE + presence write.
+
+        ``image`` is preferred; ``frame_b64_or_url`` is an alias for design API.
+        """
+        del kwargs
+        frame = image or frame_b64_or_url or ""
+        return await self.eye.see(self, float(now), image=frame, reason=reason or "ambient")
+
+    def note_eye_frame(
+        self,
+        now: float,
+        *,
+        reason: str = "chat",
+        frame_path: str = "",
+        note: str = "",
+        presence: str = "",
+        name_hint: str = "",
+    ) -> VisionDigest:
+        """Light eye digest without a second LLM (chat already archived the frame)."""
+        return self.eye.note_frame(
+            float(now),
+            reason=reason,
+            frame_path=frame_path,
+            note=note,
+            presence=presence,
+            name_hint=name_hint,
+            occupied=self.occupied(float(now)),
+        )
 
     def last_vision(self) -> Optional[VisionDigest]:
-        return self._last_vision
+        return self.eye.last_vision
+
+    def image_fresh(self, now: float) -> bool:
+        """Whether eye has a recent archived frame (IMAGE_CACHE_MAX_AGE_S)."""
+        return self.eye.image_fresh(float(now))
 
     def notify_speech(self, text: str, *, source: str = "chat") -> None:
         """Record outbound speech clock + ring, then fire-and-forget Pushover.
@@ -283,7 +315,8 @@ class Soul:
     def snapshot(self, now: float) -> dict:
         now = float(now)
         face_cur = self.face.current(now)
-        last_v = self._last_vision.to_dict() if self._last_vision else None
+        last = self.eye.last_vision
+        last_v = last.to_dict() if last else None
         mood_text = self.mood_text()
         mood_updated = self._mood_updated
         try:
@@ -293,7 +326,7 @@ class Soul:
                 mood_updated = float(process_state._mood_state["updated"] or 0.0)
         except Exception:
             pass
-        return build_soul_snapshot(
+        snap = build_soul_snapshot(
             now,
             occupied=self.occupied(now),
             session_started_at=self.session_started_at(),
@@ -308,3 +341,6 @@ class Soul:
             last_vision=last_v,
             notify_recent=list(self._notify_recent),
         )
+        snap["eye"]["image_fresh"] = self.image_fresh(now)
+        snap["eye"]["buffer"] = self.eye.buffer_list()
+        return snap
