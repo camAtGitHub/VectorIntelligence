@@ -520,6 +520,138 @@ rg "last_seen_at" shared/vector-ai/routes/soul.py  # expect 0 in response path i
 
 ---
 
+## Phase 6 — Text chat inject (bypass STT, continue session) **[required]**
+
+### Problem
+
+You want to **type** into the same kind of multi-turn conversation the robot has after STT — without holding a full OpenAI `messages[]` client-side, and without going through the mic.
+
+Today:
+
+- `POST /v1/chat/completions` already bypasses STT **if** you supply the entire history every time (Wire-Pod does this with SaveChat).
+- There is **no** simple “here is my reply text; continue the session” endpoint owned by vector-ai.
+
+### Product shape
+
+| Method | Path | Role |
+|--------|------|------|
+| `POST` | `/v1/chat/session/message` | Append user text → run brain → append assistant → return reply |
+| `GET` | `/v1/chat/session` | Inspect current session messages (ops) |
+| `DELETE` | `/v1/chat/session` | Clear session (start fresh) |
+
+**Request (message):**
+
+```json
+{
+  "text": "hey bandit, what were we talking about?",
+  "session_id": "default",
+  "stream": false,
+  "speak": false
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|--------|
+| `text` | required | User utterance (as if STT succeeded) |
+| `session_id` | `"default"` | Multiple sessions if needed (e.g. per ESN later) |
+| `stream` | `false` | `true` → same SSE shape as `/v1/chat/completions` for progressive clients |
+| `speak` | `false` | **Stretch:** ask chipper to TTS (not required for v2; document as future). Always run `SOUL.notify_speech` when a spoken line is produced if we treat inject as chat (Pushover mirror). |
+
+**Response (non-stream):**
+
+```json
+{
+  "session_id": "default",
+  "reply": "…assistant text without {{tags}}…",
+  "reply_raw": "…optional with tags before strip…",
+  "message_count": 12
+}
+```
+
+### Server-side session store
+
+1. **Module** `shared/vector-ai/chat_session.py` (or under `routes/`):
+   - In-memory `dict[session_id] -> list[{role, content}]`
+   - Cap history (e.g. last **N** turns = `MAX_HISTORY_MESSAGES` from llm.py, or 24 user+assistant pairs)
+   - Thread/async-safe enough for single event loop (same as rest of vector-ai)
+
+2. **Flow for POST message:**
+   ```
+   text = strip
+   session.append({role: user, content: text})
+   SOUL.note_user_voice(now)
+   messages = session as Message models (no system — prepare_messages adds system)
+   if stream: StreamingResponse(generate(...)) and also capture full reply into session
+   else: collect generate() SSE / use non-stream helper → clean_response path as chat does
+   session.append({role: assistant, content: cleaned_reply})
+   return reply
+   ```
+   **Must** call the same `generate()` / `prepare_messages` / soul inject as voice chat so full soul + growth tags work.
+
+3. **Persistence (optional v2):** session may be RAM-only; document restart clears inject history. Stretch: append last K turns into `soul.json` or `memory.db` — **not required** for first ship.
+
+### Relationship to Wire-Pod SaveChat
+
+| Store | Owner | Inject API updates it? |
+|-------|--------|-------------------------|
+| vector-ai session | brain | **Yes** |
+| chipper `RememberedChats` | Wire-Pod | **No** in v2 (would need chipper HTTP + rebuild) |
+
+**Document clearly:** typing via inject continues the **brain session**. Voice turns that only go Wire-Pod → completions with **chipper-held** history will **not** automatically merge unless the client later unifies them. Acceptable for ops/debug/keyboard companion; optional follow-up: chipper `POST` to merge or “prefer brain session when non-empty.”
+
+**Do not** break existing `/v1/chat/completions` — Wire-Pod keeps using it unchanged.
+
+### Implementation details
+
+1. `routes/models.py`: `ChatSessionMessageRequest`, optional `ChatSessionClearRequest`
+2. `routes/chat.py` or `routes/chat_session.py`: endpoints above
+3. Prefer collecting non-stream by iterating `generate()` and joining content deltas (already SSE chunks) — same as tests in `test_service_modules.py`
+4. On success: `SOUL.notify_speech(reply, source="chat")` when reply non-empty (parity with voice chat)
+5. Register routes; update `EXPECTED_ROUTES` in tests
+6. **Example curl:**
+   ```bash
+   curl -s -X POST http://127.0.0.1:8090/v1/chat/session/message \
+     -H 'Content-Type: application/json' \
+     -d '{"text":"hello from the keyboard"}'
+   curl -s -X POST http://127.0.0.1:8090/v1/chat/session/message \
+     -H 'Content-Type: application/json' \
+     -d '{"text":"and this is my reply in the same session"}'
+   curl -s http://127.0.0.1:8090/v1/chat/session | jq
+   ```
+
+### Tests
+
+- Two sequential injects: second request’s prepared messages include first user+assistant turn  
+- Empty text → 400  
+- DELETE clears; next message has no prior turns  
+- `note_user_voice` / generate mocked; route returns reply  
+- Does not require robot or chipper  
+
+### Documentation references
+
+- `routes/chat.py` L13–34  
+- `chat_flow.generate`  
+- `prompt_assembly.prepare_messages`  
+- Wire-Pod SaveChat: `kgsim.go` Remember / GetChat (contrast only)  
+- SSE tests: `test_service_modules.py` generate helpers  
+
+### Verification checklist
+
+- [ ] `POST /v1/chat/session/message` twice → multi-turn context  
+- [ ] Full soul strip still applied via prepare_messages (chat path)  
+- [ ] Growth tags from inject still stripped/applied like voice chat  
+- [ ] `/v1/chat/completions` unchanged for Wire-Pod  
+- [ ] pytest for session module + routes  
+
+### Anti-pattern guards
+
+- Do not invent a second LLM path that skips `prepare_messages`  
+- Do not require chipper rebuild for v2 inject  
+- Do not put STT or audio in this API  
+- Do not silently overwrite chipper RememberedChats without an explicit later design  
+
+---
+
 ## Suggested implementation order
 
 | Order | Phase | Risk | Why |
@@ -529,9 +661,10 @@ rg "last_seen_at" shared/vector-ai/routes/soul.py  # expect 0 in response path i
 | 3 | Phase 3 PATCH fields | low | Ops set without LLM |
 | 4 | **Phase 3.5 dream/goals LLM jobs + tags + auto trigger** | medium–high | Product growth path; needs full view |
 | 5 | Phase 4 prompt inject full/lite for chat/greeting | medium | Everyday continuity |
-| 6 | Phase 5 docs + full pytest | low | Gate |
+| 6 | **Phase 6 text chat session inject** | medium | Keyboard / ops multi-turn; independent of soul disk but benefits from Phase 4 |
+| 7 | Phase 5 docs + full pytest | low | Gate |
 
-Phases 1–2 are prerequisites for 3.5 (persist + full view). Keep tests green each step.
+Phases 1–2 are prerequisites for 3.5 (persist + full view). Phase 6 can parallelize after chat/soul wiring is stable (needs `generate` + optional full soul inject). Keep tests green each step.
 
 ---
 
@@ -543,7 +676,8 @@ Phases 1–2 are prerequisites for 3.5 (persist + full view). Keep tests green e
 4. Exactly three goals always.  
 5. **`POST /v1/soul/dream`** (and/or auto sleep trigger) runs an LLM job with **full soul**, updates dream + goals, saves disk; instructions push aspire/grow/update goals.  
 6. Chat can trigger growth via silent tags (or documented equivalent) without speaking tags.  
-7. Full `pytest shared/vector-ai/` green.  
+7. **`POST /v1/chat/session/message`** accepts typed text (no STT); successive calls continue the same session; `GET`/`DELETE` session work.  
+8. Full `pytest shared/vector-ai/` green.  
 
 ---
 
@@ -567,12 +701,15 @@ Phases 1–2 are prerequisites for 3.5 (persist + full view). Keep tests green e
 | `shared/vector-ai/test_soul_persist.py` | **NEW** |
 | `shared/vector-ai/test_soul_view.py` | **NEW** |
 | `shared/vector-ai/test_soul_growth.py` | **NEW** dream job + tags |
+| `shared/vector-ai/chat_session.py` | **NEW** multi-turn inject store |
+| `shared/vector-ai/routes/chat.py` or `chat_session` routes | session message GET/DELETE/POST |
+| `shared/vector-ai/routes/models.py` | ChatSessionMessageRequest |
+| `shared/vector-ai/test_chat_session.py` | **NEW** multi-turn inject |
 | `shared/vector-ai/test_soul_core.py` / `test_service_modules.py` / `test_prompt_assembly.py` | keys + routes |
 | `docs/plans/2026-07-29-soul-v2-persist-llm-view.md` | this file |
 | `AGENTS.md` | docs map |
 
-**Not touched:** chipper Go, sensor cooldown, workday FSM math.
-
+**Not touched for v2:** chipper Go / SaveChat merge, sensor cooldown, workday FSM math.
 ---
 
 ## Out of scope
@@ -583,6 +720,7 @@ Phases 1–2 are prerequisites for 3.5 (persist + full view). Keep tests green e
 - Encrypting soul.json  
 - Persisting PresenceCache sticky occupancy perfectly across long restarts  
 - Speaking the entire dream aloud every morning (optional later; field + ops is enough for v2)  
+- Merging inject session into chipper `RememberedChats` / robot TTS of inject replies (stretch)  
 
 ---
 
@@ -592,4 +730,6 @@ Phases 1–2 are prerequisites for 3.5 (persist + full view). Keep tests green e
 |---|------|
 | 1 | Restart vector-ai; confirm `vector-ai/soul.json` appears after first chat/mood |
 | 2 | `curl -s localhost:8090/v1/soul \| jq` — read long keys |
+| 3 | Keyboard chat: `POST /v1/chat/session/message` twice; confirm second reply has context |
+| 4 | `GET /v1/chat/session` then `DELETE` to reset |
 | 3 | Optional: PATCH goals/dream; restart; confirm still there |
