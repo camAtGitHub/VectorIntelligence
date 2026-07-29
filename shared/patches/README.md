@@ -15,6 +15,8 @@ wire-pod/chipper/pkg/wirepod/...
 
 Ambient, sensors, face probe, behavior-tick, speech volume, conversation mode
 (Save Chat only), robotsession, wake-word mute, etc. are **normal in-tree Go**.
+Sensor TTS cooldowns (`SENSOR_TTS_COOLDOWN_S` / `SENSOR_TTS_GLOBAL_COOLDOWN_S`)
+live only in monorepo `wire-pod/.../ttr/sensor_reactions.go`, not this archive.
 
 ## Why these files still exist
 

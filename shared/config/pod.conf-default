@@ -41,6 +41,13 @@
 # SPEECH_MIN_GAP_S=90
 # SPEECH_SUPPRESS_AFTER_VOICE_S=120
 #
+# -- Sensor TTS cooldowns (chipper process env; full install: pod.conf overlay) -
+# Pickup / putdown / pet rising edges in sensor_reactions.go. Not vector-ai.
+# SENSOR_TTS_COOLDOWN_S: min gap per (robot, event). Default 120.
+# SENSOR_TTS_GLOBAL_COOLDOWN_S: min gap between any sensor line for that robot. Default 60.
+# SENSOR_TTS_COOLDOWN_S=120
+# SENSOR_TTS_GLOBAL_COOLDOWN_S=60
+#
 # -- Desk occupancy sticky + chat face cache (single-user desk defaults) ------
 # Ambient every glance reports PRESENCE (person/empty); partial body counts.
 # Occupancy sticks until empty streak, sticky TTL, or ambient sleep gap (~4h).

@@ -30,6 +30,7 @@ class BehaviorRuntime:
         quiet_fn: Optional[Callable[[], bool]] = None,
         voice_ts_fn: Optional[Callable[[], float]] = None,
         joke_cfg: Optional[JokeConfig] = None,
+        presence: Optional[PresenceCache] = None,
     ):
         self.runtime_cfg = runtime_cfg
         self.workday_cfg = workday_cfg
@@ -37,15 +38,20 @@ class BehaviorRuntime:
         self.quiet_fn = quiet_fn or (lambda: False)
         self.voice_ts_fn = voice_ts_fn or (lambda: 0.0)
 
-        # Use defaults only when attribute missing; allow intentional 0.
-        _sticky = getattr(runtime_cfg, "presence_sticky_s", None)
-        _streak = getattr(runtime_cfg, "presence_empty_streak", None)
-        self.presence = PresenceCache(
-            face_max_age_s=runtime_cfg.face_cache_max_age_s,
-            image_max_age_s=runtime_cfg.image_cache_max_age_s,
-            sticky_s=int(1800 if _sticky is None else _sticky),
-            empty_streak_clear=int(2 if _streak is None else _streak),
-        )
+        # Prefer a shared PresenceCache (Soul composition root) when provided;
+        # otherwise construct as today so unit tests keep working standalone.
+        if presence is not None:
+            self.presence = presence
+        else:
+            # Use defaults only when attribute missing; allow intentional 0.
+            _sticky = getattr(runtime_cfg, "presence_sticky_s", None)
+            _streak = getattr(runtime_cfg, "presence_empty_streak", None)
+            self.presence = PresenceCache(
+                face_max_age_s=runtime_cfg.face_cache_max_age_s,
+                image_max_age_s=runtime_cfg.image_cache_max_age_s,
+                sticky_s=int(1800 if _sticky is None else _sticky),
+                empty_streak_clear=int(2 if _streak is None else _streak),
+            )
         self.arbiter = SpeechArbiter(
             min_gap_s=runtime_cfg.speech_min_gap_s,
             suppress_after_voice_s=runtime_cfg.speech_suppress_after_voice_s,

@@ -9,6 +9,7 @@ from typing import Any, Optional
 # Populated by service.py immediately after construction.
 MEMORY: Any = None
 BEHAVIOR_RUNTIME: Any = None
+SOUL: Any = None
 _runtime_cfg: Any = None
 _workday_cfg: Any = None
 JOKE_CFG: Any = None

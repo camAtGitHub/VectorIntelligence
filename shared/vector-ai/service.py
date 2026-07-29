@@ -62,10 +62,28 @@ deps.MEMORY = MEMORY
 
 # -- Multi-behavior runtime (Work Day Mode first passenger) --------------------
 # Intelligence lives under behaviors/; this service only wires HTTP + chat hooks.
+# Soul owns one shared PresenceCache; BehaviorRuntime receives the same instance.
+from behaviors.presence import PresenceCache
+from soul import Soul
+
 _runtime_cfg = load_runtime_config()
 _workday_cfg = load_workday_config()
 JOKE_CFG = load_joke_config()
 _continuity = ContinuityStore(ROOT / "workday.db")
+_sticky = getattr(_runtime_cfg, "presence_sticky_s", None)
+_streak = getattr(_runtime_cfg, "presence_empty_streak", None)
+_presence_cache = PresenceCache(
+    face_max_age_s=_runtime_cfg.face_cache_max_age_s,
+    image_max_age_s=_runtime_cfg.image_cache_max_age_s,
+    sticky_s=int(1800 if _sticky is None else _sticky),
+    empty_streak_clear=int(2 if _streak is None else _streak),
+)
+SOUL = Soul(
+    presence=_presence_cache,
+    memory=MEMORY,
+    continuity=_continuity,
+)
+deps.SOUL = SOUL
 BEHAVIOR_RUNTIME = BehaviorRuntime(
     _runtime_cfg,
     _workday_cfg,
@@ -73,6 +91,7 @@ BEHAVIOR_RUNTIME = BehaviorRuntime(
     quiet_fn=lambda: bool(_ambient_state.get("quiet")),
     voice_ts_fn=lambda: process_state._LAST_USER_VOICE_TS,
     joke_cfg=JOKE_CFG,
+    presence=_presence_cache,
 )
 deps.BEHAVIOR_RUNTIME = BEHAVIOR_RUNTIME
 deps._runtime_cfg = _runtime_cfg
