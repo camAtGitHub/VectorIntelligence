@@ -520,22 +520,25 @@ rg "last_seen_at" shared/vector-ai/routes/soul.py  # expect 0 in response path i
 | Order | Phase | Risk | Why |
 |-------|-------|------|-----|
 | 1 | Phase 1 persist + goals + dream fields | medium | Foundation on disk |
-| 2 | Phase 2 llm_view long keys + relative | medium | GET + prompt share one builder |
-| 3 | Phase 3 HTTP PATCH optional | low | Can merge with 1 |
-| 4 | Phase 4 prompt inject full/lite | medium | Product feel |
-| 5 | Phase 5 docs + full pytest | low | Gate |
+| 2 | Phase 2 llm_view long keys + “It has been X since Y” | medium | GET + growth jobs + prompt share one builder |
+| 3 | Phase 3 PATCH fields | low | Ops set without LLM |
+| 4 | **Phase 3.5 dream/goals LLM jobs + tags + auto trigger** | medium–high | Product growth path; needs full view |
+| 5 | Phase 4 prompt inject full/lite for chat/greeting | medium | Everyday continuity |
+| 6 | Phase 5 docs + full pytest | low | Gate |
 
-Phases 1–3 can ship as one PR if small; keep tests green each step.
+Phases 1–2 are prerequisites for 3.5 (persist + full view). Keep tests green each step.
 
 ---
 
 ## Success criteria
 
 1. Restart vector-ai → speech clocks / mood / goals / dream / rings reload from `soul.json`.  
-2. `GET /v1/soul` is readable by a human (or LLM) **without** knowing Vector internals; times are relative.  
+2. `GET /v1/soul` is readable by a human (or LLM) **without** knowing Vector internals; times use **It has been X since Y** (or Time since / was ago / never).  
 3. Chat prompts include goals + dream + continuity strip; ambient does not get a novel.  
 4. Exactly three goals always.  
-5. Full `pytest shared/vector-ai/` green.  
+5. **`POST /v1/soul/dream`** (and/or auto sleep trigger) runs an LLM job with **full soul**, updates dream + goals, saves disk; instructions push aspire/grow/update goals.  
+6. Chat can trigger growth via silent tags (or documented equivalent) without speaking tags.  
+7. Full `pytest shared/vector-ai/` green.  
 
 ---
 
@@ -544,17 +547,22 @@ Phases 1–3 can ship as one PR if small; keep tests green each step.
 | File | Change |
 |------|--------|
 | `shared/vector-ai/soul/persist.py` | **NEW** load/save |
-| `shared/vector-ai/soul/view.py` | **NEW** llm_view + format_for_prompt |
-| `shared/vector-ai/soul/soul.py` | goals, dream, load/save hooks, snapshot→view |
+| `shared/vector-ai/soul/view.py` | **NEW** llm_view + format_for_prompt + time phrases |
+| `shared/vector-ai/soul/growth.py` | **NEW** run_dream_job / reflect_goals |
+| `shared/vector-ai/soul/growth_prompts.py` | **NEW** GrowBot-adapted system + JSON schema |
+| `shared/vector-ai/soul/soul.py` | goals, dream, last_dream_job_at, load/save, snapshot→view |
 | `shared/vector-ai/soul/types.py` | maybe deprecate short snapshot builder |
 | `shared/vector-ai/service.py` | load_from_disk after construct |
-| `shared/vector-ai/routes/soul.py` | llm_view; optional PATCH |
-| `shared/vector-ai/prompt_assembly.py` | inject full strip |
+| `shared/vector-ai/routes/soul.py` | llm_view; PATCH; POST dream / reflect_goals |
+| `shared/vector-ai/prompt_assembly.py` | inject full strip + SOUL GROWTH teach line |
+| `shared/vector-ai/response_cleanup.py` | parse/apply soulDream / soulGoals tags |
 | `shared/vector-ai/routes/greeting.py` | inject lite strip |
+| `shared/vector-ai/routes/ambient.py` or mood loop | optional auto dream debounce |
 | `shared/vector-ai/routes/mood.py` | optional goals/dream in digest |
 | `shared/vector-ai/test_soul_persist.py` | **NEW** |
 | `shared/vector-ai/test_soul_view.py` | **NEW** |
-| `shared/vector-ai/test_soul_core.py` / `test_service_modules.py` / `test_prompt_assembly.py` | key renames |
+| `shared/vector-ai/test_soul_growth.py` | **NEW** dream job + tags |
+| `shared/vector-ai/test_soul_core.py` / `test_service_modules.py` / `test_prompt_assembly.py` | keys + routes |
 | `docs/plans/2026-07-29-soul-v2-persist-llm-view.md` | this file |
 | `AGENTS.md` | docs map |
 
@@ -564,11 +572,12 @@ Phases 1–3 can ship as one PR if small; keep tests green each step.
 
 ## Out of scope
 
-- Dream generation sleep job  
-- Export/import GrowBot soul_format 3  
+- Full GrowBot identity sentence patch / keep_rules garden / funLog ladder UI  
+- Export/import GrowBot soul_format 3 binary-compatible files  
 - Multi-robot soul files  
 - Encrypting soul.json  
 - Persisting PresenceCache sticky occupancy perfectly across long restarts  
+- Speaking the entire dream aloud every morning (optional later; field + ops is enough for v2)  
 
 ---
 
