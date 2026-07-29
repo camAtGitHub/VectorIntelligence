@@ -10,7 +10,7 @@ from behaviors.types import FaceIdentity
 from .face import FaceService
 from .types import VisionDigest, build_soul_snapshot
 
-_NOTIFY_RING_MAX = 16
+_NOTIFY_RING_MAX = 20
 _LOG_MAX = 64
 
 
@@ -151,8 +151,8 @@ class Soul:
         self.presence.note_empty_evidence(float(now), source=source)
 
     def note_spoke(self, now: float, *, source: str, text: str = "") -> None:
-        """Robot or user conversational speech edge."""
-        del source, text  # ring may use later
+        """Robot conversational speech edge (updates last_spoke_at)."""
+        del source, text  # source/text reserved for future ring detail
         self._last_spoke_at = float(now)
 
     def note_user_voice(self, now: float) -> None:
@@ -247,19 +247,32 @@ class Soul:
         return self._last_vision
 
     def notify_speech(self, text: str, *, source: str = "chat") -> None:
-        """Record outbound speech preview + fire-and-forget Pushover."""
+        """Record outbound speech clock + ring, then fire-and-forget Pushover.
+
+        Single path for robot speech: updates ``last_spoke_at`` via
+        ``note_spoke``, appends notify ring (cap 20, preview 120), then
+        ``schedule_speech_notify``. Never raises into caller's critical path.
+        """
         message = (text or "").strip()
         if not message:
             return
         import time
 
-        self._notify_recent.append(
-            {
-                "t": time.time(),
-                "source": source,
-                "text": message[:200],
-            }
-        )
+        now = time.time()
+        try:
+            self.note_spoke(now, source=source, text=message)
+        except Exception:
+            pass
+        try:
+            self._notify_recent.append(
+                {
+                    "t": now,
+                    "source": str(source or "chat"),
+                    "text": message[:120],
+                }
+            )
+        except Exception:
+            pass
         try:
             from speech_notify import schedule_speech_notify
 

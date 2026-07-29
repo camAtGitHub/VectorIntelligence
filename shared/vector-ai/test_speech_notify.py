@@ -232,6 +232,7 @@ def test_schedule_creates_task(monkeypatch):
 
 def test_behaviors_route_schedules_on_speak(monkeypatch):
     """Tick with non-empty speak must call schedule_speech_notify."""
+    import deps
     from routes import behaviors_http
     from routes.models import BehaviorTickRequest
 
@@ -248,6 +249,8 @@ def test_behaviors_route_schedules_on_speak(monkeypatch):
             return _Result()
 
     monkeypatch.setattr("deps.BEHAVIOR_RUNTIME", _Runtime())
+    # Force legacy path (no SOUL) so schedule is called directly.
+    monkeypatch.setattr(deps, "SOUL", None, raising=False)
     calls: List[tuple] = []
 
     def _sched(text, *, source="chat"):
@@ -265,3 +268,78 @@ def test_behaviors_route_schedules_on_speak(monkeypatch):
 
     asyncio.run(_run())
     assert calls == [("Time for a break.", "behavior")]
+
+
+def test_behaviors_route_via_soul_notify(monkeypatch):
+    """When SOUL is wired, speak goes through notify_speech (sched + last_spoke)."""
+    import deps
+    import speech_notify
+    from routes import behaviors_http
+    from routes.models import BehaviorTickRequest
+    from soul import Soul
+
+    class _Result:
+        speak = "Back to work."
+        need_identity = False
+        debug = {}
+
+    class _Runtime:
+        def ingest_tick_payload(self, **k):
+            return None
+
+        def tick(self, now):
+            return _Result()
+
+    monkeypatch.setattr("deps.BEHAVIOR_RUNTIME", _Runtime())
+    soul = Soul()
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+    calls: List[tuple] = []
+
+    def _sched(text, *, source="chat"):
+        calls.append((text, source))
+
+    monkeypatch.setattr(speech_notify, "schedule_speech_notify", _sched)
+
+    async def _run():
+        out = await behaviors_http.behaviors_tick(
+            BehaviorTickRequest(occupied=True, on_charger=False, voice_recent=False)
+        )
+        assert out["speak"] == "Back to work."
+
+    asyncio.run(_run())
+    assert calls == [("Back to work.", "behavior")]
+    assert soul.last_spoke_at > 0
+    ring = soul.snapshot(soul.last_spoke_at)["notify"]["recent"]
+    assert len(ring) == 1
+    assert ring[0]["source"] == "behavior"
+    assert "Back to work" in ring[0]["text"]
+
+
+def test_soul_notify_speech_ring_and_schedule(monkeypatch):
+    """notify_speech caps ring, sets last_spoke, and schedules pushover path."""
+    import speech_notify
+    from soul import Soul
+
+    soul = Soul()
+    calls: List[tuple] = []
+
+    def _sched(text, *, source="chat"):
+        calls.append((text, source))
+
+    monkeypatch.setattr(speech_notify, "schedule_speech_notify", _sched)
+
+    soul.notify_speech("hello from chat", source="chat")
+    assert soul.last_spoke_at > 0
+    assert calls == [("hello from chat", "chat")]
+
+    for i in range(25):
+        soul.notify_speech(f"line {i}", source="ambient")
+    snap = soul.snapshot(soul.last_spoke_at)
+    recent = snap["notify"]["recent"]
+    assert len(recent) <= 20
+    assert all(len(e.get("text") or "") <= 120 for e in recent)
+
+    # Empty text is a no-op.
+    before = soul.last_spoke_at
+    soul.notify_speech("  ", source="chat")
+    assert soul.last_spoke_at == before

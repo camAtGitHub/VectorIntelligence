@@ -391,3 +391,66 @@ def test_context_note_no_emit_when_not_awaiting(tmp_path, monkeypatch):
     assert "working" in note.lower()
     # WORK line is in memory/system, not this emit-only sentence.
     assert "If they affirm work / half-day, emit" not in note
+
+
+def test_context_note_uses_last_spoke_not_stale_last_seen(tmp_path, monkeypatch):
+    """Recent soul last_spoke must not claim multi-hour silence via last_seen."""
+    import deps
+    from datetime import datetime
+
+    from soul import Soul
+
+    _patch_deps(monkeypatch, tmp_path)
+    now = datetime.now()
+    now_ts = now.timestamp()
+    soul = Soul()
+    soul.note_spoke(now_ts - 30, source="chat", text="hi")
+    # Visual last_seen looks ancient — must not drive "last spoke".
+    soul.last_seen_at = now_ts - 14 * 3600
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    prior = {
+        "last_seen": now_ts - 14 * 3600,
+        "interaction_count": 20,
+        "last_convo_summary": "widgets",
+        "last_convo_at": now_ts - 14 * 3600,
+    }
+
+    from prompt_assembly import _build_context_note
+
+    note = _build_context_note(face, prior, now)
+    # Mid-turn / moments-ago speech → no session "last spoke" nag.
+    assert "last spoke with Cam" not in note
+    assert "14" not in note or "hour" not in note.lower()
+    # Must not invent long silence from last_seen while speech is fresh.
+    assert "first thing you've said" not in note
+
+
+def test_context_note_last_spoke_when_gap_large(tmp_path, monkeypatch):
+    """When last_spoke is hours ago, context may say last spoke relative."""
+    import deps
+    from datetime import datetime
+
+    from soul import Soul
+
+    _patch_deps(monkeypatch, tmp_path)
+    now = datetime.now()
+    now_ts = now.timestamp()
+    soul = Soul()
+    soul.note_spoke(now_ts - 2 * 3600, source="chat", text="bye")
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    prior = {
+        "last_seen": now_ts - 2 * 3600,
+        "interaction_count": 10,
+        "last_convo_summary": "coffee",
+        "last_convo_at": now_ts - 2 * 3600,
+    }
+
+    from prompt_assembly import _build_context_note
+
+    note = _build_context_note(face, prior, now)
+    assert "last spoke with Cam" in note
+    assert "hour" in note.lower()

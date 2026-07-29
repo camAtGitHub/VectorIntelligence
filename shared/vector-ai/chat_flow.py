@@ -218,7 +218,16 @@ def sanitize_chat_image_parts(
 
 
 async def generate(messages: list, temperature: float | None = None) -> AsyncIterator[str]:
-    process_state._LAST_USER_VOICE_TS = time.time()  # suppress proactive speech during chat
+    # Suppress proactive speech during chat; pot owns speech clocks when wired.
+    now_voice = time.time()
+    soul = getattr(deps, "SOUL", None)
+    if soul is not None:
+        try:
+            soul.note_user_voice(now_voice)
+        except Exception:
+            process_state._LAST_USER_VOICE_TS = now_voice
+    else:
+        process_state._LAST_USER_VOICE_TS = now_voice
     temp = LLM_TEMPERATURE if temperature is None else float(temperature)
     # Multimodal-aware (joins text parts); matches prepare_messages ranking.
     last_user_text = _extract_last_user_text(messages)
@@ -337,11 +346,20 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
         # eye-colour/animation directives chipper consumed.
         reply = re.sub(r'\{\{[^}]*\}\}', '', " ".join(reply_parts))
         reply = re.sub(r'\s+', ' ', reply).strip()
-        # Mirror spoken chat text to Pushover (fire-and-forget; no TTS wait).
+        # Mirror spoken chat text to pot + Pushover (fire-and-forget; no TTS wait).
         if reply:
-            from speech_notify import schedule_speech_notify
+            soul_out = getattr(deps, "SOUL", None)
+            if soul_out is not None:
+                try:
+                    soul_out.notify_speech(reply, source="chat")
+                except Exception:
+                    from speech_notify import schedule_speech_notify
 
-            schedule_speech_notify(reply, source="chat")
+                    schedule_speech_notify(reply, source="chat")
+            else:
+                from speech_notify import schedule_speech_notify
+
+                schedule_speech_notify(reply, source="chat")
         mem_face = eff_face if (eff_face and not eff_face.get("is_stranger")
                                 and eff_face.get("face_id")) else None
         MEMORY = deps.MEMORY

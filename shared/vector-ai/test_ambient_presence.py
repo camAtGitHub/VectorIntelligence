@@ -466,8 +466,11 @@ def test_face_recent_window_loader_override_and_clamp():
 
 
 def test_current_face_long_window(monkeypatch):
+    import deps
     import process_state
 
+    # Legacy _face_state path: force SOUL off (service import may have wired it).
+    monkeypatch.setattr(deps, "SOUL", None, raising=False)
     monkeypatch.setattr(process_state, "FACE_RECENT_WINDOW", 1800)
     process_state._face_state["enrolled_id"] = 1
     process_state._face_state["enrolled_name"] = "Cam"
@@ -484,8 +487,10 @@ def test_current_face_long_window(monkeypatch):
 
 
 def test_current_face_enrolled_wins_over_stranger(monkeypatch):
+    import deps
     import process_state
 
+    monkeypatch.setattr(deps, "SOUL", None, raising=False)
     monkeypatch.setattr(process_state, "FACE_RECENT_WINDOW", 1800)
     now = time.time()
     process_state._face_state["enrolled_id"] = 1
@@ -499,8 +504,10 @@ def test_current_face_enrolled_wins_over_stranger(monkeypatch):
 
 
 def test_current_face_short_window_injectable(monkeypatch):
+    import deps
     import process_state
 
+    monkeypatch.setattr(deps, "SOUL", None, raising=False)
     monkeypatch.setattr(process_state, "FACE_RECENT_WINDOW", 2)
     now = time.time()
     process_state._face_state["enrolled_id"] = 2
@@ -537,8 +544,10 @@ def test_tick_occupied_false_keeps_warm_sticky():
 
 def test_tick_after_empty_streak_with_warm_current_face_stays_empty(monkeypatch):
     """Regression: ambient empty×2 then tick+current_face must NOT re-occupy."""
+    import deps
     import process_state
 
+    monkeypatch.setattr(deps, "SOUL", None, raising=False)
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "w.db")
         rcfg = RuntimeConfig(
@@ -896,6 +905,7 @@ def test_face_seen_http_notes_person(tmp_path, monkeypatch):
     import deps
     from routes.face import state_face_seen
     from routes.models import FaceSeenRequest
+    from soul import Soul
 
     with tempfile.TemporaryDirectory() as td:
         cont = ContinuityStore(Path(td) / "w.db")
@@ -904,12 +914,20 @@ def test_face_seen_http_notes_person(tmp_path, monkeypatch):
             WorkdayConfig(enabled=False, tz=ZoneInfo("UTC")),
             cont,
         )
+        # Shared presence: SOUL owns pot; runtime uses same cache when wired in service.
+        soul = Soul(presence=rt.presence)
         monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        monkeypatch.setattr(deps, "SOUL", soul, raising=False)
         asyncio.run(state_face_seen(FaceSeenRequest(face_id=1, name="Cam")))
         assert rt.presence.occupied_effective(time.time()) is True
         assert rt.presence.snapshot.face is not None
         assert rt.presence.snapshot.face.name == "Cam"
         assert rt.presence.last_source == "face_seen"
+        # Phase 2: face_seen updates soul face buffer + last_seen.
+        cur = soul.current_face()
+        assert cur is not None
+        assert cur["name"] == "Cam"
+        assert soul.last_seen_at > 0
 
 
 def test_hard_face_occupied_false_still_person_evidence():
@@ -963,6 +981,7 @@ def test_behaviors_tick_http_current_face_does_not_reoccupy(monkeypatch):
     from routes.behaviors_http import behaviors_tick
     from routes.models import BehaviorTickRequest
 
+    monkeypatch.setattr(deps, "SOUL", None, raising=False)
     with tempfile.TemporaryDirectory() as td:
         cont = ContinuityStore(Path(td) / "w.db")
         rt = BehaviorRuntime(

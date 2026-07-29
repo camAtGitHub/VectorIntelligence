@@ -11,7 +11,6 @@ from llm import LLM_GREETING_TEMPERATURE, SUMMARY_MODEL, _llm_timeout, one_shot_
 from logging_util import print  # noqa: F401
 from process_state import (
     GREETING_ABSENCE_GAP,
-    _face_last_seen,
     _mood_state,
     _recent_greetings,
 )
@@ -26,6 +25,7 @@ router = APIRouter()
 # appears, it calls here: we greet only if the person has genuinely just
 # ARRIVED (not seen for a while, and not freshly out of a conversation) - so a
 # person sitting at the desk all day isn't greeted over and over.
+# Clocks come from deps.SOUL (melting pot), not a private greeting-only map.
 
 _GREETING_SYSTEM = (
     PERSONA_MINI + "\n\n"
@@ -56,6 +56,47 @@ _GREETING_ANGLES = [
 ]
 
 
+def _prev_seen_from_soul(soul, fid: int) -> float:
+    """Last visual sighting: pot last_seen_at, or latest face-buffer hit for fid."""
+    prev = float(getattr(soul, "last_seen_at", 0.0) or 0.0)
+    try:
+        for entry in reversed(soul.face.buffer_list()):
+            if entry.get("face_id") == fid:
+                t = float(entry.get("t") or 0.0)
+                if t > 0:
+                    # Prefer face-specific buffer ts when pot has never seen anyone
+                    # else use max so either path refreshes continuous presence.
+                    prev = max(prev, t) if prev > 0 else t
+                break
+    except Exception:
+        pass
+    return prev
+
+
+def _spoke_recently(soul, now: float) -> bool:
+    """True if user voice or robot speech was within GREETING_ABSENCE_GAP."""
+    gap = GREETING_ABSENCE_GAP
+    last_spoke = 0.0
+    last_user_voice = 0.0
+    if soul is not None:
+        last_spoke = float(getattr(soul, "last_spoke_at", 0.0) or 0.0)
+        last_user_voice = float(getattr(soul, "last_user_voice_at", 0.0) or 0.0)
+    if last_spoke > 0 and (now - last_spoke) < gap:
+        return True
+    if last_user_voice > 0 and (now - last_user_voice) < gap:
+        return True
+    # process_state clock (chat_flow / arbiter dual-write).
+    try:
+        import process_state as ps
+
+        lvt = float(getattr(ps, "_LAST_USER_VOICE_TS", 0.0) or 0.0)
+        if lvt > 0 and (now - lvt) < gap:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 @router.post("/v1/proactive_greeting")
 async def proactive_greeting(req: GreetingRequest):
     """Decide whether Vector should greet a just-seen known person, and if so
@@ -65,21 +106,71 @@ async def proactive_greeting(req: GreetingRequest):
     if fid <= 0 or not name:
         return {"text": ""}
 
-    prev_seen = _face_last_seen.get(fid, 0.0)
-    _face_last_seen[fid] = now
-    arrived = (prev_seen == 0.0) or (now - prev_seen > GREETING_ABSENCE_GAP)
+    soul = getattr(deps, "SOUL", None)
 
-    meta = deps.MEMORY.get_face_meta(fid)
+    # Capture clocks BEFORE note_face so continuous probes still compute gap.
+    prev_seen = 0.0
+    was_occupied = False
+    if soul is not None:
+        prev_seen = _prev_seen_from_soul(soul, fid)
+        try:
+            was_occupied = bool(soul.occupied(now))
+        except Exception:
+            was_occupied = False
+        # Always refresh pot last_seen on greeting probe (even when speech suppressed).
+        try:
+            from behaviors.types import FaceIdentity
+
+            soul.note_face(
+                now,
+                face_id=fid,
+                name=name,
+                is_stranger=False,
+                source="greeting",
+            )
+            soul.note_person(
+                now,
+                source="greeting",
+                name_hint=name[:64],
+                face=FaceIdentity(
+                    face_id=int(fid),
+                    name=name[:64],
+                    is_stranger=False,
+                ),
+            )
+        except Exception as e:
+            print(f"[greeting] soul note failed: {e}")
+
+    # Arrived = genuine long visual absence, not a continuous sticky desk day.
+    long_absence = (prev_seen <= 0.0) or (now - prev_seen > GREETING_ABSENCE_GAP)
+    # Sticky occupied continuous session: still at desk (presence sticky) → not
+    # "welcome back", even if face recognition flaked and last_seen looks old.
+    sticky_continuous = bool(was_occupied)
+    arrived = bool(long_absence and not sticky_continuous)
+
+    spoke_recent = _spoke_recently(soul, now)
+
+    meta = deps.MEMORY.get_face_meta(fid) if getattr(deps, "MEMORY", None) else None
     last_convo = (meta or {}).get("last_convo_at") or 0.0
     conversed_recently = bool(last_convo) and (now - last_convo) < GREETING_ABSENCE_GAP
 
-    if not arrived or conversed_recently:
+    if not arrived or conversed_recently or spoke_recent:
         return {"text": ""}
 
     now_dt = datetime.now()
     bits = [f"{name} has just come into view. It is {_time_of_day(now_dt)}."]
-    if last_convo:
-        bits.append(f"You last spoke with {name} {_relative_time(now - last_convo)}.")
+    # Prefer pot speech clocks for prompt wording when available.
+    spoke_gap_src = last_convo
+    if soul is not None:
+        pot_spoke = max(
+            float(getattr(soul, "last_spoke_at", 0.0) or 0.0),
+            float(getattr(soul, "last_user_voice_at", 0.0) or 0.0),
+            float(last_convo or 0.0),
+        )
+        if pot_spoke > 0:
+            spoke_gap_src = pot_spoke
+    if spoke_gap_src:
+        bits.append(f"You last spoke with {name} {_relative_time(now - spoke_gap_src)}.")
         summ = (meta or {}).get("last_convo_summary")
         if summ:
             bits.append(f"That conversation was about: {summ}.")
@@ -116,9 +207,18 @@ async def proactive_greeting(req: GreetingRequest):
     if line:
         _recent_greetings.append(line)
         del _recent_greetings[:-6]
-        from speech_notify import schedule_speech_notify
+        soul_out = getattr(deps, "SOUL", None)
+        if soul_out is not None:
+            try:
+                soul_out.notify_speech(line, source="greeting")
+            except Exception:
+                from speech_notify import schedule_speech_notify
 
-        schedule_speech_notify(line, source="greeting")
+                schedule_speech_notify(line, source="greeting")
+        else:
+            from speech_notify import schedule_speech_notify
+
+            schedule_speech_notify(line, source="greeting")
     print(f"[greeting] {name} (arrived) -> {line!r}")
     debug("HTTP SEND /v1/proactive_greeting", {"text": line})
     return {"text": line}

@@ -62,10 +62,22 @@ _face_state = {
 def current_face() -> Optional[dict]:
     """Who Vector is effectively looking at right now.
 
+    Prefers deps.SOUL.current_face() when the melting pot is wired (service).
+    Falls back to legacy ``_face_state`` for unit tests without SOUL.
+
     An enrolled match within FACE_RECENT_WINDOW always wins over stranger
     noise - recognition is too jittery to trust a single latest frame. Only
     when there's been no enrolled match for the whole window do recent
     stranger sightings count as a genuine stranger."""
+    try:
+        import deps
+
+        soul = getattr(deps, "SOUL", None)
+        if soul is not None:
+            return soul.current_face()
+    except Exception:
+        pass
+
     now = _time.time()
     enrolled_fresh = (
         _face_state["enrolled_seen"]
@@ -140,7 +152,8 @@ _recent_greetings: list = []     # recent greeting lines, to steer away from rep
 GREETING_ABSENCE_GAP = 10 * 60   # seconds out of sight that counts as having
                                  # "arrived back"; also how recent a real
                                  # conversation must be to suppress a greeting.
-_face_last_seen: dict = {}       # face_id -> unix ts the greeting probe last saw them
+# Greeting last-seen clock lives on deps.SOUL (last_seen_at / face buffer).
+# Private _face_last_seen was deleted in soul melting-pot Phase 2.
 
 # -- Latency fillers -----------------------------------------------------------
 # Thinking filler: short in-character lines when the LLM is slow to produce its

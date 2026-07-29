@@ -186,15 +186,41 @@ def _effective_face() -> Optional[dict]:
     return None
 
 
+def _speech_ts_from_soul_and_prior(prior: Optional[dict], now_ts: float) -> float:
+    """Best timestamp for 'last spoke' (pot clocks + face_meta convo).
+
+    Prefer SOUL last_spoke / last_user_voice; also honor last_convo_at.
+    Does **not** use last_seen (visual) — that is a separate clock.
+    """
+    del now_ts  # reserved for future freshness clamps
+    spoke_ts = 0.0
+    soul = getattr(deps, "SOUL", None)
+    if soul is not None:
+        try:
+            spoke_ts = max(
+                float(getattr(soul, "last_spoke_at", 0.0) or 0.0),
+                float(getattr(soul, "last_user_voice_at", 0.0) or 0.0),
+            )
+        except Exception:
+            spoke_ts = 0.0
+    if prior and prior.get("last_convo_at"):
+        try:
+            spoke_ts = max(spoke_ts, float(prior.get("last_convo_at") or 0.0))
+        except (TypeError, ValueError):
+            pass
+    return spoke_ts
+
+
 def _build_context_note(face: Optional[dict], prior: Optional[dict],
                         now_dt: datetime) -> str:
     """Dynamic per-turn context, appended to the latest user message.
 
     Deliberately kept OFF the system prompt: it changes every turn, and in the
     cached prefix that would force a full prompt re-process. Session-scoped
-    lines (last-seen, conversation recall) appear only at the START of a
-    session - gated on a >90s gap - so they don't nag on every turn."""
+    lines (last-spoke / visual absence) appear only when the speech gap is
+    >90s so mid-turn nags stay off."""
     MEMORY = deps.MEMORY
+    now_ts = now_dt.timestamp()
     bits = [
         f"Current time is {now_dt.strftime('%A %B %d, %Y, %I:%M %p')} "
         f"({_time_of_day(now_dt)})."
@@ -208,6 +234,27 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
         )
         bits.append(f"Things you have actually seen recently - {seen}.")
 
+    # Fresh eye digest one-liner when useful (pot only).
+    soul = getattr(deps, "SOUL", None)
+    if soul is not None:
+        try:
+            lv = soul.last_vision()
+        except Exception:
+            lv = None
+        if lv is not None:
+            if isinstance(lv, dict):
+                note = (lv.get("note") or lv.get("spoken") or "").strip()
+                t_v = float(lv.get("t") or 0.0)
+            else:
+                note = (
+                    (getattr(lv, "note", None) or "")
+                    or (getattr(lv, "spoken", None) or "")
+                    or ""
+                ).strip()
+                t_v = float(getattr(lv, "t", 0.0) or 0.0)
+            if note and t_v > 0 and (now_ts - t_v) < 600:
+                bits.append(f"Your latest glance: {note[:120]}.")
+
     if face and not face.get("is_stranger"):
         name = face["name"]
         if prior is None:
@@ -217,21 +264,60 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
                 f"{name} by name, and be a little curious about them."
             )
         else:
-            gap = now_dt.timestamp() - (prior.get("last_seen") or now_dt.timestamp())
-            if gap > 90:  # a fresh session, not a mid-conversation turn
-                bits.append(f"You last spoke with {name} {_relative_time(gap)}.")
-                if gap > SESSION_GREETING_GAP:
+            # "Last spoke" from speech clocks / convo meta — never mislabel last_seen.
+            spoke_ts = _speech_ts_from_soul_and_prior(prior, now_ts)
+            if spoke_ts > 0:
+                gap_spoke = now_ts - spoke_ts
+            else:
+                # No speech clock: fall back to prior interaction time for
+                # session gating only (worded as last contact, not pure visual).
+                gap_spoke = now_ts - (
+                    prior.get("last_seen") or now_ts
+                )
+            if gap_spoke > 90:  # a fresh session, not a mid-conversation turn
+                bits.append(
+                    f"You last spoke with {name} {_relative_time(gap_spoke)}."
+                )
+                if gap_spoke > SESSION_GREETING_GAP:
                     bits.append(
                         f"This is the first thing you've said to {name} in a "
                         f"while - open your reply by addressing them by name."
                     )
                 if (prior.get("interaction_count") or 0) < 5:
-                    bits.append(f"You've only met {name} a handful of times so far.")
+                    bits.append(
+                        f"You've only met {name} a handful of times so far."
+                    )
                 summ = (prior.get("last_convo_summary") or "").strip().rstrip(".")
-                if summ and gap > 900:  # 15 min+ => genuinely a new session
+                if summ and gap_spoke > 900:  # 15 min+ => genuinely a new session
                     bits.append(
                         f"Last time you spoke with {name}, the conversation "
                         f"was about: {summ}."
+                    )
+            # Visual absence: last_seen only when pot/meta has it and the
+            # visual gap is not redundant with the speech gap already stated.
+            last_seen_ts = 0.0
+            if soul is not None:
+                try:
+                    last_seen_ts = float(
+                        getattr(soul, "last_seen_at", 0.0) or 0.0
+                    )
+                except Exception:
+                    last_seen_ts = 0.0
+            if last_seen_ts <= 0 and prior.get("last_seen"):
+                try:
+                    last_seen_ts = float(prior.get("last_seen") or 0.0)
+                except (TypeError, ValueError):
+                    last_seen_ts = 0.0
+            # Only when not mid-turn (same >90s speech gap gate).
+            if last_seen_ts > 0 and spoke_ts > 0 and gap_spoke > 90:
+                gap_seen = now_ts - last_seen_ts
+                gap_spoke_real = now_ts - spoke_ts
+                if (
+                    gap_seen > SESSION_GREETING_GAP
+                    and abs(gap_seen - gap_spoke_real) > 300
+                ):
+                    bits.append(
+                        f"You last saw {name} {_relative_time(gap_seen)}."
                     )
     elif face and face.get("is_stranger"):
         bits.append("You don't recognise the person in front of you.")

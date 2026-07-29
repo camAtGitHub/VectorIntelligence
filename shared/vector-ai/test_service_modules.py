@@ -1005,14 +1005,18 @@ def test_ambient_passes_vision_model(tmp_path, monkeypatch):
 
 def test_greeting_passes_summary_model(tmp_path, monkeypatch):
     """Proactive greeting must use SUMMARY_MODEL (cheap text path)."""
+    import deps
     import process_state
     from routes.greeting import proactive_greeting
     from routes.models import GreetingRequest
+    from soul import Soul
 
     _patch_deps(monkeypatch, tmp_path)
-    # First-seen face → arrived; no recent conversation meta.
-    process_state._face_last_seen.clear()
+    # Fresh soul: first-seen → arrived; no recent conversation meta.
+    soul = Soul()
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
     process_state._recent_greetings.clear()
+    process_state._LAST_USER_VOICE_TS = 0.0
 
     seen = {}
     fake_line = "Oh. Cam. You again."
@@ -1031,6 +1035,7 @@ def test_greeting_passes_summary_model(tmp_path, monkeypatch):
     assert out.get("text") == fake_line
     assert seen.get("model") == "summary/test-slug"
     assert seen.get("tag") == "greeting"
+    assert soul.last_seen_at > 0
 
 
 def test_sensor_passes_summary_model(monkeypatch):

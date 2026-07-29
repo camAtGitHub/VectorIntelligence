@@ -3,6 +3,7 @@ import random
 
 from fastapi import APIRouter
 
+import deps
 from debug_log import debug
 from llm import LLM_SENSOR_TEMPERATURE, SUMMARY_MODEL, _llm_timeout, one_shot_spoken_line
 from logging_util import print  # noqa: F401
@@ -80,9 +81,18 @@ async def sensor_reaction(req: SensorReactionRequest):
     )
     # Intentional: failures → empty text only (chipper uses text; no error field).
     if clean:
-        from speech_notify import schedule_speech_notify
+        soul = getattr(deps, "SOUL", None)
+        if soul is not None:
+            try:
+                soul.notify_speech(clean, source="sensor")
+            except Exception:
+                from speech_notify import schedule_speech_notify
 
-        schedule_speech_notify(clean, source="sensor")
+                schedule_speech_notify(clean, source="sensor")
+        else:
+            from speech_notify import schedule_speech_notify
+
+            schedule_speech_notify(clean, source="sensor")
     print(f"[sensor_reaction] {req.event} -> {clean!r}")
     debug("HTTP SEND /v1/sensor_reaction response", {"text": clean})
     return {"text": clean}
