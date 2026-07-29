@@ -683,6 +683,8 @@ needs care if multiple Vectors share one brain.
 | [docs/FSM-workday-companion.md](docs/FSM-workday-companion.md) | Live with Work Day Mode |
 | [docs/FSM-implementation.md](docs/FSM-implementation.md) | Add another behavior FSM |
 | [docs/superpowers/specs/2026-07-18-vector-aliveness-workday-design.md](docs/superpowers/specs/2026-07-18-vector-aliveness-workday-design.md) | Product design (continuity, junctures) |
+| [docs/superpowers/specs/2026-07-29-soul-melting-pot-design.md](docs/superpowers/specs/2026-07-29-soul-melting-pot-design.md) | Soul melting pot (one desk-day continuity: face/eye/notify) |
+| [docs/plans/2026-07-29-soul-melting-pot.md](docs/plans/2026-07-29-soul-melting-pot.md) | Executable phases for soul rewrite + sensor TTS cooldown |
 
 ## Agent checklist (before you stop)
 
