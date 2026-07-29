@@ -315,6 +315,9 @@ def llm_view(
         for item in ring:
             if not isinstance(item, dict):
                 continue
+            # Full spoken line (same store as soul.json / RAM ring). Do not
+            # re-truncate to a teaser — persistence already caps at ~2000.
+            spoken = str(item.get("text") or "")
             recent.append(
                 {
                     "time_since_i_said_this": time_since_compact(
@@ -323,7 +326,9 @@ def llm_view(
                         float(item.get("t") or 0.0),
                     ),
                     "speech_source": str(item.get("source") or ""),
-                    "text_preview": str(item.get("text") or "")[:120],
+                    "text": spoken,
+                    # Alias for older clients/tests that expected text_preview.
+                    "text_preview": spoken,
                 }
             )
         view["recent_things_i_said_aloud"] = recent

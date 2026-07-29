@@ -338,7 +338,13 @@ def test_soul_notify_speech_ring_and_schedule(monkeypatch):
     snap = soul.snapshot(soul.last_spoke_at)
     recent = snap["recent_things_i_said_aloud"]
     assert len(recent) <= 20
-    assert all(len(e.get("text_preview") or "") <= 120 for e in recent)
+    # Full lines stored (up to ~2000); short lines pass through uncut.
+    assert all(len(e.get("text_preview") or "") <= 2000 for e in recent)
+    long = "X" * 500
+    soul.notify_speech(long, source="chat")
+    snap2 = soul.snapshot(soul.last_spoke_at)
+    recent2 = snap2["recent_things_i_said_aloud"]
+    assert any(len(e.get("text") or e.get("text_preview") or "") == 500 for e in recent2)
     # Ring still has speech_source + time_since phrasing (ops/llm_view).
     assert recent[-1]["speech_source"] == "ambient"
     assert "Time since" in (recent[-1].get("time_since_i_said_this") or "")

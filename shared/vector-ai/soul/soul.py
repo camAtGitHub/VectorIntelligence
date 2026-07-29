@@ -15,6 +15,9 @@ from .view import llm_view as build_llm_view
 
 _NOTIFY_RING_MAX = 20
 _LOG_MAX = 64
+# Full spoken lines in the ring/soul.json (not a 120-char teaser). Cap only for
+# pathological length; matches practical TTS/Pushover scale with headroom.
+_NOTIFY_TEXT_MAX = 2000
 _GOALS_N = 3
 _GOAL_MAX_LEN = 200
 _DREAM_MAX_LEN = 500
@@ -419,8 +422,9 @@ class Soul:
         """Record outbound speech clock + ring, then fire-and-forget Pushover.
 
         Single path for robot speech: updates ``last_spoke_at`` via
-        ``note_spoke``, appends notify ring (cap 20, preview 120), then
-        ``schedule_speech_notify``. Never raises into caller's critical path.
+        ``note_spoke``, appends notify ring (cap 20, full text up to
+        ``_NOTIFY_TEXT_MAX``), then ``schedule_speech_notify``. Never raises
+        into caller's critical path.
         """
         message = (text or "").strip()
         if not message:
@@ -433,11 +437,14 @@ class Soul:
         except Exception:
             pass
         try:
+            stored = message
+            if len(stored) > _NOTIFY_TEXT_MAX:
+                stored = stored[: _NOTIFY_TEXT_MAX - 1] + "…"
             self._notify_recent.append(
                 {
                     "t": now,
                     "source": str(source or "chat"),
-                    "text": message[:120],
+                    "text": stored,
                 }
             )
         except Exception:

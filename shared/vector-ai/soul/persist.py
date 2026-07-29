@@ -23,6 +23,8 @@ _FACE_CAP = 32
 _EYE_CAP = 16
 _NOTIFY_CAP = 20
 _LOG_CAP = 64
+# Keep spoken lines intact in soul.json (same cap as Soul._NOTIFY_TEXT_MAX).
+_NOTIFY_TEXT_MAX = 2000
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -97,7 +99,7 @@ def serialize_soul(soul: Any) -> dict[str, Any]:
                 {
                     "t": _safe_float(item.get("t")),
                     "source": _safe_str(item.get("source"), 64),
-                    "text": _safe_str(item.get("text"), 120),
+                    "text": _safe_str(item.get("text"), _NOTIFY_TEXT_MAX),
                 }
             )
     except Exception:
@@ -302,7 +304,7 @@ def load_into(soul: Any, path: Optional[Path] = None) -> bool:
                         {
                             "t": _safe_float(item.get("t")),
                             "source": _safe_str(item.get("source"), 64),
-                            "text": _safe_str(item.get("text"), 120),
+                            "text": _safe_str(item.get("text"), _NOTIFY_TEXT_MAX),
                         }
                     )
 
