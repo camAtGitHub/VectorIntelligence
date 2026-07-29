@@ -4,7 +4,7 @@
 **Branch:** `growBotHarness`  
 **Repo:** VectorIntelligence (`shared/vector-ai/`)  
 **Spec prior art:** `docs/superpowers/specs/2026-07-29-soul-melting-pot-design.md` (v1 melting pot)  
-**Goal:** Make SOUL durable across restarts; expose a **self-explanatory, relative-time** view for ops and LLMs; inject soul context into chat (full) / greeting (lite); add **goals[3]** and **last night I dreamed about**; and provide **explicit LLM-triggerable paths** to **dream**, **set/update goals**, and **aspire/grow** — always with a **full soul view** in those jobs, guided by GrowBot-style dream/goals prompts.  
+**Goal:** Make SOUL durable across restarts; expose a **self-explanatory, relative-time** view for ops and LLMs; inject soul context into chat (full) / greeting (lite); add **goals[3]** and **last night I dreamed about**; provide **explicit LLM-triggerable paths** to **dream**, **set/update goals**, and **aspire/grow** (full soul on those jobs, GrowBot-guided); and add a **text chat inject API** that bypasses STT and continues a **server-side chat session** (type replies like a keyboard).  
 **Execute with:** `/do` after review.  
 **GrowBot prior art:** conversation soul snapshot (`soul_format` 3) — `dream.system_prompt`, `goals.wants` / `nextTry` / `fun`, identity patch rules; VectorIntelligence melting pot design GrowBot mapping.
 
@@ -26,8 +26,12 @@
 | `_relative_time(seconds)` already exists for human/LLM phrasing | `prompt_assembly.py` L157–166 |
 | Durable files live under `ROOT` next to service (`paths.ROOT`) | `paths.py` |
 | One-shots (greeting/sensor/ambient) do **not** get full chat context note | `routes/greeting.py`, `sensor.py`, `ambient`/`eye` |
+| OpenAI-compat chat is already `POST /v1/chat/completions` streaming SSE | `routes/chat.py` → `chat_flow.generate` |
+| Wire-Pod multi-turn history lives in chipper `RememberedChats` (SaveChat), sent as full `messages[]` each call | `wire-pod/.../ttr/kgsim.go` `GetChat` / `Remember` |
+| vector-ai does **not** currently store a parallel chat session for keyboard inject | discovery |
 
-**Root cause for “LLM can’t use SOUL well”:** short keys + absolute unix timestamps + incomplete inject; for “lost day after restart” — no soul file.
+**Root cause for “LLM can’t use SOUL well”:** short keys + absolute unix timestamps + incomplete inject; for “lost day after restart” — no soul file.  
+**Root cause for “can’t type into the chat”:** STT is the only everyday path into multi-turn context; `/v1/chat/completions` works but requires the **client** to hold full `messages[]` and does not own a simple “reply to this session” UX.
 
 ### Product decisions (this plan)
 
@@ -45,6 +49,7 @@
 | D10 | **Full soul always** for dream + goal-setting LLM calls: `llm_view(detail="full")` (or richer “growth” pack) is the **user** content / primary data block. Lite strips must **not** be used for these jobs. Chat normal turns may stay full strip; one-shots stay lite/none. |
 | D11 | **Growth ethos in instructions** (GrowBot-aligned): curious desk robot; process the day honestly; **aspire to learn and do more** with the human; update goals toward concrete tiny next tries; **growth not despair** (no night-after-night darker spiral); patch goals/dream, do not dump the whole persona. |
 | D12 | Dream/goal LLM uses **`SUMMARY_MODEL`** (cheap background text), like mood/convo summary — not vision. Structured JSON reply only; apply to soul + `save_now()`. |
+| D13 | **Text chat inject (bypass STT):** HTTP API to send a **user text** into the same brain path as Wire-Pod knowledge chat (`prepare_messages` + `generate`), without microphone/STT. Maintains a **server-side multi-turn session** so successive injects are true **replies** in one conversation (not one-shot orphans). Optional TTS of reply is stretch; soul clocks + notify still update. |
 
 ### Allowed APIs (use only these)
 
