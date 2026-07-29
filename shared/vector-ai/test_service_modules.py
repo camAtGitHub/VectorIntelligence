@@ -13,6 +13,8 @@ import pytest
 EXPECTED_ROUTES = {
     "/health",
     "/v1/chat/completions",
+    "/v1/chat/session",
+    "/v1/chat/session/message",
     "/v1/mood",
     "/v1/mood/reflect",
     "/v1/memory/list",
@@ -30,12 +32,16 @@ EXPECTED_ROUTES = {
     "/v1/behaviors/{behavior_id}",
     "/v1/proactive_greeting",
     "/v1/soul",
+    "/v1/soul/dream",
+    "/v1/soul/reflect_goals",
 }
 
 # path -> allowed HTTP methods (business endpoints only).
 EXPECTED_ROUTE_METHODS = {
     "/health": {"GET"},
     "/v1/chat/completions": {"POST"},
+    "/v1/chat/session": {"GET", "DELETE"},
+    "/v1/chat/session/message": {"POST"},
     "/v1/mood": {"GET"},
     "/v1/mood/reflect": {"POST"},
     "/v1/memory/list": {"GET"},
@@ -52,7 +58,9 @@ EXPECTED_ROUTE_METHODS = {
     "/v1/behaviors/state": {"GET"},
     "/v1/behaviors/{behavior_id}": {"GET"},
     "/v1/proactive_greeting": {"POST"},
-    "/v1/soul": {"GET"},
+    "/v1/soul": {"GET", "PATCH"},
+    "/v1/soul/dream": {"POST"},
+    "/v1/soul/reflect_goals": {"POST"},
 }
 
 _REQUIRED_INSTALL_MODULES = (
@@ -67,6 +75,7 @@ _REQUIRED_INSTALL_MODULES = (
     "prompt_assembly.py",
     "response_cleanup.py",
     "chat_flow.py",
+    "chat_session.py",
     "routes",
 )
 
@@ -134,8 +143,8 @@ def test_route_registry():
         assert want <= got, f"{path}: expected methods {want}, got {got}"
 
 
-def test_get_v1_soul_snapshot(monkeypatch):
-    """GET /v1/soul returns SOUL.snapshot keys; no base64 frame payloads."""
+def test_get_v1_soul_snapshot(monkeypatch, tmp_path):
+    """GET /v1/soul returns long-key llm_view; no base64 frame payloads."""
     import deps
     from behaviors.presence import PresenceCache
     from fastapi.testclient import TestClient
@@ -144,31 +153,65 @@ def test_get_v1_soul_snapshot(monkeypatch):
     import service
 
     soul = Soul(presence=PresenceCache())
+    soul._persist_path = tmp_path / "soul.json"
     # Use wall clock so sticky occupancy / face window still warm at GET time.
     now = time.time()
     soul.note_face(now, face_id=1, name="Cam", is_stranger=False, source="test")
     soul.note_person(now, source="test")
     soul.set_mood("quietly amused", now)
+    soul.set_goals(["one", "two", "three"], force_save=False)
+    soul.set_dreamed_about("tiny gears", force_save=False)
     monkeypatch.setattr(deps, "SOUL", soul, raising=False)
 
     client = TestClient(service.app)
     r = client.get("/v1/soul")
     assert r.status_code == 200
     body = r.json()
-    assert body.get("occupied") is True
-    assert "face" in body and body["face"].get("current") is not None
-    assert body["face"]["current"].get("name") == "Cam"
-    assert "mood" in body
-    assert body["mood"].get("text") == "quietly amused"
-    assert "last_seen_at" in body
-    assert "last_spoke_at" in body
-    assert "presence" in body
-    assert "notify" in body and "recent" in body["notify"]
-    assert "eye" in body
+    assert body.get("a_person_is_currently_at_the_desk") is True
+    person = body.get("person_i_currently_believe_i_am_looking_at")
+    assert person is not None
+    assert person.get("name") == "Cam"
+    assert body.get("my_current_inner_mood_in_one_phrase") == "quietly amused"
+    assert "time_since_i_last_spoke_aloud" in body
+    assert "time_since_i_last_visually_detected_a_person" in body
+    assert body.get("three_goals_i_currently_hold") == ["one", "two", "three"]
+    assert body.get("last_night_i_dreamed_about") == "tiny gears"
+    # Short keys gone.
+    assert "occupied" not in body
+    assert "last_seen_at" not in body
     # Anti-pattern: snapshot must not dump full image payloads.
     blob = json.dumps(body)
     assert "image_b64" not in blob
     assert "data:image" not in blob
+
+
+def test_patch_v1_soul_goals_and_dream(monkeypatch, tmp_path):
+    """PATCH /v1/soul accepts long names for goals + dream."""
+    import deps
+    from behaviors.presence import PresenceCache
+    from fastapi.testclient import TestClient
+    from soul import Soul
+
+    import service
+
+    soul = Soul(presence=PresenceCache())
+    soul._persist_path = tmp_path / "soul.json"
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+
+    client = TestClient(service.app)
+    r = client.patch(
+        "/v1/soul",
+        json={
+            "three_goals_i_currently_hold": ["a", "b"],
+            "last_night_i_dreamed_about": "moonlit desk",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["three_goals_i_currently_hold"] == ["a", "b", ""]
+    assert body["last_night_i_dreamed_about"] == "moonlit desk"
+    assert soul.goals == ["a", "b", ""]
+    assert soul.last_night_i_dreamed_about == "moonlit desk"
 
 
 def test_behavior_detail_http_404_and_200(tmp_path, monkeypatch):

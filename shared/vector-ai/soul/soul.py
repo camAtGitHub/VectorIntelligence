@@ -1,22 +1,41 @@
 """Soul facade: one hot scratch for presence, face, eye, speech clocks, mood."""
 from __future__ import annotations
 
+import threading
 from collections import deque
-from typing import Any, Deque, Optional
+from typing import Any, Deque, List, Optional
 
 from behaviors.presence import PresenceCache
 from behaviors.types import FaceIdentity
 
 from .eye import EyeService
 from .face import FaceService
-from .types import VisionDigest, build_soul_snapshot
+from .types import VisionDigest
+from .view import llm_view as build_llm_view
 
 _NOTIFY_RING_MAX = 20
 _LOG_MAX = 64
+_GOALS_N = 3
+_GOAL_MAX_LEN = 200
+_DREAM_MAX_LEN = 500
+_SAVE_DEBOUNCE_S = 2.0
+
+
+def _normalize_goals(goals: Optional[list]) -> List[str]:
+    raw = list(goals or [])
+    out: List[str] = []
+    for g in raw[:_GOALS_N]:
+        s = str(g or "").strip()
+        if len(s) > _GOAL_MAX_LEN:
+            s = s[:_GOAL_MAX_LEN]
+        out.append(s)
+    while len(out) < _GOALS_N:
+        out.append("")
+    return out
 
 
 class Soul:
-    """Desk-day continuity brain (scratch).
+    """Desk-day continuity brain (scratch + optional soul.json persistence).
 
     Owns one PresenceCache (shared with BehaviorRuntime), one FaceService,
     and one EyeService. Policies read via occupied / current_face / snapshot;
@@ -60,8 +79,21 @@ class Soul:
         self._mood_text: str = ""
         self._mood_updated: float = 0.0
 
+        # Goals[3] + dream field (persist across restarts).
+        self._goals: List[str] = ["", "", ""]
+        self._last_night_i_dreamed_about: str = ""
+        self._last_dream_job_at: float = 0.0
+
         self._notify_recent: Deque[dict] = deque(maxlen=_NOTIFY_RING_MAX)
         self._log: Deque[dict] = deque(maxlen=_LOG_MAX)
+
+        self._save_lock = threading.Lock()
+        self._save_timer: Optional[threading.Timer] = None
+        self._save_debounce_s = _SAVE_DEBOUNCE_S
+        # None → paths.ROOT / soul.json; tests may set a tmp path.
+        self._persist_path: Any = None
+        # Off until service enables (avoids unit-test writes to install dir).
+        self._auto_persist: bool = False
 
     # -- clocks (public attrs for simple access; also methods for design API) --
 
@@ -89,6 +121,96 @@ class Soul:
     def last_user_voice_at(self, value: float) -> None:
         self._last_user_voice_at = float(value or 0.0)
 
+    # -- goals / dream ----------------------------------------------------------
+
+    @property
+    def goals(self) -> List[str]:
+        return list(self._goals)
+
+    @property
+    def last_night_i_dreamed_about(self) -> str:
+        return self._last_night_i_dreamed_about
+
+    @property
+    def last_dream_job_at(self) -> float:
+        return float(self._last_dream_job_at or 0.0)
+
+    def set_goals(self, goals: Optional[list], *, force_save: bool = True) -> List[str]:
+        """Set exactly 3 goal strings (pad/truncate + max length)."""
+        self._goals = _normalize_goals(goals)
+        if force_save:
+            self.save_now()
+        else:
+            self._schedule_save()
+        return list(self._goals)
+
+    def set_dreamed_about(self, text: str, *, force_save: bool = True) -> str:
+        """Set last_night_i_dreamed_about (capped)."""
+        s = str(text or "").strip()
+        if len(s) > _DREAM_MAX_LEN:
+            s = s[:_DREAM_MAX_LEN]
+        self._last_night_i_dreamed_about = s
+        if force_save:
+            self.save_now()
+        else:
+            self._schedule_save()
+        return self._last_night_i_dreamed_about
+
+    # -- persistence ------------------------------------------------------------
+
+    def load_from_disk(self, path: Any = None) -> bool:
+        """Load ROOT/soul.json (or path). Returns True if applied."""
+        from .persist import load_into
+
+        if path is not None:
+            self._persist_path = path
+        ok = load_into(self, path=self._persist_path)
+        return bool(ok)
+
+    def save_now(self) -> None:
+        """Force immediate atomic save; cancel pending debounce.
+
+        No-op unless ``_auto_persist`` is True or ``_persist_path`` is set
+        (service enables auto-persist; tests set a tmp path).
+        """
+        with self._save_lock:
+            if self._save_timer is not None:
+                try:
+                    self._save_timer.cancel()
+                except Exception:
+                    pass
+                self._save_timer = None
+        if not self._auto_persist and self._persist_path is None:
+            return
+        try:
+            from .persist import save_from
+
+            save_from(self, path=self._persist_path)
+        except Exception as e:
+            print(f"[soul] save_now failed: {e}")
+
+    def _schedule_save(self) -> None:
+        """Debounced coalesce write (~2s)."""
+        if not self._auto_persist and self._persist_path is None:
+            return
+
+        def _fire() -> None:
+            try:
+                self.save_now()
+            except Exception as e:
+                print(f"[soul] debounced save failed: {e}")
+
+        with self._save_lock:
+            if self._save_timer is not None:
+                try:
+                    self._save_timer.cancel()
+                except Exception:
+                    pass
+            t = threading.Timer(self._save_debounce_s, _fire)
+            t.daemon = True
+            self._save_timer = t
+            t.start()
+
     # -- writers ----------------------------------------------------------------
 
     def note_face(
@@ -110,6 +232,7 @@ class Soul:
             source=source,
         )
         self._last_seen_at = now
+        self._schedule_save()
 
     def note_person(
         self,
@@ -148,14 +271,17 @@ class Soul:
                 is_stranger=bool(face.is_stranger),
                 source=source,
             )
+        self._schedule_save()
 
     def note_empty(self, now: float, *, source: str) -> None:
         self.presence.note_empty_evidence(float(now), source=source)
+        self._schedule_save()
 
     def note_spoke(self, now: float, *, source: str, text: str = "") -> None:
         """Robot conversational speech edge (updates last_spoke_at)."""
         del source, text  # source/text reserved for future ring detail
         self._last_spoke_at = float(now)
+        self._schedule_save()
 
     def note_user_voice(self, now: float) -> None:
         self._last_user_voice_at = float(now)
@@ -166,10 +292,12 @@ class Soul:
             process_state._LAST_USER_VOICE_TS = float(now)
         except Exception:
             pass
+        self._schedule_save()
 
     def apply_sleep_clear(self, now: float, sleep_gap_s: float = 0.0) -> None:
         self.presence.apply_sleep_clear(float(now), sleep_gap_s)
         self.face.apply_sleep_clear()
+        self._schedule_save()
 
     # -- readers ----------------------------------------------------------------
 
@@ -217,6 +345,8 @@ class Soul:
                 self.memory.set_state("mood", text)
             except Exception:
                 pass
+        # Force save on mood (D7).
+        self.save_now()
 
     def day_strip(self, date_s: str) -> str:
         if self.continuity is None:
@@ -230,6 +360,7 @@ class Soul:
         self._log.append(
             {"t": float(now), "txt": str(txt or "")[:500], "amb": bool(amb)}
         )
+        self._schedule_save()
 
     # -- eye --------------------------------------------------------------------
 
@@ -248,7 +379,11 @@ class Soul:
         """
         del kwargs
         frame = image or frame_b64_or_url or ""
-        return await self.eye.see(self, float(now), image=frame, reason=reason or "ambient")
+        digest = await self.eye.see(
+            self, float(now), image=frame, reason=reason or "ambient"
+        )
+        self._schedule_save()
+        return digest
 
     def note_eye_frame(
         self,
@@ -261,7 +396,7 @@ class Soul:
         name_hint: str = "",
     ) -> VisionDigest:
         """Light eye digest without a second LLM (chat already archived the frame)."""
-        return self.eye.note_frame(
+        digest = self.eye.note_frame(
             float(now),
             reason=reason,
             frame_path=frame_path,
@@ -270,6 +405,8 @@ class Soul:
             name_hint=name_hint,
             occupied=self.occupied(float(now)),
         )
+        self._schedule_save()
+        return digest
 
     def last_vision(self) -> Optional[VisionDigest]:
         return self.eye.last_vision
@@ -311,36 +448,13 @@ class Soul:
             schedule_speech_notify(message, source=source)
         except Exception:
             pass
+        # note_spoke already scheduled save; ensure ring is included.
+        self._schedule_save()
+
+    def llm_view(self, now: float, *, detail: str = "full") -> dict:
+        """Long-key relative-time export for GET / LLM / growth jobs."""
+        return build_llm_view(self, float(now), detail=detail)  # type: ignore[arg-type]
 
     def snapshot(self, now: float) -> dict:
-        now = float(now)
-        face_cur = self.face.current(now)
-        last = self.eye.last_vision
-        last_v = last.to_dict() if last else None
-        mood_text = self.mood_text()
-        mood_updated = self._mood_updated
-        try:
-            import process_state
-
-            if process_state._mood_state.get("updated"):
-                mood_updated = float(process_state._mood_state["updated"] or 0.0)
-        except Exception:
-            pass
-        snap = build_soul_snapshot(
-            now,
-            occupied=self.occupied(now),
-            session_started_at=self.session_started_at(),
-            last_seen_at=self._last_seen_at,
-            last_spoke_at=self._last_spoke_at,
-            last_user_voice_at=self._last_user_voice_at,
-            face_current=face_cur,
-            face_buffer=self.face.buffer_list(),
-            presence_debug=self.presence.debug_dict(now),
-            mood_text=mood_text,
-            mood_updated=mood_updated,
-            last_vision=last_v,
-            notify_recent=list(self._notify_recent),
-        )
-        snap["eye"]["image_fresh"] = self.image_fresh(now)
-        snap["eye"]["buffer"] = self.eye.buffer_list()
-        return snap
+        """Ops snapshot: alias of llm_view(detail='ops') — long keys, no raw unix."""
+        return self.llm_view(float(now), detail="ops")

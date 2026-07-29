@@ -309,10 +309,11 @@ def test_behaviors_route_via_soul_notify(monkeypatch):
     asyncio.run(_run())
     assert calls == [("Back to work.", "behavior")]
     assert soul.last_spoke_at > 0
-    ring = soul.snapshot(soul.last_spoke_at)["notify"]["recent"]
+    # llm_view ops export: long keys (not nested notify.recent).
+    ring = soul.snapshot(soul.last_spoke_at)["recent_things_i_said_aloud"]
     assert len(ring) == 1
-    assert ring[0]["source"] == "behavior"
-    assert "Back to work" in ring[0]["text"]
+    assert ring[0]["speech_source"] == "behavior"
+    assert "Back to work" in ring[0]["text_preview"]
 
 
 def test_soul_notify_speech_ring_and_schedule(monkeypatch):
@@ -335,9 +336,14 @@ def test_soul_notify_speech_ring_and_schedule(monkeypatch):
     for i in range(25):
         soul.notify_speech(f"line {i}", source="ambient")
     snap = soul.snapshot(soul.last_spoke_at)
-    recent = snap["notify"]["recent"]
+    recent = snap["recent_things_i_said_aloud"]
     assert len(recent) <= 20
-    assert all(len(e.get("text") or "") <= 120 for e in recent)
+    assert all(len(e.get("text_preview") or "") <= 120 for e in recent)
+    # Ring still has speech_source + time_since phrasing (ops/llm_view).
+    assert recent[-1]["speech_source"] == "ambient"
+    assert "Time since" in (recent[-1].get("time_since_i_said_this") or "")
+    # Internal RAM ring still capped at 20 for persistence/notify path.
+    assert len(soul._notify_recent) <= 20
 
     # Empty text is a no-op.
     before = soul.last_spoke_at

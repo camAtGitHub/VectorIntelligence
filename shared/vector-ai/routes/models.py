@@ -17,6 +17,18 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 1.0
 
 
+class ChatSessionMessageRequest(BaseModel):
+    """Keyboard/text inject into a server-side multi-turn chat session.
+
+    Bypasses STT; uses the same brain path as ``/v1/chat/completions``.
+    ``speak`` is reserved (stretch: TTS via chipper) and ignored for v2.
+    """
+    text: str
+    session_id: Optional[str] = "default"
+    stream: Optional[bool] = False
+    speak: Optional[bool] = False
+
+
 class SensorReactionRequest(BaseModel):
     event:        str
     avoid:        Optional[List[str]] = None  # Recent phrases to avoid repeating

@@ -176,8 +176,24 @@ async def proactive_greeting(req: GreetingRequest):
             bits.append(f"That conversation was about: {summ}.")
     else:
         bits.append(f"You have not properly spoken with {name} before.")
+
+    # Lite soul strip: goals / dream / mood / desk clocks without full notify ring.
+    if soul is not None:
+        try:
+            from soul.view import format_soul_for_prompt
+
+            lite = format_soul_for_prompt(soul, now, detail="lite") or ""
+            if lite:
+                bits.append(lite)
+        except Exception as e:
+            print(f"[greeting] format_soul_for_prompt failed: {e}")
+    # Mood one-liner only when lite strip did not already include mood.
     if _mood_state["text"]:
-        bits.append(f"Your current mood: {_mood_state['text']}.")
+        mood_already = any(
+            "my current inner mood" in b or "Your current mood:" in b for b in bits
+        )
+        if not mood_already:
+            bits.append(f"Your current mood: {_mood_state['text']}.")
 
     bits.append(f"For variety, this greeting should: {random.choice(_GREETING_ANGLES)}.")
     if _recent_greetings:

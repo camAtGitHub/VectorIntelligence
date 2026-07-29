@@ -422,7 +422,13 @@ def test_context_note_uses_last_spoke_not_stale_last_seen(tmp_path, monkeypatch)
     note = _build_context_note(face, prior, now)
     # Mid-turn / moments-ago speech → no session "last spoke" nag.
     assert "last spoke with Cam" not in note
-    assert "14" not in note or "hour" not in note.lower()
+    # Speech clock stays fresh (must not invent multi-hour silence from last_seen).
+    assert "last spoke aloud" in note.lower()
+    assert "less than a minute since I last spoke aloud" in note
+    # Visual gap may correctly appear as *visual* (not mislabeled as spoke).
+    if "14" in note and "hour" in note.lower():
+        assert "visually detected" in note.lower() or "last saw" in note.lower()
+        assert "14 hours since I last spoke" not in note
     # Must not invent long silence from last_seen while speech is fresh.
     assert "first thing you've said" not in note
 
@@ -454,3 +460,42 @@ def test_context_note_last_spoke_when_gap_large(tmp_path, monkeypatch):
     note = _build_context_note(face, prior, now)
     assert "last spoke with Cam" in note
     assert "hour" in note.lower()
+
+
+def test_context_note_includes_soul_goals_and_dream(tmp_path, monkeypatch):
+    """Full soul strip injects goals + dream phrasing into chat context."""
+    import deps
+    from datetime import datetime
+
+    from soul import Soul
+
+    _patch_deps(monkeypatch, tmp_path)
+    now = datetime.now()
+    soul = Soul()
+    soul.set_goals(["be a better desk pal", "notice the mug", "rest on charger"], force_save=False)
+    soul.set_dreamed_about("tiny gears under soft rain", force_save=False)
+    soul.set_mood("quietly content", now.timestamp())
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+
+    from prompt_assembly import _build_context_note, prepare_messages
+
+    note = _build_context_note(face, None, now)
+    assert "Desk continuity" in note
+    assert "three goals I currently hold" in note
+    assert "be a better desk pal" in note
+    assert "last night I dreamed about" in note
+    assert "tiny gears under soft rain" in note
+    assert "quietly content" in note
+    # Mood tone guidance without double "state of mind" legacy line.
+    assert "state of mind" not in note
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="hey"),
+    ]
+    out = prepare_messages(messages, face)
+    user_content = out[-1]["content"]
+    assert "three goals I currently hold" in user_content
+    assert "tiny gears under soft rain" in user_content

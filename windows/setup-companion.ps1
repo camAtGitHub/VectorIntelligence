@@ -118,7 +118,7 @@ Copy-Item "$SharedDir\vector-ai\requirements.txt" (Join-Path $VectorAIDir "requi
 $VectorAiModules = @(
     "paths.py", "logging_util.py", "debug_log.py", "llm.py", "persona.py",
     "process_state.py", "deps.py", "vision.py", "prompt_assembly.py",
-    "response_cleanup.py", "chat_flow.py"
+    "response_cleanup.py", "chat_flow.py", "chat_session.py"
 )
 foreach ($mod in $VectorAiModules) {
     $src = Join-Path $SharedDir "vector-ai\$mod"

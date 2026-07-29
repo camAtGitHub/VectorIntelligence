@@ -84,6 +84,20 @@ SOUL = Soul(
     continuity=_continuity,
     image_max_age_s=_runtime_cfg.image_cache_max_age_s,
 )
+SOUL._auto_persist = True
+try:
+    _soul_loaded = SOUL.load_from_disk()
+    if _soul_loaded:
+        print(
+            "[soul] restored from soul.json "
+            f"(last_spoke_at={SOUL.last_spoke_at}, "
+            f"goals={[g for g in SOUL.goals if g]!r}, "
+            f"dream={bool(SOUL.last_night_i_dreamed_about)})"
+        )
+    else:
+        print("[soul] no soul.json (or empty) — starting clean")
+except Exception as e:
+    print(f"[soul] load_from_disk failed: {e}")
 deps.SOUL = SOUL
 BEHAVIOR_RUNTIME = BehaviorRuntime(
     _runtime_cfg,

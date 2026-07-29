@@ -267,7 +267,7 @@ cp "$SHARED_DIR/vector-ai/requirements.txt" "$VECTORAI_DIR/requirements.txt"
 # Fail hard if any module is missing — a partial tree crash-loops at import.
 for _va_mod in paths.py logging_util.py debug_log.py llm.py persona.py \
                process_state.py deps.py vision.py prompt_assembly.py \
-               response_cleanup.py chat_flow.py; do
+               response_cleanup.py chat_flow.py chat_session.py; do
     if [ ! -f "$SHARED_DIR/vector-ai/$_va_mod" ]; then
         die "missing required vector-ai module: $_va_mod (incomplete checkout?)"
     fi

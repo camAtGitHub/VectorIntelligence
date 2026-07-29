@@ -130,18 +130,29 @@ def test_soul_and_runtime_share_one_presence_cache(tmp_path):
     assert soul.occupied(now) is True
 
 
-def test_snapshot_shape():
+def test_snapshot_shape(tmp_path):
+    """snapshot is llm_view(detail=ops): long keys + relative-time sentences."""
     now = 6_000_000.0
     soul = Soul(presence=PresenceCache())
+    soul._persist_path = tmp_path / "soul.json"
     soul.note_face(now, face_id=1, name="Cam", is_stranger=False, source="t")
     soul.note_person(now, source="t")
     snap = soul.snapshot(now)
-    assert snap["occupied"] is True
-    assert snap["last_seen_at"] == now
-    assert snap["face"]["current"]["name"] == "Cam"
-    assert len(snap["face"]["buffer"]) == 1
-    assert "presence" in snap
-    assert "mood" in snap
+    assert snap["a_person_is_currently_at_the_desk"] is True
+    assert "time_since_i_last_visually_detected_a_person" in snap
+    assert "It has been" in snap["time_since_i_last_visually_detected_a_person"] or (
+        "not visually" in snap["time_since_i_last_visually_detected_a_person"]
+    )
+    person = snap["person_i_currently_believe_i_am_looking_at"]
+    assert person is not None
+    assert person["name"] == "Cam"
+    assert "three_goals_i_currently_hold" in snap
+    assert len(snap["three_goals_i_currently_hold"]) == 3
+    assert "last_night_i_dreamed_about" in snap
+    assert "my_current_inner_mood_in_one_phrase" in snap
+    # Short keys must not appear on export view.
+    assert "occupied" not in snap
+    assert "last_seen_at" not in snap
 
 
 def test_apply_sleep_clear():
@@ -164,9 +175,10 @@ def test_face_sighting_dataclass():
     assert d["face_id"] == 1
 
 
-def test_eye_note_frame_and_image_fresh():
+def test_eye_note_frame_and_image_fresh(tmp_path):
     now = 8_000_000.0
     soul = Soul(presence=PresenceCache(), image_max_age_s=45)
+    soul._persist_path = tmp_path / "soul.json"
     assert soul.image_fresh(now) is False
     d = soul.note_eye_frame(now, reason="chat", frame_path="/tmp/x.jpg", note="chat frame")
     assert d.reason == "chat"
@@ -176,8 +188,10 @@ def test_eye_note_frame_and_image_fresh():
     assert soul.image_fresh(now) is True
     assert soul.image_fresh(now + 46) is False
     snap = soul.snapshot(now)
-    assert snap["eye"]["last_vision"]["reason"] == "chat"
-    assert snap["eye"]["image_fresh"] is True
+    # llm_view ops export: glance note + time sentence (not nested eye dict).
+    assert snap["what_i_noted_in_my_most_recent_camera_glance"] == "chat frame"
+    assert "time_since_my_most_recent_camera_glance" in snap
+    assert "It has been" in snap["time_since_my_most_recent_camera_glance"]
 
 
 def test_eye_see_ambient_updates_presence(monkeypatch):

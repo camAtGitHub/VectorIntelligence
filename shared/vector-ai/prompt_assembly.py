@@ -29,6 +29,16 @@ _WORK_LINE = (
     "back to work → {{workResume}}."
 )
 
+# Soul growth silent tags — only when deps.SOUL is wired (same spirit as _WORK_LINE).
+_SOUL_GROWTH_LINE = (
+    "SOUL GROWTH (silent tags — never speak them): "
+    "When the human asks what you dreamed, or after a long day feels closed, you may "
+    "emit {{soulDream}} once so a background dream consolidates (do not narrate the tag). "
+    "To propose three updated goals after they explicitly want new aims, emit "
+    "{{soulGoals||goal one||goal two||goal three}} (three short phrases). "
+    "Prefer aspiring, concrete, grow-with-the-human goals over sulking."
+)
+
 # Emit hint for LATE_CHECK context note (ops day_strip stays status-only).
 _WORK_AWAITING_EMIT = (
     "If they affirm work / half-day, emit {{workAfternoon||yes}} once; "
@@ -140,6 +150,10 @@ def _build_memory_section(
     if _workday_cfg.enabled and BEHAVIOR_RUNTIME.workday is not None:
         sections.append(_WORK_LINE)
 
+    # Soul growth teach line when melting pot is live (chat can trigger dream/goals).
+    if getattr(deps, "SOUL", None) is not None:
+        sections.append(_SOUL_GROWTH_LINE)
+
     return "\n\n".join(sections)
 
 
@@ -218,7 +232,13 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
     Deliberately kept OFF the system prompt: it changes every turn, and in the
     cached prefix that would force a full prompt re-process. Session-scoped
     lines (last-spoke / visual absence) appear only when the speech gap is
-    >90s so mid-turn nags stay off."""
+    >90s so mid-turn nags stay off.
+
+    When SOUL is live, a full desk-continuity strip (llm_view prose) is the
+    single source for mood / glance / workday / speech clocks; older parallel
+    mood/eye/day_strip fragments are skipped to avoid triple-stating. Face
+    first-meet / name-session dialogue gates stay separate.
+    """
     MEMORY = deps.MEMORY
     now_ts = now_dt.timestamp()
     bits = [
@@ -234,9 +254,19 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
         )
         bits.append(f"Things you have actually seen recently - {seen}.")
 
-    # Fresh eye digest one-liner when useful (pot only).
     soul = getattr(deps, "SOUL", None)
+    soul_strip = ""
     if soul is not None:
+        try:
+            from soul.view import format_soul_for_prompt
+
+            soul_strip = format_soul_for_prompt(soul, now_ts, detail="full") or ""
+        except Exception as e:
+            print(f"[soul] format_soul_for_prompt failed: {e}")
+            soul_strip = ""
+
+    # When no soul strip, keep the legacy glance one-liner.
+    if not soul_strip and soul is not None:
         try:
             lv = soul.last_vision()
         except Exception:
@@ -275,6 +305,8 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
                     prior.get("last_seen") or now_ts
                 )
             if gap_spoke > 90:  # a fresh session, not a mid-conversation turn
+                # Name-specific session lines (dialogue rules). Soul strip has
+                # generic desk clocks; still keep named last-spoke for address.
                 if spoke_ts > 0:
                     bits.append(
                         f"You last spoke with {name} {_relative_time(gap_spoke)}."
@@ -301,40 +333,52 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
                     )
             # Visual absence: last_seen only when pot/meta has it and the
             # visual gap is not redundant with the speech gap already stated.
-            last_seen_ts = 0.0
-            if soul is not None:
-                try:
-                    last_seen_ts = float(
-                        getattr(soul, "last_seen_at", 0.0) or 0.0
-                    )
-                except Exception:
-                    last_seen_ts = 0.0
-            if last_seen_ts <= 0 and prior.get("last_seen"):
-                try:
-                    last_seen_ts = float(prior.get("last_seen") or 0.0)
-                except (TypeError, ValueError):
-                    last_seen_ts = 0.0
-            # Only when not mid-turn (same >90s speech gap gate).
-            if last_seen_ts > 0 and spoke_ts > 0 and gap_spoke > 90:
-                gap_seen = now_ts - last_seen_ts
-                gap_spoke_real = now_ts - spoke_ts
-                if (
-                    gap_seen > SESSION_GREETING_GAP
-                    and abs(gap_seen - gap_spoke_real) > 300
-                ):
-                    bits.append(
-                        f"You last saw {name} {_relative_time(gap_seen)}."
-                    )
+            # Skip when soul_strip already covers visual clocks.
+            if not soul_strip:
+                last_seen_ts = 0.0
+                if soul is not None:
+                    try:
+                        last_seen_ts = float(
+                            getattr(soul, "last_seen_at", 0.0) or 0.0
+                        )
+                    except Exception:
+                        last_seen_ts = 0.0
+                if last_seen_ts <= 0 and prior.get("last_seen"):
+                    try:
+                        last_seen_ts = float(prior.get("last_seen") or 0.0)
+                    except (TypeError, ValueError):
+                        last_seen_ts = 0.0
+                # Only when not mid-turn (same >90s speech gap gate).
+                if last_seen_ts > 0 and spoke_ts > 0 and gap_spoke > 90:
+                    gap_seen = now_ts - last_seen_ts
+                    gap_spoke_real = now_ts - spoke_ts
+                    if (
+                        gap_seen > SESSION_GREETING_GAP
+                        and abs(gap_seen - gap_spoke_real) > 300
+                    ):
+                        bits.append(
+                            f"You last saw {name} {_relative_time(gap_seen)}."
+                        )
     elif face and face.get("is_stranger"):
         bits.append("You don't recognise the person in front of you.")
 
-    if _mood_state["text"]:
+    # Mood: strip is single source when SOUL strip present; else legacy line.
+    if soul_strip:
+        bits.append(soul_strip)
+        bits.append(
+            "Let your inner mood colour tone naturally - never state, explain "
+            "or announce it. Weave in only what fits; do not recite the desk "
+            "continuity list."
+        )
+    elif _mood_state["text"]:
         bits.append(
             f"Your current state of mind: {_mood_state['text']}. Let it colour "
             f"your tone naturally - never state, explain or announce it."
         )
 
-    # Work Day continuity strip (noticeable in chat; no extra speech stream).
+    # Work Day: soul full strip already has work_day status when SOUL.day_strip
+    # works. Still inject continuity day_strip + LATE_CHECK emit when workday
+    # is live and (no strip, or strip missing the status / emit need).
     _workday_cfg = deps._workday_cfg
     BEHAVIOR_RUNTIME = deps.BEHAVIOR_RUNTIME
     _continuity = deps._continuity
@@ -351,10 +395,13 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
             date_s = local_dt.strftime("%Y-%m-%d")
             strip = _continuity.day_strip(date_s)
             if strip:
-                bits.append(
-                    f"{strip} Use this only if it fits the conversation; "
-                    f"do not announce 'work day mode'."
-                )
+                # Avoid triple-stating when soul strip already includes this text.
+                already = bool(soul_strip and strip in soul_strip)
+                if not already:
+                    bits.append(
+                        f"{strip} Use this only if it fits the conversation; "
+                        f"do not announce 'work day mode'."
+                    )
                 # LATE_CHECK ops strip is status-only; teach emit grammar here.
                 if "awaiting answer" in strip:
                     bits.append(_WORK_AWAITING_EMIT)

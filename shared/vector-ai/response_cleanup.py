@@ -1,7 +1,7 @@
-"""Strip markdown, extract memory/work/quiet tags, clean spoken responses.
+"""Strip markdown, extract memory/work/quiet/soul-growth tags, clean spoken responses.
 
 Split into pure strip helpers (speech-safe text) and side-effect apply paths
-(remember/forget/quiet/work). ``clean_response`` keeps the same call order as
+(remember/forget/quiet/work/soul). ``clean_response`` keeps the same call order as
 before: strip markdown → forbidden cmds → apply tags → phrase fixes → || scrub.
 """
 import re
@@ -53,6 +53,12 @@ _FORGET_RE          = re.compile(r'\{\{forget\|\|([^}]+)\}\}',           re.IGNO
 # Ambient quiet mode: the user can tell Vector to hush his spontaneous
 # ambient commentary. Auto-expires after a sleep cycle (see /v1/ambient).
 _QUIET_RE           = re.compile(r'\{\{quietMode\|\|(on|off)\}\}',        re.IGNORECASE)
+
+# Soul growth silent tags (brain-only; never spoken).
+_SOUL_DREAM_RE = re.compile(r"\{\{soulDream\}\}", re.IGNORECASE)
+_SOUL_GOALS_RE = re.compile(
+    r"\{\{soulGoals\|\|([^}]+)\}\}", re.IGNORECASE
+)
 
 
 def _scrub_double_pipes(text: str) -> str:
@@ -135,13 +141,70 @@ def apply_memory_actions(actions: List[Tuple[str, str]]) -> None:
             _set_quiet(payload == "on")
 
 
+def parse_soul_growth_tags(text: str) -> Tuple[str, List[Tuple[str, object]]]:
+    """Pure parse of soul growth tags. Returns (text_without_tags, actions).
+
+    Actions: (\"dream\", None) or (\"goals\", [g1, g2, g3]).
+    """
+    actions: List[Tuple[str, object]] = []
+    if not text:
+        return text or "", actions
+    if _SOUL_DREAM_RE.search(text):
+        actions.append(("dream", None))
+    text = _SOUL_DREAM_RE.sub("", text)
+    for payload in _SOUL_GOALS_RE.findall(text):
+        parts = [p.strip() for p in str(payload).split("||")]
+        # Pad/truncate to 3 for set_goals.
+        while len(parts) < 3:
+            parts.append("")
+        actions.append(("goals", parts[:3]))
+    text = _SOUL_GOALS_RE.sub("", text)
+    return text, actions
+
+
+def apply_soul_growth_actions(actions: List[Tuple[str, object]]) -> None:
+    """Apply soulDream (background job) and soulGoals (immediate set)."""
+    if not actions:
+        return
+    soul = getattr(deps, "SOUL", None)
+    now = time.time()
+    for kind, payload in actions:
+        if kind == "goals":
+            goals = payload if isinstance(payload, list) else []
+            if soul is not None and hasattr(soul, "set_goals"):
+                try:
+                    soul.set_goals(goals, force_save=True)
+                    print(f"[soul] goals set via chat tag: {list(soul.goals)!r}")
+                except Exception as e:
+                    print(f"[soul] soulGoals apply failed: {e}")
+            else:
+                print("[soul] soulGoals ignored (no SOUL)")
+        elif kind == "dream":
+            if soul is None:
+                print("[soul] soulDream ignored (no SOUL)")
+                continue
+            try:
+                from soul.growth import maybe_schedule_dream_job
+
+                scheduled = maybe_schedule_dream_job(
+                    soul, now=now, reason="chat_tag", force=False
+                )
+                if scheduled:
+                    print("[soul] soulDream scheduled from chat tag")
+            except Exception as e:
+                print(f"[soul] soulDream schedule failed: {e}")
+
+
 def extract_memory_commands(text: str) -> str:
-    """Find {{remember[-shared]||…}} / {{forget||…}} / quiet / work tags, apply
-    side effects, return speech text with those commands removed."""
+    """Find {{remember[-shared]||…}} / {{forget||…}} / quiet / work / soul tags,
+    apply side effects, return speech text with those commands removed."""
     text, mem_actions = parse_memory_tags(text)
     apply_memory_actions(mem_actions)
     # Work Day control tags (pause / resume / afternoon yes-no).
     text = _apply_work_commands(text)
+    # Soul growth: dream (async) + goals (immediate).
+    text, soul_actions = parse_soul_growth_tags(text)
+    apply_soul_growth_actions(soul_actions)
     return text
 
 

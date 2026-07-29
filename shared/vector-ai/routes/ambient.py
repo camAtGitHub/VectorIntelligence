@@ -75,6 +75,18 @@ async def ambient(req: AmbientRequest):
             if soul is not None:
                 soul.apply_sleep_clear(now, AMBIENT_SLEEP_GAP)
                 print("[ambient] sleep gap — sticky presence cleared")
+                # Phase 3.5 auto dream: after sleep gap, if >20h since last dream
+                # job, fire-and-forget consolidate (debounced inside run_dream_job).
+                try:
+                    from soul.growth import DREAM_DEBOUNCE_S, maybe_schedule_dream_job
+
+                    last_dream = float(getattr(soul, "last_dream_job_at", 0.0) or 0.0)
+                    if last_dream <= 0 or (now - last_dream) > DREAM_DEBOUNCE_S:
+                        maybe_schedule_dream_job(
+                            soul, now=now, reason="ambient_sleep_gap", force=False
+                        )
+                except Exception as de:
+                    print(f"[ambient] dream schedule failed: {de}")
             else:
                 rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
                 if rt is not None:
