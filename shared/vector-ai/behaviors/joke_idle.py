@@ -131,8 +131,12 @@ class JokeIdleBehavior:
                 else None
             ),
             "reason": reason,
-            # Ops reason is a cheap subset of tick gates (not identity/arbiter).
-            "reason_scope": "ops_subset",
+            # Status reason covers only cheap gates (not identity / voice / arbiter).
+            "reason_scope": (
+                "basic status only — desk empty, dwell, cooldown, daily cap, "
+                "and joke queue; does not include voice activity, face identity, "
+                "or speech-arbiter denials"
+            ),
         }
 
     def status_summary(self, now: float, **kwargs) -> str:

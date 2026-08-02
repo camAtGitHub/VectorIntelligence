@@ -284,12 +284,13 @@ On the index, `behaviors.joke_idle` should appear when both gates are on
 gate reason such as `dwell_building`, `cooldown`, `capped`, `no_line_available`,
 or `idle_ready`.
 
-**Ops reason scope:** detail `reason` / card `summary` are a **cheap subset**
-of tick gates (cap, cooldown, empty, dwell, queue). They do **not** include
-chipper `voice_recent`, identity probe, stranger suppress, or arbiter denies —
-those only exist on the speak path. So `idle_ready` means dwell/cooldown/cap/queue
-look clear for ops; a later tick may still skip. Detail JSON includes
-`"reason_scope": "ops_subset"`.
+**Reason scope:** detail `reason` / card `summary` are **basic status only** —
+desk empty, dwell, cooldown, daily cap, and joke queue. They do **not** include
+chipper voice-recent, identity probe, stranger suppress, or speech-arbiter
+denies — those only exist on the speak path. So `idle_ready` means
+dwell/cooldown/cap/queue look clear for status; a later tick may still skip.
+Detail JSON includes a plain-English `reason_scope` string explaining this
+(not a machine token like `ops_subset`).
 
 **Dwell clock:** quiet dwell is `now − max(session_started_at, last_spoke_at,
 last_user_voice_at)`. `session_started_at` is when continuous desk occupancy

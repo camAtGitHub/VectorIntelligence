@@ -865,7 +865,9 @@ def test_joke_status_no_line_available() -> None:
         )
         check("no_line_available", st["reason"] == "no_line_available")
         check("queue_len 0", st["queue_len"] == 0)
-        check("reason_scope", st.get("reason_scope") == "ops_subset")
+        scope = str(st.get("reason_scope") or "")
+        check("reason_scope plain english", "basic status only" in scope)
+        check("reason_scope not ops_subset", scope != "ops_subset")
 
 
 def test_joke_status_cooldown_remaining() -> None:
