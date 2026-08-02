@@ -18,6 +18,19 @@ from .types import BehaviorContext, FaceIdentity, TickResult
 JOKE_IDLE_ID = "joke_idle"
 _TAG = "joke_idle"
 
+# Plain-English reasons for status / tick debug (ops-facing; not machine tokens).
+REASON_CAPPED = "daily cap reached"
+REASON_COOLDOWN = "cooldown after last joke"
+REASON_EMPTY = "desk empty"
+REASON_DWELL = "waiting for quiet dwell"
+REASON_NO_LINE = "joke queue empty"
+REASON_READY = "ready to joke"
+REASON_VOICE = "recent voice activity"
+REASON_ID_REJECT = "identity reject cooldown"
+REASON_NEED_ID = "requesting face identity"
+REASON_STRANGER = "stranger suppressed"
+REASON_SPOKE = "proposing joke"
+
 
 class JokeIdleBehavior:
     id = JOKE_IDLE_ID
@@ -90,20 +103,20 @@ class JokeIdleBehavior:
         # Cheap ops gate (subset of tick). Intentionally does NOT model
         # voice_recent bool / identity probe / stranger suppress — those only
         # exist on the speak path. last_user_voice_at *is* in the dwell base.
-        # ``idle_ready`` means dwell/cooldown/cap/queue look clear for ops;
+        # REASON_READY means dwell/cooldown/cap/queue look clear for status;
         # tick may still skip (arbiter, voice_recent). See FSM-jokes-at-idle.
         if daily["count"] >= cfg.max_per_day:
-            reason = "capped"
+            reason = REASON_CAPPED
         elif last_spoke > 0 and (now - last_spoke) < cfg.cooldown_s:
-            reason = "cooldown"
+            reason = REASON_COOLDOWN
         elif not occupied:
-            reason = "empty"
+            reason = REASON_EMPTY
         elif quiet_dwell < cfg.min_dwell_s:
-            reason = "dwell_building"
+            reason = REASON_DWELL
         elif queue_len <= 0:
-            reason = "no_line_available"
+            reason = REASON_NO_LINE
         else:
-            reason = "idle_ready"
+            reason = REASON_READY
 
         return {
             "date": date,
@@ -185,10 +198,10 @@ class JokeIdleBehavior:
         def _skip(reason: str, *, always: bool = False, **extra) -> TickResult:
             r.debug = {"mode": "idle", "reason": reason, **extra}
             remaining = ""
-            if reason == "cooldown":
+            if reason == REASON_COOLDOWN:
                 left = cfg.cooldown_s - (ctx.now - daily["last_spoke_at"])
                 remaining = f" ({left:.0f}s left)"
-            elif reason == "dwell_building":
+            elif reason == REASON_DWELL:
                 qb = self._quiet_base(
                     session_started_at=float(
                         getattr(ctx.presence, "session_started_at", 0.0) or 0.0
@@ -200,7 +213,7 @@ class JokeIdleBehavior:
                 )
                 quiet_dwell = (ctx.now - qb) if qb > 0 else 0.0
                 remaining = f" ({quiet_dwell:.0f}/{cfg.min_dwell_s}s)"
-            elif reason == "capped":
+            elif reason == REASON_CAPPED:
                 remaining = f" ({daily['count']}/{cfg.max_per_day})"
             blog(
                 _TAG,
@@ -212,15 +225,15 @@ class JokeIdleBehavior:
 
         # 3. Daily cap
         if daily["count"] >= cfg.max_per_day:
-            return _skip("capped", always=True)
+            return _skip(REASON_CAPPED, always=True)
 
         # 4. Cooldown since last spoke
         if ctx.now - daily["last_spoke_at"] < cfg.cooldown_s:
-            return _skip("cooldown")
+            return _skip(REASON_COOLDOWN)
 
         # 5. Desk empty
         if not ctx.presence.occupied:
-            return _skip("empty")
+            return _skip(REASON_EMPTY)
 
         # 6. Dwell: quiet time since occupancy *session start* / last speak /
         # last user voice. Do NOT use presence.updated_at — every tick ingest
@@ -236,20 +249,20 @@ class JokeIdleBehavior:
         )
         quiet_dwell = (ctx.now - quiet_base) if quiet_base > 0 else 0.0
         if quiet_dwell < cfg.min_dwell_s:
-            return _skip("dwell_building")
+            return _skip(REASON_DWELL)
 
         # Voice activity breaks quiet; bail early (arbiter also guards)
         if ctx.presence.voice_recent:
-            return _skip("voice_recent")
+            return _skip(REASON_VOICE)
 
         # 7. Identity juncture
         face: Optional[FaceIdentity] = None
         if cfg.audience == "known":
             if not ctx.identity_fresh:
                 if ctx.now - daily["last_reject_at"] < cfg.identity_reject_cooldown_s:
-                    return _skip("id_reject_cooldown")
+                    return _skip(REASON_ID_REJECT)
                 r.need_identity = True
-                r.debug = {"mode": "idle", "reason": "requesting_identity"}
+                r.debug = {"mode": "idle", "reason": REASON_NEED_ID}
                 blog(_TAG, "need face probe before joke (identity not fresh)")
                 return r
             face = ctx.presence.face
@@ -260,7 +273,7 @@ class JokeIdleBehavior:
                     _TAG,
                     "would have joked but stranger/unknown face — suppressed",
                 )
-                r.debug = {"mode": "idle", "reason": "stranger_suppressed"}
+                r.debug = {"mode": "idle", "reason": REASON_STRANGER}
                 return r
         else:
             # anyone mode: never need_identity
@@ -279,7 +292,7 @@ class JokeIdleBehavior:
                 _TAG,
                 f"ready to joke but queue empty (queue_len={qlen}) — waiting for refill",
             )
-            r.debug = {"mode": "idle", "reason": "no_line_available"}
+            r.debug = {"mode": "idle", "reason": REASON_NO_LINE}
             return r
 
         text = line["text"]
@@ -327,7 +340,7 @@ class JokeIdleBehavior:
         # 12. Debug payload for the arm that proposed speech (arbiter may still deny)
         r.debug = {
             "mode": "idle",
-            "reason": "spoke",
+            "reason": REASON_SPOKE,
             "kind": kind,
             "source": source,
             "who": who,

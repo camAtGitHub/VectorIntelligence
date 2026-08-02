@@ -75,7 +75,7 @@ Optional but recommended:
 |--------|------|
 | `min_tick_interval` | Reserved attribute (seconds); **not enforced** by runtime today — do not rely on it for correctness until multi-FSM throttle lands |
 | `clock_tick(now, local_dt)` | Time-only transitions when chipper is quiet (Work Day: morning window → no_show) |
-| `status_summary(now) -> str` | One short string for the shared state **card** (e.g. `"working"`, `"dwell_building"`) |
+| `status_summary(now) -> str` | One short string for the shared state **card** (e.g. `"working"`, `"waiting for quiet dwell"`) |
 | `status(now) -> dict` | Full detail + debug for `GET /v1/behaviors/<id>` (JSON-serializable) |
 | Chat hooks | e.g. workday pause tags—wired from response cleanup / routes only if needed |
 
@@ -167,7 +167,7 @@ Optional but recommended:
     },
     "joke_idle": {
       "enabled": true,
-      "summary": "dwell_building",
+      "summary": "waiting for quiet dwell",
       "href": "/v1/behaviors/joke_idle"
     }
   }

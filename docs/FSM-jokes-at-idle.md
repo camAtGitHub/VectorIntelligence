@@ -280,23 +280,35 @@ curl -s http://127.0.0.1:8090/v1/behaviors/joke_idle | jq
 ```
 
 On the index, `behaviors.joke_idle` should appear when both gates are on
-(`JOKE_ENABLED=1` and `joke_idle` in `BEHAVIORS_ENABLED`); `summary` is a
-gate reason such as `dwell_building`, `cooldown`, `capped`, `no_line_available`,
-or `idle_ready`.
+(`JOKE_ENABLED=1` and `joke_idle` in `BEHAVIORS_ENABLED`); `summary` / detail
+`reason` are **plain English**, for example:
+
+| Reason | Meaning |
+|--------|---------|
+| `desk empty` | No one at the desk (status occupancy) |
+| `waiting for quiet dwell` | Desk occupied but quiet dwell not met yet |
+| `cooldown after last joke` | Still in post-joke silence window |
+| `daily cap reached` | Hit `JOKE_MAX_PER_DAY` for the calendar day |
+| `joke queue empty` | No vetted line left; waiting for refill |
+| `ready to joke` | Basic status gates look clear |
+| `recent voice activity` | Tick path only — chipper said voice is recent |
+| `requesting face identity` | Tick path — `known` audience needs a face probe |
+| `stranger suppressed` | Tick path — stranger/unknown face, no joke |
+| `identity reject cooldown` | Tick path — waiting after a stranger reject |
+| `proposing joke` | Tick path — line offered to the speech arbiter |
 
 **Reason scope:** detail `reason` / card `summary` are **basic status only** —
 desk empty, dwell, cooldown, daily cap, and joke queue. They do **not** include
 chipper voice-recent, identity probe, stranger suppress, or speech-arbiter
-denies — those only exist on the speak path. So `idle_ready` means
+denies — those only exist on the speak path. So `ready to joke` means
 dwell/cooldown/cap/queue look clear for status; a later tick may still skip.
-Detail JSON includes a plain-English `reason_scope` string explaining this
-(not a machine token like `ops_subset`).
+Detail JSON includes a plain-English `reason_scope` string explaining this.
 
 **Dwell clock:** quiet dwell is `now − max(session_started_at, last_spoke_at,
 last_user_voice_at)`. `session_started_at` is when continuous desk occupancy
 began (empty→occupied), **not** `presence.updated_at`. Every behavior tick
 rewrites `updated_at` as a sensor heartbeat; using it for dwell made status look
-`idle_ready` while real ticks always saw `dwell_building`.
+`ready to joke` while real ticks always saw `waiting for quiet dwell`.
 
 `/health` should still be healthy for normal chat.
 

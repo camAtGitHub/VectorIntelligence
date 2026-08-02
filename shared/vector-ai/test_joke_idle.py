@@ -18,7 +18,20 @@ from zoneinfo import ZoneInfo
 
 from behaviors.config import JokeConfig, WorkdayConfig, load_joke_config, load_runtime_config
 from behaviors.continuity import ContinuityStore
-from behaviors.joke_idle import JokeIdleBehavior, JOKE_IDLE_ID
+from behaviors.joke_idle import (
+    JokeIdleBehavior,
+    JOKE_IDLE_ID,
+    REASON_CAPPED,
+    REASON_COOLDOWN,
+    REASON_DWELL,
+    REASON_EMPTY,
+    REASON_ID_REJECT,
+    REASON_NEED_ID,
+    REASON_NO_LINE,
+    REASON_READY,
+    REASON_SPOKE,
+    REASON_STRANGER,
+)
 from behaviors.joke_sources import (
     _MAX_GEN_BATCHES,
     commit_line,
@@ -521,7 +534,7 @@ def test_fsm_happy_path() -> None:
         check("happy speak non-empty", isinstance(r.speak, str) and len(r.speak) > 0)
         check("happy contains line", line_text in r.speak)
         check("happy on_speak_allowed set", r.on_speak_allowed is not None)
-        check("happy reason spoke", r.debug.get("reason") == "spoke")
+        check("happy reason spoke", r.debug.get("reason") == REASON_SPOKE)
         check("happy no need_identity", r.need_identity is False)
 
         # Daily + queue still unchanged until speech-gated commit
@@ -547,7 +560,7 @@ def test_fsm_happy_path() -> None:
         _push(store, "Another unique joke for second tick.", "joke", 0.9, now)
         r2 = b.tick(_joke_ctx(b, now + 60, occupied=True, identity_fresh=False))
         check("cooldown blocks speak", r2.speak == "")
-        check("cooldown reason", r2.debug.get("reason") == "cooldown")
+        check("cooldown reason", r2.debug.get("reason") == REASON_COOLDOWN)
 
 
 def test_fsm_runtime_arbiter_deny_leaves_queue() -> None:
@@ -715,7 +728,7 @@ def test_fsm_identity_gating() -> None:
         )
         check("known+stale need_identity", r1.need_identity is True)
         check("known+stale no speak", r1.speak == "")
-        check("known+stale reason", r1.debug.get("reason") == "requesting_identity")
+        check("known+stale reason", r1.debug.get("reason") == REASON_NEED_ID)
 
         # known + stranger → reject marked in body, no speak
         stranger = FaceIdentity(face_id=-3, name="", is_stranger=True)
@@ -726,7 +739,7 @@ def test_fsm_identity_gating() -> None:
         )
         check("stranger no speak", r2.speak == "")
         check("stranger no need_id", r2.need_identity is False)
-        check("stranger reason", r2.debug.get("reason") == "stranger_suppressed")
+        check("stranger reason", r2.debug.get("reason") == REASON_STRANGER)
         d = store.joke_load_daily(date)
         check("stranger reject marked", d["last_reject_at"] == now + 1)
 
@@ -742,7 +755,7 @@ def test_fsm_identity_gating() -> None:
         )
         check("cooldown no need_identity", r3.need_identity is False)
         check("cooldown no speak", r3.speak == "")
-        check("cooldown reason", r3.debug.get("reason") == "id_reject_cooldown")
+        check("cooldown reason", r3.debug.get("reason") == REASON_ID_REJECT)
 
         # anyone → never need_identity (even stale)
         b_any = JokeIdleBehavior(
@@ -780,7 +793,7 @@ def test_joke_status_dwell_queue_cap() -> None:
         _push(store, "Status test line unique alpha.", "joke", 0.9, now)
         _push(store, "Status test line unique beta.", "joke", 0.9, now)
 
-        # Occupied, session just started → dwell_building.
+        # Occupied, session just started → waiting for quiet dwell.
         # presence_updated_at may be "now" (tick heartbeat) and must NOT control dwell.
         st = b.status(
             now,
@@ -790,7 +803,7 @@ def test_joke_status_dwell_queue_cap() -> None:
         )
         check("status id", st["id"] == JOKE_IDLE_ID)
         check("status schema", st["schema_version"] == 1)
-        check("status reason dwell", st["reason"] == "dwell_building")
+        check("status reason dwell", st["reason"] == REASON_DWELL)
         check("quiet_dwell ~100", abs(st["quiet_dwell_s"] - 100.0) < 0.01)
         check(
             "dwell remaining ~1100",
@@ -807,7 +820,7 @@ def test_joke_status_dwell_queue_cap() -> None:
                 session_started_at=now - 100.0,
                 presence_updated_at=now,
             )
-            == "dwell_building",
+            == REASON_DWELL,
         )
 
         # status must not mutate queue or daily
@@ -815,14 +828,14 @@ def test_joke_status_dwell_queue_cap() -> None:
         d = store.joke_load_daily(date)
         check("daily unchanged after status", d["count"] == 0)
 
-        # After dwell met → idle_ready
+        # After dwell met → ready to joke
         st2 = b.status(
             now,
             session_started_at=now - 2000.0,
             presence_updated_at=now,
             occupied=True,
         )
-        check("ready after dwell", st2["reason"] == "idle_ready")
+        check("ready after dwell", st2["reason"] == REASON_READY)
         check("dwell remaining 0", st2["dwell_remaining_s"] == 0.0)
 
         # Empty desk
@@ -832,7 +845,7 @@ def test_joke_status_dwell_queue_cap() -> None:
             presence_updated_at=now,
             occupied=False,
         )
-        check("empty reason", st3["reason"] == "empty")
+        check("empty reason", st3["reason"] == REASON_EMPTY)
 
         # Cap
         store.joke_commit_spoke(date, now - 10_000)
@@ -845,12 +858,12 @@ def test_joke_status_dwell_queue_cap() -> None:
             presence_updated_at=now,
             occupied=True,
         )
-        check("capped", st4["reason"] == "capped")
+        check("capped", st4["reason"] == REASON_CAPPED)
         check("daily_count 4", st4["daily_count"] == 4)
 
 
 def test_joke_status_no_line_available() -> None:
-    """Empty queue + dwell met → reason no_line_available."""
+    """Empty queue + dwell met → joke queue empty."""
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "joke.db")
         cfg = _joke_cfg(min_dwell_s=100, cooldown_s=9000, max_per_day=4)
@@ -863,7 +876,7 @@ def test_joke_status_no_line_available() -> None:
             presence_updated_at=now,
             occupied=True,
         )
-        check("no_line_available", st["reason"] == "no_line_available")
+        check("no_line_available", st["reason"] == REASON_NO_LINE)
         check("queue_len 0", st["queue_len"] == 0)
         scope = str(st.get("reason_scope") or "")
         check("reason_scope plain english", "basic status only" in scope)
@@ -885,7 +898,7 @@ def test_joke_status_cooldown_remaining() -> None:
             presence_updated_at=now,
             occupied=True,
         )
-        check("cooldown reason", st["reason"] == "cooldown")
+        check("cooldown reason", st["reason"] == REASON_COOLDOWN)
         check(
             "cooldown remaining ~8000",
             abs(st["cooldown_remaining_s"] - 8000.0) < 0.01,
@@ -907,13 +920,13 @@ def test_joke_runtime_status_and_card() -> None:
         detail = rt.behavior_status(JOKE_IDLE_ID, now)
         check("runtime detail", detail is not None)
         assert detail is not None
-        check("runtime reason dwell", detail["reason"] == "dwell_building")
+        check("runtime reason dwell", detail["reason"] == REASON_DWELL)
         check("runtime queue", detail["queue_len"] == 1)
         idx = rt.build_state_index(now)
         check("card present", JOKE_IDLE_ID in idx["behaviors"])
         check(
             "card summary dwell",
-            idx["behaviors"][JOKE_IDLE_ID]["summary"] == "dwell_building",
+            idx["behaviors"][JOKE_IDLE_ID]["summary"] == REASON_DWELL,
         )
         check("unregistered workday 404 path", rt.behavior_status("workday", now) is None)
 
@@ -922,7 +935,7 @@ def test_joke_dwell_survives_tick_ingest_heartbeat() -> None:
     """Regression: every /behaviors/tick ingest rewrites updated_at=now.
 
     Old formula used updated_at for dwell, so real ticks always saw
-    quiet_dwell≈0 and never spoke — while GET status (no ingest) looked idle_ready.
+    quiet_dwell≈0 and never spoke — while GET status (no ingest) looked ready.
     """
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "joke.db")
@@ -963,7 +976,7 @@ def test_joke_dwell_survives_tick_ingest_heartbeat() -> None:
 
         detail = rt.behavior_status(JOKE_IDLE_ID, t_ready)
         assert detail is not None
-        check("status idle_ready after session dwell", detail["reason"] == "idle_ready")
+        check("status ready after session dwell", detail["reason"] == REASON_READY)
 
         result = rt.tick(t_ready)
         check(

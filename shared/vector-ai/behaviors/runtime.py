@@ -357,6 +357,7 @@ class BehaviorRuntime:
             if not text:
                 # Log interesting non-speech outcomes at verbose level only.
                 reason = (r.debug or {}).get("reason")
+                # Quiet/common skips (workday snake_case + joke_idle plain English).
                 if reason and reason not in (
                     "dwell_building",
                     "cooldown",
@@ -364,6 +365,13 @@ class BehaviorRuntime:
                     "armed_idle",
                     "away",
                     "paused",
+                    "waiting for quiet dwell",
+                    "cooldown after last joke",
+                    "desk empty",
+                    "daily cap reached",
+                    "joke queue empty",
+                    "ready to joke",
+                    "recent voice activity",
                 ):
                     blog(
                         _TAG,
