@@ -55,6 +55,43 @@ def test_parse_empty_nothing():
     assert spoken == ""
 
 
+def test_parse_scene_then_nothing():
+    """New protocol: PRESENCE + SCENE + NOTHING yields no speech."""
+    from soul.eye import novelty_note_from_raw, scene_from_raw
+
+    raw = (
+        "PRESENCE: empty\n"
+        "SCENE: mug left of monitor, keyboard center, headphones right edge\n"
+        "NOTHING"
+    )
+    kind, hint, spoken = parse_ambient_llm_raw(raw)
+    assert kind == "empty"
+    assert hint is None
+    assert spoken == ""
+    assert "mug" in scene_from_raw(raw).lower()
+    assert novelty_note_from_raw(raw) == ""
+
+
+def test_parse_scene_then_novelty():
+    """SCENE inventory is not treated as the novelty note."""
+    from soul.eye import novelty_note_from_raw, scene_from_raw
+
+    raw = (
+        "PRESENCE: person:Cam\n"
+        "SCENE: Cam in grey hoodie at desk, mug on keyboard, monitor\n"
+        "mug moved onto the keyboard\n"
+        "The mug has claimed the keyboard. Bold strategy."
+    )
+    kind, hint, spoken = parse_ambient_llm_raw(raw)
+    assert kind == "person"
+    assert hint == "Cam"
+    assert "keyboard" in spoken.lower() or "Bold" in spoken
+    assert "mug on keyboard" in scene_from_raw(raw).lower()
+    note = novelty_note_from_raw(raw)
+    assert "moved" in note.lower()
+    assert not note.upper().startswith("SCENE")
+
+
 def test_parse_partial_body_fixture_still_person():
     """Prompt fixtures: partial body wording still parses as person."""
     raw = (
@@ -383,6 +420,7 @@ def test_ambient_novelty_still_remembers(tmp_path, monkeypatch):
     from memory import MemoryStore
     from routes.ambient import ambient
     from routes.models import AmbientRequest
+    from soul import Soul
 
     store = MemoryStore(tmp_path / "mem.db")
     monkeypatch.setattr(deps, "MEMORY", store, raising=False)
@@ -395,12 +433,17 @@ def test_ambient_novelty_still_remembers(tmp_path, monkeypatch):
             cont,
         )
         monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        # Seed prior scene so this is not a baseline-only glance.
+        soul = Soul(presence=rt.presence, memory=store)
+        soul.eye.set_last_scene("empty desk, monitor, keyboard")
+        monkeypatch.setattr(deps, "SOUL", soul, raising=False)
         process_state._set_quiet(False)
         process_state._ambient_state["last_ambient_call"] = time.time()
 
         async def _novel(*a, **k):
             return (
                 "PRESENCE: empty\n"
+                "SCENE: empty desk, monitor, keyboard, rubber duck on the monitor\n"
                 "a rubber duck on the monitor\n"
                 "A rubber duck. Of course."
             )
@@ -802,6 +845,7 @@ def test_presence_line_not_in_observations(tmp_path, monkeypatch):
     from memory import MemoryStore
     from routes.ambient import ambient
     from routes.models import AmbientRequest
+    from soul import Soul
 
     store = MemoryStore(tmp_path / "mem.db")
     monkeypatch.setattr(deps, "MEMORY", store, raising=False)
@@ -813,12 +857,16 @@ def test_presence_line_not_in_observations(tmp_path, monkeypatch):
             cont,
         )
         monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        soul = Soul(presence=rt.presence, memory=store)
+        soul.eye.set_last_scene("person at desk, empty monitor top")
+        monkeypatch.setattr(deps, "SOUL", soul, raising=False)
         process_state._set_quiet(False)
         process_state._ambient_state["last_ambient_call"] = time.time()
 
         async def _novel(*a, **k):
             return (
                 "PRESENCE: person\n"
+                "SCENE: person at desk, rubber duck on the monitor\n"
                 "a rubber duck on the monitor\n"
                 "A duck. Lovely."
             )
@@ -1142,5 +1190,125 @@ def test_ambient_system_still_has_presence_protocol():
     assert "PRESENCE: empty" in _AMBIENT_SYSTEM
     assert "PRESENCE: person" in _AMBIENT_SYSTEM
     assert "NOTHING" in _AMBIENT_SYSTEM
+    assert "SCENE:" in _AMBIENT_SYSTEM
+    assert "PREVIOUS SCENE" in _AMBIENT_SYSTEM or "previous scene" in _AMBIENT_SYSTEM.lower()
     # Positive framing about layout / appear-move-vanish.
     assert "appeared" in _AMBIENT_SYSTEM.lower() or "moved" in _AMBIENT_SYSTEM.lower()
+
+
+def test_build_ambient_user_text_includes_previous_scene():
+    from soul.eye import _build_ambient_user_text
+
+    with_prev = _build_ambient_user_text(
+        None, previous_scene="mug left of monitor, empty chair"
+    )
+    assert "PREVIOUS SCENE" in with_prev
+    assert "mug left of monitor" in with_prev
+    assert "SCENE: full inventory" in with_prev or "SCENE:" in with_prev
+
+    baseline = _build_ambient_user_text(None, previous_scene="")
+    assert "PREVIOUS SCENE: none" in baseline
+    assert "baseline" in baseline.lower()
+
+
+def test_eye_stores_and_resends_scene(monkeypatch):
+    """Second ambient glance must include the first glance's full SCENE text."""
+    import asyncio
+
+    from behaviors.presence import PresenceCache
+    from soul import Soul
+
+    soul = Soul(presence=PresenceCache())
+    calls = {"n": 0, "user_texts": []}
+
+    async def _llm(messages, **kwargs):
+        calls["n"] += 1
+        # Capture multimodal user text blob.
+        user = messages[1]["content"]
+        if isinstance(user, list):
+            for part in user:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    calls["user_texts"].append(part.get("text") or "")
+        if calls["n"] == 1:
+            return (
+                "PRESENCE: empty\n"
+                "SCENE: red mug left of monitor, black keyboard, dim room\n"
+                "NOTHING"
+            )
+        return (
+            "PRESENCE: empty\n"
+            "SCENE: red mug on keyboard, black keyboard, dim room\n"
+            "mug moved onto the keyboard\n"
+            "The mug is on the keys now. Ambition."
+        )
+
+    monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
+    monkeypatch.setattr("soul.eye.save_submitted_image", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "soul.eye.image_payload_too_large", lambda *a, **k: False
+    )
+
+    d1 = asyncio.run(soul.see(1_000.0, image="fake1", reason="ambient"))
+    assert d1.scene and "red mug left" in d1.scene
+    assert d1.spoken == ""
+    assert soul.eye.last_scene_text and "red mug left" in soul.eye.last_scene_text
+
+    d2 = asyncio.run(soul.see(1_200.0, image="fake2", reason="ambient"))
+    assert calls["n"] == 2
+    assert "red mug left of monitor" in calls["user_texts"][1]
+    assert d2.spoken
+    assert "mug" in d2.spoken.lower() or "keys" in d2.spoken.lower()
+    assert "on keyboard" in d2.scene.lower() or "keyboard" in d2.scene.lower()
+
+
+def test_baseline_glance_suppresses_spoken_novelty(monkeypatch):
+    """With no prior scene, spoken novelty is dropped even if model invents it."""
+    import asyncio
+
+    from behaviors.presence import PresenceCache
+    from soul import Soul
+
+    soul = Soul(presence=PresenceCache())
+
+    async def _llm(*a, **k):
+        return (
+            "PRESENCE: empty\n"
+            "SCENE: empty desk with a lamp\n"
+            "lamp appeared\n"
+            "Oh look a lamp."
+        )
+
+    monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
+    monkeypatch.setattr("soul.eye.save_submitted_image", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "soul.eye.image_payload_too_large", lambda *a, **k: False
+    )
+
+    d = asyncio.run(soul.see(2_000.0, image="x", reason="ambient"))
+    assert d.spoken == ""
+    assert d.note == ""
+    assert "lamp" in d.scene.lower()
+    assert soul.eye.last_scene_text
+
+
+def test_sleep_clear_drops_last_scene(monkeypatch):
+    import asyncio
+
+    from behaviors.presence import PresenceCache
+    from soul import Soul
+
+    soul = Soul(presence=PresenceCache())
+
+    async def _llm(*a, **k):
+        return "PRESENCE: empty\nSCENE: mug and keyboard\nNOTHING"
+
+    monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
+    monkeypatch.setattr("soul.eye.save_submitted_image", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "soul.eye.image_payload_too_large", lambda *a, **k: False
+    )
+
+    asyncio.run(soul.see(3_000.0, image="x", reason="ambient"))
+    assert soul.eye.last_scene_text
+    soul.apply_sleep_clear(3_001.0)
+    assert soul.eye.last_scene_text == ""

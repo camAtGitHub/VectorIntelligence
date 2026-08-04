@@ -154,7 +154,7 @@ async def _summarise_conversation(messages: list, latest_reply: str,
             temperature=LLM_SUMMARY_TEMPERATURE,
             top_p=0.95,
             timeout=_llm_timeout(read=60.0),
-            max_tokens=128,
+            max_tokens=512,
             tag="convo_summary",
         )
         summary = strip_markdown(summary).strip().strip('"').strip()

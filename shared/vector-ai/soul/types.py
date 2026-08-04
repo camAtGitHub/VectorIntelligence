@@ -35,6 +35,7 @@ class VisionDigest:
     name_hint: str = ""
     note: str = ""
     spoken: str = ""
+    scene: str = ""  # full ambient scene inventory (for next-glance compare)
     model: str = ""
     frame_path: str = ""
     error: str = ""

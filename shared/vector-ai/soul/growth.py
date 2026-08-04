@@ -176,7 +176,7 @@ async def run_dream_job(
             temperature=float(temperature),
             top_p=0.95,
             timeout=_llm_timeout(connect=8.0, read=60.0),
-            max_tokens=512,
+            max_tokens=4096,
             tag=tag,
         )
     except Exception as e:

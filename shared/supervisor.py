@@ -869,6 +869,7 @@ class Supervisor:
         env["WHISPER_MODEL"] = WHISPER_MODEL
         env["DISABLE_MDNS"] = "true"   # the supervisor does mDNS itself
         env["DEBUG_LOGGING"] = "true"
+        env["DEBUG_PRINT_HIGHPASS"] = "true"
         env["DEBUG_PRINT_PROMPT"] = "true"
         # Wire-Pod binds its web UI / config server to WEBSERVER_PORT (see
         # vars.go); default 8080. Pin it from WEB_PORT so a port chosen at

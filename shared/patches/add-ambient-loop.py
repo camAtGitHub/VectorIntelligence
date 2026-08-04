@@ -35,6 +35,7 @@ import (
 \t"encoding/json"
 \t"fmt"
 \t"net/http"
+\t"sync"
 \t"sync/atomic"
 \t"time"
 
@@ -94,6 +95,28 @@ var lastVoiceActivity atomic.Int64
 // lastAmbientReaction is the unix time Vector last spoke an ambient reaction.
 var lastAmbientReaction atomic.Int64
 
+// ambientSkipLogMin throttles gate/skip chatter so 3m loops don't spam.
+const ambientSkipLogMin = time.Minute
+
+// ambientSkipLogAt maps skip reason → last log unix time.
+var ambientSkipLogAt sync.Map
+
+// ambientSkipLog prints a skip reason at most once per ambientSkipLogMin.
+func ambientSkipLog(reason, detail string) {
+\tnow := time.Now().Unix()
+\tif v, ok := ambientSkipLogAt.Load(reason); ok {
+\t\tif last, ok := v.(int64); ok && now-last < int64(ambientSkipLogMin/time.Second) {
+\t\t\treturn
+\t\t}
+\t}
+\tambientSkipLogAt.Store(reason, now)
+\tif detail != "" {
+\t\tfmt.Printf("[ambient] skip %s: %s\\n", reason, detail)
+\t} else {
+\t\tfmt.Printf("[ambient] skip %s\\n", reason)
+\t}
+}
+
 // MarkVoiceActivity records that a voice interaction is happening right now.
 func MarkVoiceActivity() {
 \tlastVoiceActivity.Store(time.Now().Unix())
@@ -115,6 +138,30 @@ func ambientInNightHours() bool {
 func ambientReactionOnCooldown() bool {
 \tlast := lastAmbientReaction.Load()
 \treturn last != 0 && time.Now().Unix()-last < int64(ambientReactCooldown/time.Second)
+}
+
+func ambientVoiceCooldownLeft() int64 {
+\tlast := lastVoiceActivity.Load()
+\tif last == 0 {
+\t\treturn 0
+\t}
+\tleft := int64(ambientVoiceCooldown/time.Second) - (time.Now().Unix() - last)
+\tif left < 0 {
+\t\treturn 0
+\t}
+\treturn left
+}
+
+func ambientReactCooldownLeft() int64 {
+\tlast := lastAmbientReaction.Load()
+\tif last == 0 {
+\t\treturn 0
+\t}
+\tleft := int64(ambientReactCooldown/time.Second) - (time.Now().Unix() - last)
+\tif left < 0 {
+\t\treturn 0
+\t}
+\treturn left
 }
 
 // StartAmbientLoop launches the ambient observation and proactive-greeting
@@ -147,18 +194,29 @@ func runAmbientLoop(esn string) {
 \t\t// docked is fine - only night hours (asleep) and an in-flight
 \t\t// conversation hold him back.
 \t\tif recentlyConversed() {
+\t\t\tambientSkipLog("voice",
+\t\t\t\tfmt.Sprintf("%ds left (voice/activity within %s)",
+\t\t\t\t\tambientVoiceCooldownLeft(), ambientVoiceCooldown))
 \t\t\tcontinue
 \t\t}
 \t\tif ambientInNightHours() {
+\t\t\tambientSkipLog("night",
+\t\t\t\tfmt.Sprintf("host hour in %02d:00–%02d:00 sleep window",
+\t\t\t\t\tambientNightStart, ambientNightEnd))
 \t\t\tcontinue
 \t\t}
 \t\tif ambientReactionOnCooldown() {
+\t\t\tambientSkipLog("react_cooldown",
+\t\t\t\tfmt.Sprintf("%ds left (post ambient/behavior speak, window %s)",
+\t\t\t\t\tambientReactCooldownLeft(), ambientReactCooldown))
 \t\t\tcontinue
 \t\t}
 \t\tif ambientObserveOnce(esn) {
 \t\t\tfailStreak = 0
 \t\t} else {
 \t\t\tfailStreak++
+\t\t\tambientSkipLog("capture_fail",
+\t\t\t\tfmt.Sprintf("esn=%s streak=%d (backoff next cycle)", esn, failStreak))
 \t\t}
 \t}
 }
@@ -201,6 +259,7 @@ func ambientObserveOnce(esn string) bool {
 \t// Calm/sleep: vision stack is powered down. Sensor loop tracks this bit
 \t// live; only trust it when robot_state is fresh.
 \tif IsCalmPowerMode() {
+\t\tambientSkipLog("calm", "ROBOT_STATUS_CALM_POWER_MODE (no camera / no /v1/ambient)")
 \t\treturn true
 \t}
 \tif robotsession.Default == nil {
@@ -348,7 +407,13 @@ func runGreetingLoop(esn string) {
 \t\t\tsleep = greetingInterval * time.Duration(1<<shift)
 \t\t}
 \t\ttime.Sleep(sleep)
-\t\tif recentlyConversed() || ambientInNightHours() {
+\t\tif recentlyConversed() {
+\t\t\tambientSkipLog("greeting_voice",
+\t\t\t\tfmt.Sprintf("%ds left", ambientVoiceCooldownLeft()))
+\t\t\tcontinue
+\t\t}
+\t\tif ambientInNightHours() {
+\t\t\tambientSkipLog("greeting_night", "sleep window")
 \t\t\tcontinue
 \t\t}
 \t\tfaceID, name := probeForKnownFace(esn)

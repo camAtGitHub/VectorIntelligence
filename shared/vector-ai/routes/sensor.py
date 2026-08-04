@@ -76,7 +76,7 @@ async def sensor_reaction(req: SensorReactionRequest):
         top_p=0.95,
         seed=random.randint(1, 2**31 - 1),
         timeout=_llm_timeout(connect=8.0, read=30.0),
-        max_tokens=128,
+        max_tokens=512,
         tag="sensor_reaction",
     )
     # Intentional: failures → empty text only (chipper uses text; no error field).

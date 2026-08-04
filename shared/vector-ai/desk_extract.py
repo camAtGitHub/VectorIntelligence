@@ -127,7 +127,7 @@ async def extract_desk_items_from_scene_text(
             temperature=LLM_SUMMARY_TEMPERATURE,
             top_p=0.9,
             timeout=_llm_timeout(connect=8.0, read=30.0),
-            max_tokens=256,
+            max_tokens=512,
             tag="desk_extract",
         )
         items = parse_desk_items_json(raw if isinstance(raw, str) else "")

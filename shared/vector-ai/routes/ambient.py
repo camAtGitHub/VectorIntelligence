@@ -139,17 +139,19 @@ async def ambient(req: AmbientRequest):
         }
 
     note = (digest.note or spoken)[:300]
+    scene = (getattr(digest, "scene", None) or "").strip()
     MEMORY = deps.MEMORY
     if MEMORY is not None:
         try:
             MEMORY.remember_observation(note)
         except Exception as e:
             print(f"[ambient] remember_observation failed: {e}")
-        # Update desk map from novelty note only. Background so ambient stays snappy.
+        # Prefer full SCENE inventory for desk map; fall back to novelty note.
+        desk_src = scene or note
         try:
             from desk_extract import extract_and_upsert_desk_items
 
-            asyncio.create_task(extract_and_upsert_desk_items(note, MEMORY))
+            asyncio.create_task(extract_and_upsert_desk_items(desk_src, MEMORY))
         except Exception as e:
             print(f"[ambient] desk extract schedule failed: {e}")
     print(f"[ambient] NOVELTY note={note!r} -> spoken={spoken!r}")

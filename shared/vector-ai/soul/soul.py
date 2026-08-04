@@ -300,6 +300,12 @@ class Soul:
     def apply_sleep_clear(self, now: float, sleep_gap_s: float = 0.0) -> None:
         self.presence.apply_sleep_clear(float(now), sleep_gap_s)
         self.face.apply_sleep_clear()
+        # New session: drop prior ambient scene so the next glance re-baselines.
+        try:
+            if self.eye is not None and hasattr(self.eye, "clear_last_scene"):
+                self.eye.clear_last_scene()
+        except Exception:
+            pass
         self._schedule_save()
 
     # -- readers ----------------------------------------------------------------

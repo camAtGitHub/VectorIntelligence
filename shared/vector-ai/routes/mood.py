@@ -201,7 +201,7 @@ async def _reflect_mood() -> None:
             temperature=LLM_MOOD_TEMPERATURE,
             top_p=0.95,
             timeout=_llm_timeout(read=60.0),
-            max_tokens=64,
+            max_tokens=512,
             tag="mood",
         )
         mood = strip_markdown(mood).strip().strip('"').strip().rstrip(".").strip()

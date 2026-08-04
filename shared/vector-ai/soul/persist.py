@@ -81,6 +81,7 @@ def serialize_soul(soul: Any) -> dict[str, Any]:
                     "name_hint": _safe_str(item.get("name_hint"), 64),
                     "note": _safe_str(item.get("note"), 300),
                     "spoken": _safe_str(item.get("spoken"), 200),
+                    "scene": _safe_str(item.get("scene"), 900),
                     "model": _safe_str(item.get("model"), 64),
                     "frame_path": _safe_str(item.get("frame_path"), 500),
                     "error": _safe_str(item.get("error"), 128),
@@ -230,6 +231,7 @@ def _restore_eye_digests(soul: Any, items: list) -> None:
                 name_hint=_safe_str(item.get("name_hint"), 64),
                 note=_safe_str(item.get("note"), 300),
                 spoken=_safe_str(item.get("spoken"), 200),
+                scene=_safe_str(item.get("scene"), 900),
                 model=_safe_str(item.get("model"), 64),
                 frame_path=_safe_str(item.get("frame_path"), 500),
                 error=_safe_str(item.get("error"), 128),
@@ -241,6 +243,10 @@ def _restore_eye_digests(soul: Any, items: list) -> None:
                 soul.eye._last_frame_path = digest.frame_path
             if digest.t:
                 soul.eye._last_frame_ts = float(digest.t)
+            # Prefer most recent ambient SCENE as next-glance prior.
+            if digest.reason == "ambient" and (digest.scene or "").strip():
+                if hasattr(soul.eye, "set_last_scene"):
+                    soul.eye.set_last_scene(digest.scene)
         except Exception:
             continue
     if last is not None:

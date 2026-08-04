@@ -203,7 +203,11 @@ def test_eye_see_ambient_updates_presence(monkeypatch):
     soul = Soul(presence=presence)
 
     async def _llm(*a, **k):
-        return "PRESENCE: person:Cam\nNOTHING"
+        return (
+            "PRESENCE: person:Cam\n"
+            "SCENE: Cam at desk, mug left of monitor\n"
+            "NOTHING"
+        )
 
     monkeypatch.setattr("soul.eye.llm_chat_once", _llm)
     monkeypatch.setattr("soul.eye.save_submitted_image", lambda *a, **k: None)
@@ -215,6 +219,8 @@ def test_eye_see_ambient_updates_presence(monkeypatch):
     assert digest.presence == "person"
     assert digest.name_hint == "Cam"
     assert digest.error == ""
+    assert "mug" in (digest.scene or "").lower()
+    assert soul.eye.last_scene_text
     assert soul.occupied(now) is True
     assert soul.last_seen_at == now
     assert soul.last_vision() is digest
