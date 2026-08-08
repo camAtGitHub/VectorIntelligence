@@ -219,25 +219,32 @@ def test_delete_clears_session(monkeypatch):
     assert seen == [[{"role": "user", "content": "only this"}]]
 
 
-def test_note_user_voice_called_when_soul_present(monkeypatch):
-    """Route notes user voice when SOUL is wired (generate also notes)."""
+def test_note_user_voice_owned_by_generate(monkeypatch):
+    """generate owns note_user_voice; session route must not pre-note.
+
+    Pre-noting in the route would collapse inter-turn gap tags when generate
+    snapshots prior clocks after the route already updated last_user_voice_at.
+    """
     import deps
     from fastapi.testclient import TestClient
 
     import service
 
-    calls: list = []
+    note_calls: list = []
 
     class _Soul:
         def note_user_voice(self, now: float) -> None:
-            calls.append(float(now))
+            note_calls.append(float(now))
 
         def notify_speech(self, text: str, *, source: str = "chat") -> None:
             pass
 
-    monkeypatch.setattr(deps, "SOUL", _Soul(), raising=False)
+    soul = _Soul()
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
 
     async def _fake_generate(messages, temperature=None) -> AsyncIterator[str]:
+        # Simulate generate ownership: note voice once at stream start.
+        soul.note_user_voice(1_700_000_000.0)
         for chunk in _fake_sse_chunks("hi back"):
             yield chunk
 
@@ -250,7 +257,8 @@ def test_note_user_voice_called_when_soul_present(monkeypatch):
     )
     assert r.status_code == 200
     assert r.json()["reply"] == "hi back"
-    assert len(calls) >= 1
+    # Exactly one note from generate's ownership path (not route + generate).
+    assert len(note_calls) == 1
 
 
 def test_completions_route_unchanged_shape(monkeypatch):

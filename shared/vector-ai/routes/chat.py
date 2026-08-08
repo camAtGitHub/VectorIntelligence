@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from typing import AsyncIterator, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-import deps
 from chat_flow import generate
 from chat_session import (
     append_message,
@@ -104,9 +102,9 @@ async def chat_session_message(req: ChatSessionMessageRequest):
     ``stream=true`` yields the same SSE shape as ``/v1/chat/completions`` and
     still records the full reply into the session when the stream completes.
 
-    ``generate()`` already calls ``SOUL.note_user_voice`` and
-    ``SOUL.notify_speech``; we only dual-write voice clock here for clarity when
-    SOUL is present before generate runs.
+    Voice clock ownership: only ``generate()`` calls ``SOUL.note_user_voice``
+    (and ``notify_speech``). Do not note voice here — a pre-generate note would
+    collapse inter-turn gap tags to ~0 when generate snapshots prior clocks.
     """
     text = (req.text or "").strip()
     if not text:
@@ -116,12 +114,6 @@ async def chat_session_message(req: ChatSessionMessageRequest):
     temp = LLM_TEMPERATURE
 
     append_message(session_id, "user", text)
-    soul = getattr(deps, "SOUL", None)
-    if soul is not None:
-        try:
-            soul.note_user_voice(time.time())
-        except Exception:
-            pass
 
     messages: list[Message] = [
         Message(role=m["role"], content=m.get("content") or "")

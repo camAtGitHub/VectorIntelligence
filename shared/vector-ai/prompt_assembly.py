@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import deps
+from chat_time import build_user_time_prefix
 from logging_util import print  # noqa: F401
 from memory_retrieve import select_memories_for_turn
 from persona import PERSONA
@@ -412,20 +413,47 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
             + " Weave in only what naturally fits; never recite this back.]")
 
 
-def prepare_messages(messages: list, face: Optional[dict]) -> list:
+def _is_first_user_thread(messages: list) -> bool:
+    """True when history has zero or one non-system non-empty turn (current user)."""
+    n = 0
+    for m in messages:
+        if getattr(m, "role", None) == "system":
+            continue
+        if not getattr(m, "content", None):
+            continue
+        n += 1
+        if n > 1:
+            return False
+    return True  # zero or one non-system turn (the current user)
+
+
+def prepare_messages(
+    messages: list,
+    face: Optional[dict],
+    *,
+    now_dt: Optional[datetime] = None,
+    prior_turn_ts: Optional[float] = None,
+) -> list:
     """Build the LLM message list with a stable prompt prefix.
 
     System message holds slow-changing content (personality + Wire-Pod command
     docs + long-term memories). Volatile per-turn context rides on the latest
     user turn. Older image bytes are stripped. Conversation history is trimmed
     to LLM_MAX_HISTORY_MESSAGES (cost/context guard for cloud backends).
+
+    ``generate`` MUST pass ``prior_turn_ts`` snapshotted *before* ``note_user_voice``.
+    If ``prior_turn_ts`` is None (direct callers/tests), treat as 0.0 → wall-only
+    when first message or missing clocks (see ``build_user_time_prefix``). Do not
+    derive prior from soul after voice is noted — that collapses Δ to ~0.
     """
     MEMORY = deps.MEMORY
     last_user_idx = max(
         (i for i, m in enumerate(messages) if m.role == "user"),
         default=-1,
     )
-    now_dt = datetime.now()
+    now_dt = now_dt or datetime.now()
+    # Explicit snapshot preferred; None → 0.0 (first / missing-clock wall-only).
+    resolved_prior = 0.0 if prior_turn_ts is None else float(prior_turn_ts)
 
     # Record this interaction against the current face; the returned prior
     # metadata (last-seen, count, last conversation) drives temporal context.
@@ -438,6 +466,14 @@ def prepare_messages(messages: list, face: Optional[dict]) -> list:
     # Same face for memory inject as touch/context (caller should pass
     # _effective_face(); do not re-resolve independently).
     memory_section = _build_memory_section(face, last_user_text)
+
+    # Time/gap tags only on the latest user turn (never system — cache-stable).
+    is_first = _is_first_user_thread(messages)
+    time_prefix = build_user_time_prefix(
+        now_dt=now_dt,
+        prior_turn_ts=resolved_prior,
+        is_first_message=is_first,
+    )
 
     # Wire-Pod's system message holds command/vision mechanics; character
     # comes from PERSONA (persona.txt), prepended below.
@@ -462,9 +498,13 @@ def prepare_messages(messages: list, face: Optional[dict]) -> list:
         is_last_user = (i == last_user_idx)
         if isinstance(m.content, list):
             if is_last_user:
+                parts = list(m.content)
+                if time_prefix:
+                    parts = [{"type": "text", "text": time_prefix}] + parts
+                parts = parts + [{"type": "text", "text": context_note}]
                 turns.append({
                     "role":    m.role,
-                    "content": list(m.content) + [{"type": "text", "text": context_note}],
+                    "content": parts,
                 })
             else:
                 text = " ".join(
@@ -474,7 +514,14 @@ def prepare_messages(messages: list, face: Optional[dict]) -> list:
                 if text:
                     turns.append({"role": m.role, "content": text})
         else:
-            content = f"{m.content}\n\n{context_note}" if is_last_user else m.content
+            if is_last_user:
+                body = m.content
+                if time_prefix:
+                    if not (isinstance(body, str) and body.startswith(time_prefix)):
+                        body = f"{time_prefix}\n{body}"
+                content = f"{body}\n\n{context_note}"
+            else:
+                content = m.content
             turns.append({"role": m.role, "content": content})
 
     if len(turns) > MAX_HISTORY_MESSAGES:

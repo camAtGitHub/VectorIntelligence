@@ -499,3 +499,176 @@ def test_context_note_includes_soul_goals_and_dream(tmp_path, monkeypatch):
     user_content = out[-1]["content"]
     assert "three goals I currently hold" in user_content
     assert "tiny gears under soft rain" in user_content
+
+
+# --- User-message time / gap prefixes (Phase 3) -------------------------------
+
+
+def test_user_time_prefix_first_message_wall_only(tmp_path, monkeypatch):
+    """First user turn + prior_ts=0 → [Time: …] only; no gap phrases."""
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    now_dt = datetime(2026, 8, 8, 21, 14)
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="hello Vector"),
+    ]
+    out = prepare_messages(
+        messages, face, now_dt=now_dt, prior_turn_ts=0.0
+    )
+    user_content = out[-1]["content"]
+    assert isinstance(user_content, str)
+    assert user_content.startswith("[Time: Sat 8 Aug, 9:14pm]")
+    assert "Gap since" not in user_content
+    assert "minutes since last message" not in user_content
+    assert "hello Vector" in user_content
+
+
+def test_user_time_prefix_same_day_gap_only(tmp_path, monkeypatch):
+    """Multi-turn same calendar day, Δ=12m → minutes gap only; no [Time:."""
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    now_dt = datetime(2026, 8, 8, 15, 12)
+    prior_ts = now_dt.timestamp() - 12 * 60
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="first thing"),
+        SimpleNamespace(role="assistant", content="got it"),
+        SimpleNamespace(role="user", content="what was I saying?"),
+    ]
+    out = prepare_messages(
+        messages, face, now_dt=now_dt, prior_turn_ts=prior_ts
+    )
+    user_content = out[-1]["content"]
+    assert isinstance(user_content, str)
+    assert user_content.startswith("[12 minutes since last message]")
+    assert "[Time:" not in user_content
+    assert "what was I saying?" in user_content
+
+
+def test_user_time_prefix_cross_day_wall_and_gap(tmp_path, monkeypatch):
+    """Prior previous calendar day → both Time and Gap lines on latest user."""
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    now_dt = datetime(2026, 8, 9, 8, 2)
+    # Previous day ~14h earlier → half-day bucket still valid; wall + gap.
+    prior_ts = datetime(2026, 8, 8, 18, 0).timestamp()
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="night"),
+        SimpleNamespace(role="assistant", content="sleep well"),
+        SimpleNamespace(role="user", content="morning"),
+    ]
+    out = prepare_messages(
+        messages, face, now_dt=now_dt, prior_turn_ts=prior_ts
+    )
+    user_content = out[-1]["content"]
+    assert isinstance(user_content, str)
+    assert user_content.startswith("[Time: Sun 9 Aug, 8:02am]")
+    assert "Gap since previous message:" in user_content
+    assert "morning" in user_content
+
+
+def test_user_time_prefix_under_five_minutes_omits_gap(tmp_path, monkeypatch):
+    """Same day Δ=120s → no time-prefix feature lines (context note may still)."""
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    now_dt = datetime(2026, 8, 8, 15, 0)
+    prior_ts = now_dt.timestamp() - 120
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="hi"),
+        SimpleNamespace(role="assistant", content="hey"),
+        SimpleNamespace(role="user", content="quick follow-up"),
+    ]
+    out = prepare_messages(
+        messages, face, now_dt=now_dt, prior_turn_ts=prior_ts
+    )
+    user_content = out[-1]["content"]
+    assert isinstance(user_content, str)
+    assert not user_content.startswith("[Time:")
+    assert "minutes since last message" not in user_content
+    assert "Gap since previous message:" not in user_content
+    # Context note still carries long wall clock.
+    assert "Current time is" in user_content
+    assert "quick follow-up" in user_content
+
+
+def test_user_time_prefix_not_on_system(tmp_path, monkeypatch):
+    """System message must not contain [Time: or this feature's gap phrases."""
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    now_dt = datetime(2026, 8, 8, 21, 14)
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="hello"),
+    ]
+    out = prepare_messages(
+        messages, face, now_dt=now_dt, prior_turn_ts=0.0
+    )
+    system = out[0]["content"]
+    assert "[Time:" not in system
+    assert "minutes since last message" not in system
+    assert "Gap since previous message:" not in system
+
+
+def test_user_time_prefix_not_on_prior_user_turns(tmp_path, monkeypatch):
+    """Only the last user turn gets the prefix; earlier user text stays plain."""
+    from datetime import datetime
+
+    _patch_deps(monkeypatch, tmp_path)
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    now_dt = datetime(2026, 8, 8, 15, 30)
+    prior_ts = now_dt.timestamp() - 12 * 60
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="earlier plain text"),
+        SimpleNamespace(role="assistant", content="ok"),
+        SimpleNamespace(role="user", content="latest turn"),
+    ]
+    out = prepare_messages(
+        messages, face, now_dt=now_dt, prior_turn_ts=prior_ts
+    )
+    # out[0]=system; then non-system turns in order.
+    prior_user = out[1]["content"]
+    assert prior_user == "earlier plain text"
+    assert "[Time:" not in prior_user
+    assert "minutes since" not in prior_user
+
+    latest = out[-1]["content"]
+    assert latest.startswith("[12 minutes since last message]")
+    assert "latest turn" in latest

@@ -9,10 +9,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from types import SimpleNamespace
+
 from chat_time import (
     build_user_time_prefix,
     format_gap_tag,
     format_wall_clock_human,
+    snapshot_prior_chat_ts,
 )
 
 
@@ -195,3 +198,26 @@ def test_build_prefix_no_trailing_blank_line():
     )
     assert not out.endswith("\n")
     assert not out.startswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# snapshot_prior_chat_ts
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_prior_none_soul_and_zero_process():
+    assert snapshot_prior_chat_ts(None, 0.0) == 0.0
+    assert snapshot_prior_chat_ts(None) == 0.0
+
+
+def test_snapshot_prior_max_of_soul_and_process():
+    soul = SimpleNamespace(last_user_voice_at=100.0, last_spoke_at=50.0)
+    assert snapshot_prior_chat_ts(soul, 80.0) == 100.0
+    assert snapshot_prior_chat_ts(soul, 150.0) == 150.0
+    soul2 = SimpleNamespace(last_user_voice_at=10.0, last_spoke_at=200.0)
+    assert snapshot_prior_chat_ts(soul2, 0.0) == 200.0
+
+
+def test_snapshot_prior_missing_attrs_safe():
+    assert snapshot_prior_chat_ts(SimpleNamespace(), 42.0) == 42.0
+    assert snapshot_prior_chat_ts(object(), 7.5) == 7.5

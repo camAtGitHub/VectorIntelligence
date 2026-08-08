@@ -4,10 +4,12 @@ import json
 import re
 import time
 import uuid
+from datetime import datetime
 from typing import AsyncIterator, List, Optional
 
 import deps
 import process_state
+from chat_time import snapshot_prior_chat_ts
 from debug_log import _redact_messages, debug
 from llm import (
     LLM_API_KEY,
@@ -219,8 +221,16 @@ def sanitize_chat_image_parts(
 
 async def generate(messages: list, temperature: float | None = None) -> AsyncIterator[str]:
     # Suppress proactive speech during chat; pot owns speech clocks when wired.
+    # Snapshot prior-turn clocks BEFORE note_user_voice so gap tags see last turn.
     now_voice = time.time()
     soul = getattr(deps, "SOUL", None)
+    try:
+        process_voice_ts = float(
+            getattr(process_state, "_LAST_USER_VOICE_TS", 0.0) or 0.0
+        )
+    except (TypeError, ValueError):
+        process_voice_ts = 0.0
+    prior_turn_ts = snapshot_prior_chat_ts(soul, process_voice_ts)
     if soul is not None:
         try:
             soul.note_user_voice(now_voice)
@@ -289,7 +299,12 @@ async def generate(messages: list, temperature: float | None = None) -> AsyncIte
 
         t_req = time.monotonic()
         eff_face = _effective_face()
-        prepared = prepare_messages(messages, eff_face)
+        prepared = prepare_messages(
+            messages,
+            eff_face,
+            now_dt=datetime.fromtimestamp(now_voice),
+            prior_turn_ts=prior_turn_ts,
+        )
         debug(
             "PREPARED messages for upstream (after persona/memory/history trim)",
             {

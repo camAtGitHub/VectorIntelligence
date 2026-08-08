@@ -108,3 +108,27 @@ def build_user_time_prefix(
         if gap:
             lines.append(f"[{gap}]")
     return "\n".join(lines)
+
+
+def snapshot_prior_chat_ts(soul, process_voice_ts: float = 0.0) -> float:
+    """Best prior-turn unix before this turn's note_user_voice.
+
+    Max of soul.last_user_voice_at, soul.last_spoke_at (when soul present),
+    and process_voice_ts. Safe if soul is None or attrs missing. Does not
+    mutate soul.
+    """
+    best = 0.0
+    if soul is not None:
+        try:
+            best = max(
+                best,
+                float(getattr(soul, "last_user_voice_at", 0.0) or 0.0),
+                float(getattr(soul, "last_spoke_at", 0.0) or 0.0),
+            )
+        except (TypeError, ValueError):
+            pass
+    try:
+        best = max(best, float(process_voice_ts or 0.0))
+    except (TypeError, ValueError):
+        pass
+    return best

@@ -845,7 +845,7 @@ def test_generate_oversized_image_no_archive_placeholder_upstream(monkeypatch):
     def _fake_archive(url, source):
         archive_calls.append((url, source))
 
-    def _fake_prepare(messages, face):
+    def _fake_prepare(messages, face, **kwargs):
         prepared_seen.append(list(messages))
         # No oversized payload on any message after sanitize
         blob = repr(messages)
@@ -1243,7 +1243,7 @@ def test_generate_stream_model_text_vs_image(tmp_path, monkeypatch):
     monkeypatch.setattr("chat_flow.stream_sentences_with_filler", _fake_stream)
     monkeypatch.setattr(
         "chat_flow.prepare_messages",
-        lambda msgs, face: [{"role": "user", "content": "x"}],
+        lambda msgs, face, **kwargs: [{"role": "user", "content": "x"}],
     )
     monkeypatch.setattr("chat_flow._effective_face", lambda: None)
     monkeypatch.setattr("chat_flow.LLM_API_KEY", "test-key")
