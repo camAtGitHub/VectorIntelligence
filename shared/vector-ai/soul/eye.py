@@ -34,7 +34,8 @@ if TYPE_CHECKING:
 
 _VISION_BUFFER_MAX = 16
 # Cap stored/resent scene text so prompts stay bounded.
-_SCENE_MAX_CHARS = 900
+# Room for a denser L→R inventory (zones + durable items) without ballooning.
+_SCENE_MAX_CHARS = 1400
 
 # -- Ambient PRESENCE + SCENE protocol -----------------------------------------
 
@@ -51,32 +52,55 @@ AMBIENT_SYSTEM = (
     "clothing silhouette like a hoodie - even cut off, turned away or "
     "occluded. Use 'empty' only when there is no human evidence at all. Add "
     ":<NameHint> only if you are confident who it is.\n\n"
-    "Line 2 - SCENE: always. One plain inventory of what is actually in the "
-    "photo right now — people, objects, rough positions, lighting. Literal, "
-    "not witty. Call out durable desk items and anything noteworthy. This is "
-    "your baseline for the next glance; do not skip it and do not invent "
-    "detail you cannot see.\n\n"
+    "Line 2 - SCENE: always. One plain, thorough inventory of what is actually "
+    "in the photo right now. Literal, not witty. This is the baseline for the "
+    "next glance — denser is better than vague. Do not invent detail you cannot "
+    "see.\n"
+    "How to encode SCENE (required style):\n"
+    "  - Scan the frame LEFT → RIGHT. Cover every horizontal band you can "
+    "see: far-left, left, center, right, far-right. Mention depth when useful "
+    "(near / mid / far / on-desk / behind-monitor).\n"
+    "  - List durable items with location tags, e.g. "
+    "'mug@left-of-monitor', 'keyboard@center-near', 'headphones@far-right', "
+    "'laptop@right open', 'person@center grey hoodie'. Separate items with "
+    "semicolons or commas.\n"
+    "  - Include people (pose/clothing if clear), screens if content is "
+    "obvious (e.g. code vs blank), lighting, and anything noteworthy — not "
+    "only the biggest objects. Small movable things (mug, phone, plush, "
+    "bottle, snack, notebook) matter as much as the monitor.\n"
+    "  - Prefer specific labels over 'clutter' or 'stuff'. If something is "
+    "half-visible at an edge, still name it and its side "
+    "(e.g. 'bottle@far-left edge').\n\n"
     "Then either the single word NOTHING, or a novelty in two further lines.\n\n"
     "Compare the photo to the PREVIOUS SCENE you will be given (and recent "
-    "notes / desk layout). Your desk barely changes, and NOTHING is the right "
-    "answer almost every time. Items still where the previous scene said they "
-    "were are not news; static clutter, cables, and an empty or dim room are "
-    "not news; a person already present in the previous scene is not news "
-    "(still output PRESENCE for them, SCENE, then NOTHING — do not re-roast). "
-    "Answer NOTHING unless something appeared, moved, or vanished relative to "
-    "the previous scene — or an animal, a person arriving for the first time, "
-    "or a real mess or event. If there is no previous scene, this glance only "
-    "establishes the baseline: PRESENCE + SCENE + NOTHING. Never invent detail "
-    "you cannot actually see. When in any doubt, answer NOTHING.\n\n"
+    "notes / desk layout). Walk the previous inventory item-by-item and by "
+    "zone (left vs center vs right): did each still-listed thing stay put?\n"
+    "NOTHING is correct when the desk is truly unchanged: same items in the "
+    "same zones, static cables/clutter, empty or dim room, person already "
+    "present in the previous scene (still output PRESENCE + SCENE + NOTHING "
+    "— do not re-roast them).\n"
+    "Call out a change (do NOT answer NOTHING) when relative to the previous "
+    "scene something clearly appeared, moved zone/side, vanished, changed "
+    "state in a visible way (open/closed, screen content shift, posture if "
+    "person newly sat/stood), or an animal / first-time person arrival / real "
+    "mess or event shows up. A mug that was left and is now right IS news; a "
+    "new object on any edge IS news; something gone from a listed zone IS "
+    "news. Prefer calling a clear location change over silent NOTHING.\n"
+    "If there is no previous scene, this glance only establishes the "
+    "baseline: PRESENCE + SCENE + NOTHING. Never invent detail you cannot "
+    "actually see. If you are unsure whether something moved, prefer NOTHING; "
+    "if the location shift is obvious in the photo vs PREVIOUS SCENE, call it "
+    "out.\n\n"
     "When there IS something new, give exactly two lines after the SCENE line:\n"
     "Line A - memory note, for your own records, never spoken. Plain and "
-    "literal, not witty: what changed, e.g. 'a small plush toy appeared on the "
-    "desk'.\n"
+    "literal, not witty: what changed AND where "
+    "(from→to when it moved), e.g. 'small plush appeared @right near keyboard' "
+    "or 'mug moved left-of-monitor → on keyboard'.\n"
     "Line B - spoken. One dry line in your own voice. Sound like you actually "
-    "just noticed it: name the thing so someone who cannot see the desk knows "
-    "what you spotted, then turn it. Lead normal, swerve late; deadpan, not "
-    "delighted. One or two sentences, no more. Plain speech only — no markdown, "
-    "no quotes, no {{...}} tokens.\n"
+    "just noticed it: name the thing and roughly where so someone who cannot "
+    "see the desk knows what moved, then turn it. Lead normal, swerve late; "
+    "deadpan, not delighted. One or two sentences, no more. Plain speech only "
+    "— no markdown, no quotes, no {{...}} tokens.\n"
     "If there is nothing new: PRESENCE, SCENE, then NOTHING."
 )
 
@@ -234,8 +258,9 @@ def _build_ambient_user_text(
     if prev:
         prev_block = (
             "PREVIOUS SCENE (what you saw on the last glance — compare the "
-            "photo to this; only treat appear/move/vanish vs this inventory as "
-            "news):\n"
+            "photo to this LEFT→RIGHT by zone. Treat appear / move-zone / "
+            "vanish / clear state change vs this inventory as news; same "
+            "item still in the same zone is not news):\n"
             f"{prev[:_SCENE_MAX_CHARS]}"
         )
     else:
@@ -267,8 +292,9 @@ def _build_ambient_user_text(
             desk_lines = memory.desk_map_prompt_lines(limit=12)
             if desk_lines:
                 desk_map = (
-                    "\n\nKnown desk layout (stable items still in place → "
-                    "NOTHING after SCENE; speak only on appear/move/vanish):\n"
+                    "\n\nKnown desk layout (item still in the same place → "
+                    "NOTHING after SCENE; speak on appear / side-or-zone move "
+                    "/ vanish):\n"
                     + desk_lines
                 )
         except Exception as e:
@@ -288,9 +314,13 @@ def _build_ambient_user_text(
         + mood_note
         + "\n\nGlance at what is in front of you now. "
         "Line 1 MUST be PRESENCE: empty or PRESENCE: person "
-        "(or person:<NameHint>). Line 2 MUST be SCENE: full inventory of the "
-        "photo. Then NOTHING, or the two-line novelty format. Partial people "
-        "count (torso/arms/hoodie OK without face)."
+        "(or person:<NameHint>). Line 2 MUST be SCENE: thorough LEFT→RIGHT "
+        "inventory with location tags (item@zone), covering far-left through "
+        "far-right — people, durable objects, edge items, lighting. Then "
+        "NOTHING, or the two-line novelty format (note must include what + "
+        "where / from→to). Partial people count (torso/arms/hoodie OK "
+        "without face). Prefer calling out a clear zone/side change over "
+        "silent NOTHING."
     )
 
 

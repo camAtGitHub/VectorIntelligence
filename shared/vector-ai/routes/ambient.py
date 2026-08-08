@@ -125,6 +125,20 @@ async def ambient(req: AmbientRequest):
         name_hint = None
     spoken = digest.spoken or ""
     occupied_out = bool(digest.occupied)
+    scene = (getattr(digest, "scene", None) or "").strip()
+    note = (digest.note or spoken or "")[:300]
+
+    MEMORY = deps.MEMORY
+    # Keep desk layout current on every successful SCENE (including NOTHING),
+    # so later glances compare against fresh item@location pairs — not only
+    # after novelty speech.
+    if MEMORY is not None and scene:
+        try:
+            from desk_extract import extract_and_upsert_desk_items
+
+            asyncio.create_task(extract_and_upsert_desk_items(scene, MEMORY))
+        except Exception as e:
+            print(f"[ambient] desk extract schedule failed: {e}")
 
     if not spoken:
         print("[ambient] nothing novel")
@@ -138,22 +152,11 @@ async def ambient(req: AmbientRequest):
             "occupied": occupied_out,
         }
 
-    note = (digest.note or spoken)[:300]
-    scene = (getattr(digest, "scene", None) or "").strip()
-    MEMORY = deps.MEMORY
-    if MEMORY is not None:
+    if MEMORY is not None and note:
         try:
             MEMORY.remember_observation(note)
         except Exception as e:
             print(f"[ambient] remember_observation failed: {e}")
-        # Prefer full SCENE inventory for desk map; fall back to novelty note.
-        desk_src = scene or note
-        try:
-            from desk_extract import extract_and_upsert_desk_items
-
-            asyncio.create_task(extract_and_upsert_desk_items(desk_src, MEMORY))
-        except Exception as e:
-            print(f"[ambient] desk extract schedule failed: {e}")
     print(f"[ambient] NOVELTY note={note!r} -> spoken={spoken!r}")
     if spoken:
         # Single egress path: soul ring + Pushover (soul/soul.py notify_speech).

@@ -54,6 +54,30 @@ def test_ambient_system_uses_mini_not_full_calibration():
     assert PERSONA_FULL not in _AMBIENT_SYSTEM or PERSONA_FULL == PERSONA_MINI
 
 
+def test_ambient_system_encodes_location_and_change_callouts():
+    """SCENE inventory should demand L→R location tags and clearer novelty."""
+    from routes.ambient import _AMBIENT_SYSTEM
+    from soul.eye import _SCENE_MAX_CHARS, _build_ambient_user_text
+
+    sys = _AMBIENT_SYSTEM
+    assert "LEFT" in sys or "left" in sys.lower()
+    assert "item@zone" in sys or "@left" in sys or "mug@left" in sys
+    assert "from→to" in sys or "from->" in sys or "moved" in sys.lower()
+    assert "far-left" in sys and "far-right" in sys
+    # Prefer calling clear location changes; not pure "always NOTHING".
+    assert "Prefer calling" in sys or "Call out a change" in sys
+    assert _SCENE_MAX_CHARS >= 1400
+
+    user = _build_ambient_user_text(
+        None,
+        mood_text="",
+        previous_scene="mug@left-of-monitor; keyboard@center",
+    )
+    assert "PREVIOUS SCENE" in user
+    assert "LEFT" in user or "left" in user.lower()
+    assert "item@zone" in user or "location" in user.lower()
+
+
 def test_greeting_system_uses_mini():
     from prompt_voice import PERSONA_MINI
     from routes.greeting import _GREETING_SYSTEM
