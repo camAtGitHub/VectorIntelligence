@@ -44,6 +44,10 @@ Two sources fill a small queue in SQLite:
 - Respects **quiet mode**, recent chat, and the global proactive speech gap (shared with Work Day).
 - Loses to higher-priority behaviors (Work Day priority is much higher by default).
 
+### Chat history
+
+A delivered joke/question is spoken off the chat path. Vector-ai injects that line as an **assistant** turn on the next LLM request (and chipper `RememberAssistant` stores it in Save Chat) so a spoken answer — including a rhetorical-question reply — is a reply to the joke, not to the previous chat topic. The context footnote “recent things I said aloud” is not enough on its own.
+
 ### What it does *not* do
 
 - Does not call the LLM during `tick()` / while deciding to speak.

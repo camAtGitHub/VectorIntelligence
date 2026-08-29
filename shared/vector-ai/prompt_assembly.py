@@ -427,6 +427,112 @@ def _is_first_user_thread(messages: list) -> bool:
     return True  # zero or one non-system turn (the current user)
 
 
+# Unsolicited FSM speech (joke_idle, workday pokes) is spoken off the chat
+# path, so chipper RememberedChats never gets an assistant turn. Without
+# injecting it here, the next user utterance looks like a reply to the *prior
+# chat* exchange (e.g. a rhetorical idle question answered as if the last
+# topic was still the dog). 30 min: long enough to answer after thinking,
+# short enough not to pin a stale poke onto an evening conversation.
+_BEHAVIOR_THREAD_MAX_AGE_S = 30 * 60
+
+
+def _message_role(m) -> str:
+    if isinstance(m, dict):
+        return str(m.get("role") or "")
+    return str(getattr(m, "role", "") or "")
+
+
+def _message_content_text(m) -> str:
+    if isinstance(m, dict):
+        content = m.get("content")
+    else:
+        content = getattr(m, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
+def pending_behavior_speech_text(soul, now_ts: float) -> Optional[str]:
+    """Latest behavior line not yet followed by a chat reply, if still fresh.
+
+    Ring order is chronological. A later ``source=chat`` consumes the pending
+    poke (the LLM already answered it). Ambient/greeting/sensor do not.
+    """
+    if soul is None:
+        return None
+    try:
+        ring = list(getattr(soul, "_notify_recent", []) or [])
+    except Exception:
+        return None
+    pending: Optional[str] = None
+    pending_t = 0.0
+    for item in ring:
+        if not isinstance(item, dict):
+            continue
+        src = str(item.get("source") or "").strip()
+        text = str(item.get("text") or "").strip()
+        try:
+            t = float(item.get("t") or 0.0)
+        except (TypeError, ValueError):
+            t = 0.0
+        if src == "behavior" and text:
+            pending = text
+            pending_t = t
+        elif src == "chat":
+            pending = None
+            pending_t = 0.0
+    if not pending:
+        return None
+    if pending_t > 0 and (float(now_ts) - pending_t) > _BEHAVIOR_THREAD_MAX_AGE_S:
+        return None
+    return pending
+
+
+def _assistant_turn_has_text(messages: list, text: str) -> bool:
+    needle = (text or "").strip()
+    if not needle:
+        return True
+    for m in messages:
+        if _message_role(m) != "assistant":
+            continue
+        if needle in _message_content_text(m):
+            return True
+    return False
+
+
+def _inject_pending_behavior_turn(
+    turns: list, incoming: list, now_ts: float
+) -> list:
+    """Insert pending FSM speech as an assistant turn before the latest user."""
+    soul = getattr(deps, "SOUL", None)
+    try:
+        pending = pending_behavior_speech_text(soul, now_ts)
+    except Exception:
+        pending = None
+    if not pending:
+        return turns
+    if _assistant_turn_has_text(turns, pending) or _assistant_turn_has_text(
+        incoming, pending
+    ):
+        return turns
+    insert_at = len(turns)
+    for i in range(len(turns) - 1, -1, -1):
+        if turns[i].get("role") == "user":
+            insert_at = i
+            break
+    print(
+        f"[prompt] injecting behavior speech into LLM thread: {pending[:80]!r}"
+    )
+    turns.insert(insert_at, {"role": "assistant", "content": pending})
+    return turns
+
+
 def prepare_messages(
     messages: list,
     face: Optional[dict],
@@ -523,6 +629,8 @@ def prepare_messages(
             else:
                 content = m.content
             turns.append({"role": m.role, "content": content})
+
+    turns = _inject_pending_behavior_turn(turns, messages, now_dt.timestamp())
 
     if len(turns) > MAX_HISTORY_MESSAGES:
         turns = turns[-MAX_HISTORY_MESSAGES:]

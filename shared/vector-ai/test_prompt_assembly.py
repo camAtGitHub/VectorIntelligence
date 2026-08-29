@@ -672,3 +672,182 @@ def test_user_time_prefix_not_on_prior_user_turns(tmp_path, monkeypatch):
     latest = out[-1]["content"]
     assert latest.startswith("[12 minutes since last message]")
     assert "latest turn" in latest
+
+
+# --- Pending behavior speech → LLM thread (joke_idle / workday pokes) ---------
+
+
+_JOKE_LINE = (
+    "Cam, What's the last thing you poured through a funnel, and was it worth it?"
+)
+
+
+def _soul_with_ring(monkeypatch, tmp_path, items):
+    """Wire a Soul whose notify ring is `items` ({t, source, text})."""
+    import deps
+    from soul import Soul
+
+    _patch_deps(monkeypatch, tmp_path)
+    soul = Soul()
+    for item in items:
+        soul._notify_recent.append(item)
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+    return soul
+
+
+def test_pending_behavior_speech_latest_unconsumed(tmp_path, monkeypatch):
+    from prompt_assembly import pending_behavior_speech_text
+
+    now = 1_000_000.0
+    _soul_with_ring(
+        monkeypatch,
+        tmp_path,
+        [
+            {"t": now - 120, "source": "chat", "text": "No dog. Right."},
+            {"t": now - 16, "source": "behavior", "text": _JOKE_LINE},
+        ],
+    )
+    import deps
+
+    assert pending_behavior_speech_text(deps.SOUL, now) == _JOKE_LINE
+
+
+def test_pending_behavior_speech_consumed_by_later_chat(tmp_path, monkeypatch):
+    from prompt_assembly import pending_behavior_speech_text
+
+    now = 1_000_000.0
+    _soul_with_ring(
+        monkeypatch,
+        tmp_path,
+        [
+            {"t": now - 40, "source": "behavior", "text": _JOKE_LINE},
+            {"t": now - 10, "source": "chat", "text": "Milk powder. Classic."},
+        ],
+    )
+    import deps
+
+    assert pending_behavior_speech_text(deps.SOUL, now) is None
+
+
+def test_pending_behavior_speech_stale_is_dropped(tmp_path, monkeypatch):
+    from prompt_assembly import pending_behavior_speech_text
+
+    now = 1_000_000.0
+    _soul_with_ring(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "t": now - 40 * 60,
+                "source": "behavior",
+                "text": _JOKE_LINE,
+            },
+        ],
+    )
+    import deps
+
+    assert pending_behavior_speech_text(deps.SOUL, now) is None
+
+
+def test_prepare_messages_injects_joke_before_last_user(tmp_path, monkeypatch):
+    """Rhetorical idle joke must be an assistant turn, not only the context note."""
+    from datetime import datetime
+
+    now_dt = datetime(2026, 8, 29, 22, 56, 49)
+    _soul_with_ring(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "t": now_dt.timestamp() - 16,
+                "source": "behavior",
+                "text": _JOKE_LINE,
+            },
+        ],
+    )
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="there is no dog, you're hallucinating."),
+        SimpleNamespace(
+            role="assistant",
+            content="No dog. Right. So I've graduated to audio hallucination.",
+        ),
+        SimpleNamespace(role="user", content="it was milk powder to make milk."),
+    ]
+    out = prepare_messages(messages, face, now_dt=now_dt, prior_turn_ts=0.0)
+    assert out[-1]["role"] == "user"
+    assert "milk powder" in out[-1]["content"]
+    assert out[-2]["role"] == "assistant"
+    assert out[-2]["content"] == _JOKE_LINE
+    # Prior dog exchange stays; joke is not only in the context footnote.
+    assert out[-3]["role"] == "assistant"
+    assert "No dog" in out[-3]["content"]
+    assistant_turns = [m for m in out if m["role"] == "assistant"]
+    assert sum(1 for m in assistant_turns if m["content"] == _JOKE_LINE) == 1
+
+
+def test_prepare_messages_does_not_reinject_if_joke_already_in_thread(
+    tmp_path, monkeypatch
+):
+    from datetime import datetime
+
+    now_dt = datetime(2026, 8, 29, 22, 56, 49)
+    _soul_with_ring(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "t": now_dt.timestamp() - 16,
+                "source": "behavior",
+                "text": _JOKE_LINE,
+            },
+        ],
+    )
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="assistant", content=_JOKE_LINE),
+        SimpleNamespace(role="user", content="it was milk powder to make milk."),
+    ]
+    out = prepare_messages(messages, face, now_dt=now_dt, prior_turn_ts=0.0)
+    assistant_turns = [m for m in out if m["role"] == "assistant"]
+    assert sum(1 for m in assistant_turns if m["content"] == _JOKE_LINE) == 1
+    assert out[-1]["role"] == "user"
+    assert out[-2]["content"] == _JOKE_LINE
+
+
+def test_prepare_messages_skips_inject_after_chat_reply(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    now_dt = datetime(2026, 8, 29, 23, 10, 0)
+    ts = now_dt.timestamp()
+    _soul_with_ring(
+        monkeypatch,
+        tmp_path,
+        [
+            {"t": ts - 600, "source": "behavior", "text": _JOKE_LINE},
+            {"t": ts - 60, "source": "chat", "text": "Milk powder. I stand corrected."},
+        ],
+    )
+    face = {"face_id": 1, "name": "Cam", "is_stranger": False}
+    _set_face(monkeypatch, face)
+
+    from prompt_assembly import prepare_messages
+
+    messages = [
+        SimpleNamespace(role="system", content="wirepod cmds"),
+        SimpleNamespace(role="user", content="and then I drank it"),
+    ]
+    out = prepare_messages(messages, face, now_dt=now_dt, prior_turn_ts=ts - 60)
+    assert not any(
+        m["role"] == "assistant" and m.get("content") == _JOKE_LINE for m in out
+    )
