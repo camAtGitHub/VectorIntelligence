@@ -368,6 +368,7 @@ Edit the live file (not only the repo template):
 | `WORKDAY_POKE_INTERVAL_S` | `5400` | On-task poke interval |
 | `WORKDAY_AWAY_S` | `1800` | Away scold threshold |
 | `JOKE_ENABLED` | off | Joke idle master (also need `joke_idle` in `BEHAVIORS_ENABLED`) |
+| `MORNING_WEATHER_ENABLED` | off | Morning weather intent (also need `morning_weather` in `BEHAVIORS_ENABLED`) |
 | `SPEECH_MIN_GAP_S` | `90` | Global proactive speech gap |
 | `SPEECH_SUPPRESS_AFTER_VOICE_S` | `120` | Quiet after chat |
 | `BEHAVIORS_ENABLED` | `workday` | Plugin enable list |

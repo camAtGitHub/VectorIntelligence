@@ -125,6 +125,14 @@ class ContinuityStore:
                 )
                 """
             )
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS weather_daily (
+                    date           TEXT PRIMARY KEY,
+                    last_fired_at  REAL DEFAULT 0.0
+                )
+                """
+            )
 
     def _row_to_record(self, date: str, row: sqlite3.Row) -> WorkdayRecord:
         try:
@@ -441,6 +449,28 @@ class ContinuityStore:
                 ON CONFLICT(date) DO UPDATE SET
                     count = joke_daily.count + 1,
                     last_spoke_at = excluded.last_spoke_at
+                """,
+                (date, now),
+            )
+
+    def weather_load_daily(self, date: str) -> dict:
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT last_fired_at FROM weather_daily WHERE date = ?",
+                (date,),
+            ).fetchone()
+        if not row:
+            return {"last_fired_at": 0.0}
+        return {"last_fired_at": float(row["last_fired_at"] or 0.0)}
+
+    def weather_commit_fired(self, date: str, now: float) -> None:
+        with self._lock, self._conn() as c:
+            c.execute(
+                """
+                INSERT INTO weather_daily (date, last_fired_at)
+                VALUES (?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    last_fired_at = excluded.last_fired_at
                 """,
                 (date, now),
             )

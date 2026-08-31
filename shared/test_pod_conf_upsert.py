@@ -261,6 +261,12 @@ def test_behavior_relocate_keys_full_set() -> None:
         "JOKE_CRITIC_MODEL",
         "JOKE_SEED_FILE",
         "JOKE_CURATED_RATIO",
+        "MORNING_WEATHER_ENABLED",
+        "MORNING_WEATHER_PRIORITY",
+        "MORNING_WEATHER_WINDOW_BEGIN",
+        "MORNING_WEATHER_LUNCH_END",
+        "MORNING_WEATHER_MIN_DWELL_S",
+        "MORNING_WEATHER_TZ",
     })
     assert BEHAVIOR_RELOCATE_KEYS == expected
     assert "OPENROUTER_API_KEY" not in BEHAVIOR_RELOCATE_KEYS

@@ -1,6 +1,6 @@
-# Morning weather intent (not implemented — parked 2026-08-29)
+# Morning weather intent
 
-**Status:** idea only. Do not start until this note is picked up as a real task.
+**Status:** implemented 2026-08-29. Owner’s guide: [docs/FSM-morning-weather.md](../FSM-morning-weather.md).
 
 ## What
 

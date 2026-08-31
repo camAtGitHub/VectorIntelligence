@@ -320,7 +320,7 @@ curl -s -X POST "$BASE/v1/soul/reflect_goals" \
 
 ### `POST /v1/behaviors/tick`
 
-Chipper presence tick: advance FSMs; may return one `speak` line and/or `need_identity`. All fields optional (`{}` ok):
+Chipper presence tick: advance FSMs; may return one `speak` line, a firmware `intent` (e.g. `intent_weather_extend`), and/or `need_identity`. All fields optional (`{}` ok):
 
 - `occupied` (bool)
 - `face` `{face_id, name, is_stranger}`
@@ -351,7 +351,7 @@ curl -s "$BASE/v1/behaviors/state" | jq
 
 ### `GET /v1/behaviors/{behavior_id}`
 
-Per-FSM ops detail. Registered ids include `workday`, `joke_idle`. 404 if unknown. Does not speak or advance tick policy.
+Per-FSM ops detail. Registered ids include `workday`, `joke_idle`, `morning_weather`. 404 if unknown. Does not speak or advance tick policy.
 
 ```bash
 curl -s "$BASE/v1/behaviors/workday" | jq

@@ -61,6 +61,7 @@ async def behaviors_tick(req: BehaviorTickRequest):
             process_state._LAST_USER_VOICE_TS, now
         )
     result = deps.BEHAVIOR_RUNTIME.tick(now)
+    intent = (getattr(result, "intent", None) or "").strip()
     if result.speak:
         print(f"[behaviors] speak: {result.speak!r} debug={result.debug}")
         soul = getattr(deps, "SOUL", None)
@@ -69,11 +70,14 @@ async def behaviors_tick(req: BehaviorTickRequest):
                 soul.notify_speech(result.speak, source="behavior")
             except Exception:
                 pass
+    elif intent:
+        print(f"[behaviors] intent: {intent!r} debug={result.debug}")
     elif result.need_identity:
         print(f"[behaviors] need_identity debug={result.debug}")
     out = {
         "speak": result.speak or "",
         "need_identity": bool(result.need_identity),
+        "intent": intent,
     }
     if DEBUG:
         out["debug"] = result.debug

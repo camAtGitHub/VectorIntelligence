@@ -96,3 +96,16 @@
 # JOKE_CRITIC_MODEL=
 # JOKE_CURATED_RATIO=0.5
 # JOKE_SEED_FILE=joke_seeds.txt
+
+# -- Morning weather (built-in weather intent; default OFF) --------------------
+# Requires full patched chipper with behavior-tick loop.
+# Needs "morning_weather" in BEHAVIORS_ENABLED AND MORNING_WEATHER_ENABLED.
+# Fires once per morning after Work Day has armed (WORKING), from window begin
+# through lunch, occupied desk. Chipper runs intent_weather_extend (not LLM TTS).
+# Example: BEHAVIORS_ENABLED=workday,joke_idle,morning_weather
+# MORNING_WEATHER_ENABLED=0
+# MORNING_WEATHER_PRIORITY=40
+# MORNING_WEATHER_WINDOW_BEGIN=09:00
+# MORNING_WEATHER_LUNCH_END=12:30
+# MORNING_WEATHER_MIN_DWELL_S=60
+# MORNING_WEATHER_TZ=Australia/Sydney

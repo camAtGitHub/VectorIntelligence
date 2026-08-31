@@ -255,7 +255,7 @@ Chat tags the model may emit (stripped before speech):
 | `EXTERNAL_CHIPPER=1` | Companion: do not start/stop chipper |
 | `WIREPOD_DIR` | Install root (`Program Files\wire-pod`) |
 | `WIREPOD_DATA_DIR` | Live data (`%APPDATA%\wire-pod`) |
-| `WORKDAY_*` / `JOKE_*` / `BEHAVIORS_ENABLED` / `SPEECH_*` | Behavior FSMs |
+| `WORKDAY_*` / `JOKE_*` / `MORNING_WEATHER_*` / `BEHAVIORS_ENABLED` / `SPEECH_*` | Behavior FSMs |
 
 Voice/pairing ports **443 / 80 / 8084** stay fixed (Vector expects them).
 

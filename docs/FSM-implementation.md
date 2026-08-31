@@ -2,7 +2,7 @@
 
 How to extend Vector’s **aliveness** stack with new finite-state machines (behaviors), using Work Day and Joke Idle as reference passengers.
 
-**User-facing guides:** [FSM-workday-companion.md](./FSM-workday-companion.md) · [FSM-jokes-at-idle.md](./FSM-jokes-at-idle.md)  
+**User-facing guides:** [FSM-workday-companion.md](./FSM-workday-companion.md) · [FSM-jokes-at-idle.md](./FSM-jokes-at-idle.md) · [FSM-morning-weather.md](./FSM-morning-weather.md)  
 **Product design:** [superpowers/specs/2026-07-18-vector-aliveness-workday-design.md](./superpowers/specs/2026-07-18-vector-aliveness-workday-design.md)
 
 This document is for **implementers**. It is about contracts, boundaries, and habits—not a line-by-line walkthrough of each FSM’s state graph.
@@ -95,6 +95,7 @@ Optional but recommended:
 | Field | Meaning |
 |--------|---------|
 | `speak` | Plain text for Vector to say (empty = silence). Prefer templates or pre-cleaned speech—no `{{…}}` tags. |
+| `intent` | Optional built-in firmware intent (e.g. `intent_weather_extend`). Empty = none. Chipper fires this instead of SayText when speak is empty. |
 | `need_identity` | Ask chipper to run a short face probe before the next tick |
 | `debug` | Structured diagnostics (mode, reason)—safe for logs / tick DEBUG |
 | `on_speak_allowed` | **Optional callback** run only if the speech arbiter allows this line |
@@ -241,9 +242,9 @@ If another behavior already refreshed face/image, **reuse**—do not force a new
 
 ### 3.7 Enable list
 
-`BEHAVIORS_ENABLED=workday,joke_idle` (comma-separated).
+`BEHAVIORS_ENABLED=workday,joke_idle,morning_weather` (comma-separated).
 
-Work Day also requires `WORKDAY_ENABLED=1`; Joke Idle requires `JOKE_ENABLED=1`. Pattern for new FSMs: **list membership + feature flag**.
+Work Day also requires `WORKDAY_ENABLED=1`; Joke Idle requires `JOKE_ENABLED=1`; morning weather requires `MORNING_WEATHER_ENABLED=1`. Pattern for new FSMs: **list membership + feature flag**.
 
 ---
 

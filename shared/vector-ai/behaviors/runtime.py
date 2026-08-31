@@ -5,10 +5,11 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from .arbiter import SpeechArbiter
-from .config import JokeConfig, RuntimeConfig, WorkdayConfig
+from .config import JokeConfig, MorningWeatherConfig, RuntimeConfig, WorkdayConfig
 from .continuity import ContinuityStore
 from .joke_idle import JokeIdleBehavior, JOKE_IDLE_ID
 from .logutil import blog, short
+from .morning_weather import MorningWeatherBehavior, MORNING_WEATHER_ID
 from .presence import PresenceCache
 from .types import (
     FaceIdentity,
@@ -31,6 +32,7 @@ class BehaviorRuntime:
         voice_ts_fn: Optional[Callable[[], float]] = None,
         joke_cfg: Optional[JokeConfig] = None,
         presence: Optional[PresenceCache] = None,
+        weather_cfg: Optional[MorningWeatherConfig] = None,
     ):
         self.runtime_cfg = runtime_cfg
         self.workday_cfg = workday_cfg
@@ -70,6 +72,17 @@ class BehaviorRuntime:
                 _TAG,
                 f"registered joke_idle (priority={joke_cfg.priority}, "
                 f"dwell={joke_cfg.min_dwell_s}s, cooldown={joke_cfg.cooldown_s}s)",
+            )
+        if (
+            MORNING_WEATHER_ID in enabled
+            and weather_cfg is not None
+            and weather_cfg.enabled
+        ):
+            self.behaviors.append(MorningWeatherBehavior(weather_cfg, store))
+            blog(
+                _TAG,
+                f"registered morning_weather (priority={weather_cfg.priority}, "
+                f"lunch={weather_cfg.lunch_end[0]:02d}:{weather_cfg.lunch_end[1]:02d})",
             )
         if not self.behaviors:
             blog(_TAG, "no behaviors registered (all disabled or not in BEHAVIORS_ENABLED)")
@@ -342,6 +355,7 @@ class BehaviorRuntime:
         )
 
         speak = ""
+        intent = ""
         debug: Dict[str, Any] = {
             "mode": None,
             "candidates": len(scored),
@@ -354,10 +368,12 @@ class BehaviorRuntime:
             if r.debug and r.debug.get("mode"):
                 debug["mode"] = r.debug.get("mode")
             text = (r.speak or "").strip()
-            if not text:
+            want_intent = (getattr(r, "intent", None) or "").strip()
+            proposal = text or want_intent
+            if not proposal:
                 # Log interesting non-speech outcomes at verbose level only.
                 reason = (r.debug or {}).get("reason")
-                # Quiet/common skips (workday snake_case + joke_idle plain English).
+                # Quiet/common skips (workday snake_case + joke_idle / weather).
                 if reason and reason not in (
                     "dwell_building",
                     "cooldown",
@@ -372,6 +388,10 @@ class BehaviorRuntime:
                     "joke queue empty",
                     "ready to joke",
                     "recent voice activity",
+                    "workday not started",
+                    "outside morning-lunch window",
+                    "already told weather today",
+                    "ready to tell weather",
                 ):
                     blog(
                         _TAG,
@@ -381,7 +401,7 @@ class BehaviorRuntime:
                     )
                 continue
             req = SpeechRequest(
-                text=text,
+                text=proposal,
                 priority=prio,
                 behavior_id=b.id,
                 reason=(r.debug or {}).get("reason", ""),
@@ -399,12 +419,19 @@ class BehaviorRuntime:
                         debug["commit_error"] = str(e)
                         blog(_TAG, f"{b.id}: on_speak_allowed failed: {e}")
                 self.arbiter.record_speech(now)
-                speak = text
+                if text:
+                    speak = text
+                    intent = ""
+                else:
+                    speak = ""
+                    intent = want_intent
                 debug["spoke_from"] = b.id
+                if intent:
+                    debug["intent"] = intent
                 blog(
                     _TAG,
                     f"ALLOWED speech from {b.id} (prio={prio}, reason={req.reason}): "
-                    f"{short(text)!r}",
+                    f"{short(proposal)!r}",
                 )
                 break
             debug["arbiter_deny"] = why
@@ -412,15 +439,16 @@ class BehaviorRuntime:
             blog(
                 _TAG,
                 f"DENIED {b.id} speech (arbiter={why}, prio={prio}, "
-                f"reason={req.reason}): {short(text)!r} — "
+                f"reason={req.reason}): {short(proposal)!r} — "
                 f"wanted to speak but did not",
             )
 
-        if need_identity and not speak:
+        if need_identity and not speak and not intent:
             blog(_TAG, "tick result: need_identity (no speech this tick)", verbose=True)
 
         return TickResult(
             speak=speak,
+            intent=intent,
             need_identity=need_identity,
             debug=debug,
         )

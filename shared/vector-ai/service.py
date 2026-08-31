@@ -51,7 +51,12 @@ from process_state import _ambient_state, load_mood
 from routes import register_routes
 from routes.mood import _mood_loop
 from behaviors.runtime import BehaviorRuntime
-from behaviors.config import load_runtime_config, load_workday_config, load_joke_config
+from behaviors.config import (
+    load_runtime_config,
+    load_workday_config,
+    load_joke_config,
+    load_morning_weather_config,
+)
 from behaviors.continuity import ContinuityStore
 from behaviors.joke_sources import _joke_refill_loop
 
@@ -69,6 +74,7 @@ from soul import Soul
 _runtime_cfg = load_runtime_config()
 _workday_cfg = load_workday_config()
 JOKE_CFG = load_joke_config()
+WEATHER_CFG = load_morning_weather_config()
 _continuity = ContinuityStore(ROOT / "workday.db")
 _sticky = getattr(_runtime_cfg, "presence_sticky_s", None)
 _streak = getattr(_runtime_cfg, "presence_empty_streak", None)
@@ -107,6 +113,7 @@ BEHAVIOR_RUNTIME = BehaviorRuntime(
     voice_ts_fn=lambda: process_state._LAST_USER_VOICE_TS,
     joke_cfg=JOKE_CFG,
     presence=_presence_cache,
+    weather_cfg=WEATHER_CFG,
 )
 deps.BEHAVIOR_RUNTIME = BEHAVIOR_RUNTIME
 deps._runtime_cfg = _runtime_cfg
@@ -126,6 +133,13 @@ if JOKE_CFG.enabled:
     print("[behaviors] Joke Idle ON (set JOKE_ENABLED=0 to disable)")
 else:
     print("[behaviors] Joke Idle OFF (set JOKE_ENABLED=1 to enable)")
+if WEATHER_CFG.enabled:
+    print(
+        "[behaviors] Morning weather ON "
+        f"(lunch={WEATHER_CFG.lunch_end[0]:02d}:{WEATHER_CFG.lunch_end[1]:02d})"
+    )
+else:
+    print("[behaviors] Morning weather OFF (set MORNING_WEATHER_ENABLED=1 to enable)")
 
 load_mood(MEMORY)
 

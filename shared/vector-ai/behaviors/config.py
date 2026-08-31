@@ -231,5 +231,50 @@ def load_joke_config(env: Optional[Mapping[str, str]] = None) -> JokeConfig:
         return JokeConfig(enabled=False)
 
 
+@dataclass(frozen=True)
+class MorningWeatherConfig:
+    enabled: bool = False
+    priority: int = 40
+    # Morning through lunch (inclusive start, exclusive lunch_end).
+    window_begin: tuple[int, int] = (9, 0)
+    lunch_end: tuple[int, int] = (12, 30)
+    min_dwell_s: int = 60
+    tz: tzinfo = field(default_factory=_default_tz)
+
+
+def load_morning_weather_config(
+    env: Optional[Mapping[str, str]] = None,
+) -> MorningWeatherConfig:
+    """Load morning-weather config. Hard failure → disabled defaults."""
+    env = env if env is not None else os.environ
+    try:
+        tz_name = (
+            env.get("MORNING_WEATHER_TZ")
+            or env.get("WORKDAY_TZ")
+            or env.get("TZ")
+            or "UTC"
+        ).strip()
+        tz = resolve_tz(tz_name)
+        if (env.get("MORNING_WEATHER_WINDOW_BEGIN") or "").strip():
+            window_begin = _hhmm(env, "MORNING_WEATHER_WINDOW_BEGIN", "09:00")
+        else:
+            window_begin = _hhmm(env, "WORKDAY_START_BEGIN", "09:00")
+        return MorningWeatherConfig(
+            enabled=_truthy(env.get("MORNING_WEATHER_ENABLED")),
+            priority=_int(env, "MORNING_WEATHER_PRIORITY", 40),
+            window_begin=window_begin,
+            lunch_end=_hhmm(env, "MORNING_WEATHER_LUNCH_END", "12:30"),
+            min_dwell_s=_int(env, "MORNING_WEATHER_MIN_DWELL_S", 60),
+            tz=tz,
+        )
+    except Exception as e:
+        _log.error(
+            "load_morning_weather_config failed (%s); morning weather disabled",
+            e,
+        )
+        _ts_print(f"[behaviors] MORNING_WEATHER config error ({e}); disabled with defaults")
+        return MorningWeatherConfig(enabled=False)
+
+
 def minutes_since_midnight(h: int, m: int) -> int:
     return h * 60 + m

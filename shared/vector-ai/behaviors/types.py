@@ -49,6 +49,10 @@ class SpeechRequest:
 @dataclass
 class TickResult:
     speak: str = ""
+    # Built-in firmware intent (e.g. intent_weather_extend). Empty = none.
+    # Runtime treats a non-empty intent like speech for arbiter/commit; chipper
+    # fires the intent instead of SayText when speak is empty.
+    intent: str = ""
     need_identity: bool = False
     debug: dict[str, Any] = field(default_factory=dict)
     # Applied only after speech arbiter allows the speak line (speech-gated
