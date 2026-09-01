@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 _VISION_BUFFER_MAX = 16
 # Cap stored/resent scene text so prompts stay bounded.
 # Room for a denser L→R inventory (zones + durable items) without ballooning.
-_SCENE_MAX_CHARS = 1400
+_SCENE_MAX_CHARS = 2400
 
 # -- Ambient PRESENCE + SCENE protocol -----------------------------------------
 
@@ -559,7 +559,7 @@ class EyeService:
         note = novelty_note_from_raw(raw)
         if spoken and not note:
             note = spoken
-        note = (note or "")[:300]
+        note = (note or "")[:3000]
 
         # First glance / baseline only: if we had no prior scene, never speak
         # novelty even if the model ignored instructions (establish inventory).
