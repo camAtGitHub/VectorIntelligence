@@ -194,11 +194,11 @@ def test_parse_and_strip_soul_growth_tags(tmp_path, monkeypatch):
     assert "Sure" in out and "done" in out
 
 
-def test_soul_growth_line_when_soul_wired(tmp_path, monkeypatch):
-    """Teach line present in memory section when deps.SOUL is set."""
+def test_soul_growth_line_absent_from_memory_section(tmp_path, monkeypatch):
+    """SOUL GROWTH teach line is no longer injected into the memory section."""
     import deps
     from memory import MemoryStore
-    from prompt_assembly import _SOUL_GROWTH_LINE, _build_memory_section
+    from prompt_assembly import _build_memory_section
 
     store = MemoryStore(tmp_path / "mem.db")
     monkeypatch.setattr(deps, "MEMORY", store, raising=False)
@@ -215,15 +215,14 @@ def test_soul_growth_line_when_soul_wired(tmp_path, monkeypatch):
 
     face = {"face_id": 1, "name": "Cam", "is_stranger": False}
     section = _build_memory_section(face, "hi")
-    assert _SOUL_GROWTH_LINE not in section
     assert "SOUL GROWTH" not in section
 
     soul = _make_soul(tmp_path)
     monkeypatch.setattr(deps, "SOUL", soul, raising=False)
     section2 = _build_memory_section(face, "hi")
-    assert _SOUL_GROWTH_LINE in section2
-    assert "{{soulDream}}" in section2
-    assert "{{soulGoals||" in section2
+    assert "SOUL GROWTH" not in section2
+    assert "{{soulDream}}" not in section2
+    assert "{{soulGoals||" not in section2
 
 
 def test_http_dream_route(tmp_path, monkeypatch):

@@ -232,20 +232,15 @@ def test_extract_last_user_text_multimodal():
 # --- Work Day silent-tag teaching (Phase 1) ---------------------------------
 
 
-def test_work_line_absent_when_workday_disabled(tmp_path, monkeypatch):
-    """Workday disabled (default _patch_deps) → no _WORK_LINE teach string.
-
-    Persona may still mention workAfternoon (leave persona as-is); this test
-    only asserts the gated _WORK_LINE is not injected into memory/system.
-    """
+def test_work_line_absent_from_memory_section(tmp_path, monkeypatch):
+    """WORK DAY teach string is no longer injected into memory/system prefix."""
     _patch_deps(monkeypatch, tmp_path)
     face = {"face_id": 1, "name": "Cam", "is_stranger": False}
     _set_face(monkeypatch, face)
 
-    from prompt_assembly import _WORK_LINE, _build_memory_section, prepare_messages
+    from prompt_assembly import _build_memory_section, prepare_messages
 
     section = _build_memory_section(face, "hi")
-    assert _WORK_LINE not in section
     assert "WORK DAY (silent tags" not in section
 
     messages = [
@@ -254,45 +249,17 @@ def test_work_line_absent_when_workday_disabled(tmp_path, monkeypatch):
     ]
     out = prepare_messages(messages, face)
     system = out[0]["content"]
-    assert _WORK_LINE not in system
     assert "WORK DAY (silent tags" not in system
 
 
-def test_work_line_present_when_workday_enabled(tmp_path, monkeypatch):
-    """Workday enabled + non-None runtime → stable prefix has WORK silent tags."""
-    import deps
-
-    store = _patch_deps(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        deps,
-        "_workday_cfg",
-        type("C", (), {"tz": None, "enabled": True})(),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        deps,
-        "BEHAVIOR_RUNTIME",
-        type("RT", (), {"workday": object()})(),
-        raising=False,
-    )
-    # Continuity may be touched by prepare_messages context note; stub empty strip.
-    monkeypatch.setattr(
-        deps,
-        "_continuity",
-        type("Cont", (), {"day_strip": staticmethod(lambda _d: "")})(),
-        raising=False,
-    )
-
+def test_runtime_guidance_in_system_prefix(tmp_path, monkeypatch):
+    """prepare_messages injects RUNTIME_GUIDANCE between Wire-Pod and memory."""
+    _patch_deps(monkeypatch, tmp_path)
     face = {"face_id": 1, "name": "Cam", "is_stranger": False}
     _set_face(monkeypatch, face)
 
-    from prompt_assembly import _build_memory_section, prepare_messages
-
-    section = _build_memory_section(face, "hi")
-    assert "{{workAfternoon||yes}}" in section
-    assert "{{workAfternoon||no}}" in section
-    assert "{{workResume}}" in section
-    assert "WORK DAY" in section
+    from prompt_assembly import prepare_messages
+    from runtime_guidance import RUNTIME_GUIDANCE
 
     messages = [
         SimpleNamespace(role="system", content="wirepod cmds"),
@@ -300,10 +267,11 @@ def test_work_line_present_when_workday_enabled(tmp_path, monkeypatch):
     ]
     out = prepare_messages(messages, face)
     system = out[0]["content"]
-    assert "{{workAfternoon||yes}}" in system
-    assert "WORK DAY" in system
-    # Memory store was used; keep lint quiet if unused path changes.
-    assert store is not None
+    assert RUNTIME_GUIDANCE in system
+    assert "## Memory and identity" in system
+    # Ordering: Wire-Pod, then guidance, then live memory section.
+    assert system.index("wirepod cmds") < system.index(RUNTIME_GUIDANCE)
+    assert system.index(RUNTIME_GUIDANCE) < system.index("looking at Cam")
 
 
 def test_context_note_emit_when_awaiting_answer(tmp_path, monkeypatch):

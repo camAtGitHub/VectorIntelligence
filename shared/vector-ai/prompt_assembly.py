@@ -13,32 +13,7 @@ from process_state import (
     current_face,
 )
 from llm import MAX_HISTORY_MESSAGES
-
-# One short SAVE line — silent tags only; never the old multi-paragraph essay.
-_SAVE_LINE = (
-    "SAVING: silent tags {{remember||fact}} / {{remember-shared||fact}} / "
-    "{{forget||…}} — never speak them. Save durable personal facts with "
-    "remember; household/world facts with remember-shared."
-)
-
-# Work Day silent tags — only injected when Work Day is live (same gate as day_strip).
-_WORK_LINE = (
-    "WORK DAY (silent tags — never speak them): "
-    "if the user confirms they are working this afternoon or reporting in for half a day, "
-    "include {{workAfternoon||yes}} once; if they decline afternoon work, "
-    "{{workAfternoon||no}}; break until a clock time → {{workPause||until=HH:MM}} (24h); "
-    "back to work → {{workResume}}."
-)
-
-# Soul growth silent tags — only when deps.SOUL is wired (same spirit as _WORK_LINE).
-_SOUL_GROWTH_LINE = (
-    "SOUL GROWTH (silent tags — never speak them): "
-    "When the human asks what you dreamed, or after a long day feels closed, you may "
-    "emit {{soulDream}} once so a background dream consolidates (do not narrate the tag). "
-    "To propose three updated goals after they explicitly want new aims, emit "
-    "{{soulGoals||goal one||goal two||goal three}} (three short phrases). "
-    "Prefer aspiring, concrete, grow-with-the-human goals over sulking."
-)
+from runtime_guidance import RUNTIME_GUIDANCE   # contents of 3a-system-identity.md
 
 # Emit hint for LATE_CHECK context note (ops day_strip stays status-only).
 _WORK_AWAITING_EMIT = (
@@ -67,7 +42,7 @@ def _extract_last_user_text(messages: list) -> str:
 def _build_memory_section(
     face: Optional[dict] = None, last_user_text: str = ""
 ) -> str:
-    """Identity branches + top-k retrieved facts + short SAVE line.
+    """Identity branches + top-k retrieved facts.
 
     ``face`` must be the same effective face used for prepare_messages touch
     and remember ownership (``_effective_face()``). Do not re-resolve here —
@@ -142,18 +117,6 @@ def _build_memory_section(
             "Shared/household context (applies to anyone):\n"
             + "\n".join(f"- {m.text}" for m in selected.shared)
         )
-
-    sections.append(_SAVE_LINE)
-
-    # WORK silent-tag teach line: stable system prefix, only when Work Day is live.
-    _workday_cfg = deps._workday_cfg
-    BEHAVIOR_RUNTIME = deps.BEHAVIOR_RUNTIME
-    if _workday_cfg.enabled and BEHAVIOR_RUNTIME.workday is not None:
-        sections.append(_WORK_LINE)
-
-    # Soul growth teach line when melting pot is live (chat can trigger dream/goals).
-    if getattr(deps, "SOUL", None) is not None:
-        sections.append(_SOUL_GROWTH_LINE)
 
     return "\n\n".join(sections)
 
@@ -367,9 +330,8 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
     if soul_strip:
         bits.append(soul_strip)
         bits.append(
-            "Let your inner mood colour tone naturally - never state, explain "
-            "or announce it. Weave in only what fits; do not recite the desk "
-            "continuity list."
+            "Your inner mood colours your tone. Never state it, explain it, "
+            "or announce it."
         )
     elif _mood_state["text"]:
         bits.append(
@@ -409,8 +371,9 @@ def _build_context_note(face: Optional[dict], prior: Optional[dict],
         except Exception as e:
             print(f"[behaviors] day_strip inject failed: {e}")
 
-    return ("[Context for you, Vector - " + " ".join(bits)
-            + " Weave in only what naturally fits; never recite this back.]")
+    return ("[Context for you, Bandit - " + " ".join(bits)
+            + " This is context, not a script. Use what fits the reply and "
+              "leave the rest. Never recite it back.]")
 
 
 def _is_first_user_thread(messages: list) -> bool:
@@ -591,7 +554,7 @@ def prepare_messages(
 
     out = [{
         "role":    "system",
-        "content": f"{PERSONA}\n\n{wirepod_system}\n\n{memory_section}",
+        "content": f"{PERSONA}\n\n{wirepod_system}\n\n{RUNTIME_GUIDANCE}\n\n{memory_section}",
     }]
 
     # Non-system turns only; trim to the last N (always keep the latest user).
