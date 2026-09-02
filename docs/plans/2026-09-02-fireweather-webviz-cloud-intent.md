@@ -1,6 +1,6 @@
 # Fix FireWeatherIntent: WebViz cloud-intent side channel
 
-**Status:** implemented chipper (Phases 1–2); E2E (Phase 4) pending. Docs closeout Phase 3 done 2026-09-02.  
+**Status:** implemented 2026-09-02. Chipper Phases 1–2 shipped (wire-pod commits `00ee20aa` helper, `389591f9` FireWeatherIntent). Docs Phase 3 done. Phase 4: WebViz inject path proven live on robot (weather_response); full FireWeatherIntent E2E needs deployed chipper with BotInfo + weather API.  
 **Parent:** [2026-08-29-morning-weather-intent.md](./2026-08-29-morning-weather-intent.md) · owner guide [FSM-morning-weather.md](../FSM-morning-weather.md)  
 **Live proof:** 2026-09-02 WebViz WS inject to `192.168.50.189:8888` → engine `weather_response` + robot weather anim played.
 
