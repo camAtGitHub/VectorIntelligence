@@ -1,6 +1,7 @@
 # Morning weather intent
 
-**Status:** implemented 2026-08-29. Owner’s guide: [docs/FSM-morning-weather.md](../FSM-morning-weather.md).
+**Status:** implemented 2026-08-29. Owner’s guide: [docs/FSM-morning-weather.md](../FSM-morning-weather.md).  
+**Follow-up (delivery bug):** proactive path must not use AppIntent — see [2026-09-02-fireweather-webviz-cloud-intent.md](./2026-09-02-fireweather-webviz-cloud-intent.md) (WebViz WS cloud inject; proven on robot 2026-09-02).
 
 ## What
 
@@ -12,7 +13,7 @@ Not an LLM one-liner. Use the existing weather stack (chipper `weatherParser` + 
 
 - Work Day already knows “today started” vs `no_show` / `past_end`.
 - Weather API + speakable params already live in chipper (`ttr/weather.go`, `intent_weather_extend`).
-- AppIntent / intent-graph is how user weather is delivered today; don’t re-implement TTS weather in vector-ai.
+- **Voice** weather still uses the chipper IntentPass stream (robot-initiated after wake word). **Proactive** morning weather must not use AppIntent (no `app_intent` map for weather); chipper delivers via WebViz cloud inject (`ws://IP:8888/socket`) — see follow-up plan. Don’t re-implement TTS weather in vector-ai.
 
 ## Suggested gates (when building)
 

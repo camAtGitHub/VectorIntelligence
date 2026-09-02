@@ -16,7 +16,7 @@ Related: [FSM-workday-companion.md](./FSM-workday-companion.md) · [FSM-implemen
 2. Local clock is from the morning window begin through **lunch** (default 09:00–12:30).
 3. Someone is at the occupied desk, quiet dwell has elapsed (default 60s).
 4. He has not already told weather today.
-5. Chipper then runs `intent_weather_extend` via the same weather API + firmware path as a spoken weather request.
+5. Chipper then runs `weatherParser` and injects `intent_weather_extend` via WebViz cloud intent (`ws://<robot-ip>:8888/socket`) — not AppIntent. Spoken “what’s the weather” still uses the voice IntentPass stream.
 
 He does **not** invent a weather sentence in vector-ai. If the weather API is not configured, chipper says the same error line as a failed user weather request.
 
