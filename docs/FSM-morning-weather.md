@@ -12,13 +12,27 @@ Related: [FSM-workday-companion.md](./FSM-workday-companion.md) · [FSM-implemen
 
 ## What it does
 
-1. Work Day is **WORKING** (morning start armed — not `no_show` / `late_working` / paused).
+1. Work Day is **WORKING** (morning start armed — not `no_show` / `late_working` / paused). This path **cannot** arm the day.
 2. Local clock is from the morning window begin through **lunch** (default 09:00–12:30).
-3. Someone is at the occupied desk, quiet dwell has elapsed (default 60s).
-4. He has not already told weather today.
-5. Chipper then runs `weatherParser` and injects `intent_weather_extend` via WebViz cloud intent (`ws://<robot-ip>:8888/socket`) — not AppIntent. Spoken “what’s the weather” still uses the voice IntentPass stream.
+3. Someone is at the occupied desk.
+4. An **enrolled named face** is recent: `face_id > 0`, not a stranger, matches the Work Day primary when one is set, and `face_ts` is within `MORNING_WEATHER_FACE_MAX_AGE_S` (default **90s** — not the 30-minute face cache).
+5. He has not already told weather today.
+6. Chipper then runs `weatherParser` and injects `intent_weather_extend` via **WebViz** cloud intent (`ws://<robot-ip>:8888/socket`) — `FireWeatherIntent`, not AppIntent. Spoken “what’s the weather” still uses the voice IntentPass stream.
 
 He does **not** invent a weather sentence in vector-ai. If the weather API is not configured, chipper says the same error line as a failed user weather request.
+
+### When it fires
+
+Two chipper paths, same gates except occupancy dwell:
+
+| Path | Trigger | Occupancy dwell | Work Day |
+|------|---------|-----------------|----------|
+| **Restricted** | Enrolled `POST /v1/state/face_seen` | **Skipped** — the enrolled POST is the event | Not run (cannot arm `WORKING`) |
+| **60s tick** | `POST /v1/behaviors/tick` | **Kept** (`MORNING_WEATHER_MIN_DWELL_S`, default 60s) | Full FSM still only here |
+
+Idle enrolled sighting is **not** a continuous `robot_observed_face` stream. Chipper’s sparse / `need_identity` **ProbeFace** (first `[face] observed: id=… 'Cam' (enrolled)` bounded by **≤2 min**) POSTs `face_seen` **before** the 60s tick; weather anim then follows in **seconds of that log line**, not of walking into view. Voice-start `ObserveFaceBriefly` still notifies; the arbiter `recent_voice` deny keeps weather off “hey Vector.”
+
+Quiet mode, recent chat, and the global proactive speech gap still apply. A denied tick does **not** consume the daily lock.
 
 ## Enable
 
@@ -39,7 +53,8 @@ Weather will never fire if Work Day did not arm that morning.
 | `MORNING_WEATHER_PRIORITY` | `40` | Below Work Day (80), above joke idle (15) |
 | `MORNING_WEATHER_WINDOW_BEGIN` | `WORKDAY_START_BEGIN` / `09:00` | Start of the fire window |
 | `MORNING_WEATHER_LUNCH_END` | `12:30` | Exclusive end (12:30 does not fire) |
-| `MORNING_WEATHER_MIN_DWELL_S` | `60` | Occupied + quiet before firing |
+| `MORNING_WEATHER_MIN_DWELL_S` | `60` | Occupied + quiet before firing (**60s tick only**; restricted `face_seen` skips this) |
+| `MORNING_WEATHER_FACE_MAX_AGE_S` | `90` | Enrolled-face freshness (both paths). Not `FACE_CACHE_MAX_AGE_S` (1800s) |
 | `MORNING_WEATHER_TZ` | Work Day / host TZ | Clock for the window |
 
 ## Ops
@@ -49,4 +64,4 @@ curl -s http://127.0.0.1:8090/v1/behaviors/morning_weather | jq
 curl -s http://127.0.0.1:8090/v1/behaviors/state | jq '.behaviors.morning_weather'
 ```
 
-`summary` / `reason` is plain English (`workday not started`, `outside morning-lunch window`, `already told weather today`, `ready to tell weather`, …).
+`summary` / `reason` is plain English (`workday not started`, `outside morning-lunch window`, `already told weather today`, `need enrolled face`, `stranger or non-primary`, `enrolled face too old`, `ready to tell weather`, …).

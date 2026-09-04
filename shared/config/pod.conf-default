@@ -101,7 +101,8 @@
 # Requires full patched chipper with behavior-tick loop.
 # Needs "morning_weather" in BEHAVIORS_ENABLED AND MORNING_WEATHER_ENABLED.
 # Fires once per morning after Work Day has armed (WORKING), from window begin
-# through lunch, occupied desk. Chipper runs intent_weather_extend (not LLM TTS).
+# through lunch, occupied desk, enrolled named face ≤90s
+# (MORNING_WEATHER_FACE_MAX_AGE_S). Chipper runs intent_weather_extend (not LLM TTS).
 # Example: BEHAVIORS_ENABLED=workday,joke_idle,morning_weather
 # MORNING_WEATHER_ENABLED=0
 # MORNING_WEATHER_PRIORITY=40

@@ -58,7 +58,7 @@ Who normally hits what (production path).
 | **Wire-Pod / chipper STT knowledge** | `POST /v1/chat/completions` |
 | **Chipper ambient idle glance** | `POST /v1/ambient` → optional speak from `text` |
 | **Chipper behavior loop** | `POST /v1/behaviors/tick` (occupancy/face); may follow with face probe if `need_identity` |
-| **Chipper face / on-demand probe** | `POST /v1/state/face_seen`; may then `POST /v1/proactive_greeting` for known person |
+| **Chipper face / on-demand probe** | Idle enrolled `ProbeFace` (sparse ≤2 min / `need_identity`) and voice-start `ObserveFaceBriefly` → `POST /v1/state/face_seen`; enrolled may return weather `intent`; may then `POST /v1/proactive_greeting` |
 | **Chipper sensors** | `POST /v1/sensor_reaction` (`pickup` / `putdown` / `pet`) |
 | **Ops / keyboard inject** | `POST /v1/chat/session/message`, session GET/DELETE |
 | **Ops / debug dump** | all GETs + `linux/dump-vector-ai-state.sh` |
@@ -177,7 +177,9 @@ curl -s -X POST "$BASE/v1/sensor_reaction" \
 
 ### `POST /v1/state/face_seen`
 
-Chipper reports a face. Body: `face_id` (int); `name` optional (empty/missing → stranger). **Mutates face cache + presence** (can arm Work Day / sticky occupancy). No LLM.
+Chipper reports a face. Body: `face_id` (int); `name` optional (empty/missing → stranger). **Mutates face cache + presence** (`note_face` / `note_person`; sticky occupancy). **Does not arm Work Day.** No LLM.
+
+Enrolled (`face_id > 0` and a name) may run a **weather-only** tick and return `intent` (`intent_weather_extend` or `""`). Stranger → `{ok, is_stranger: true, intent: ""}` (no tick). Response is `{ok, is_stranger, intent}` — no `speak`. Chipper `notifyFaceSeen` fires `FireWeatherIntent` when `intent` is the weather string; ignores `speak`.
 
 ```bash
 curl -s -X POST "$BASE/v1/state/face_seen" \
@@ -356,6 +358,7 @@ Per-FSM ops detail. Registered ids include `workday`, `joke_idle`, `morning_weat
 ```bash
 curl -s "$BASE/v1/behaviors/workday" | jq
 curl -s "$BASE/v1/behaviors/joke_idle" | jq
+curl -s "$BASE/v1/behaviors/morning_weather" | jq
 ```
 
 ---
@@ -385,7 +388,7 @@ Read-only GETs in one shot (not an HTTP route; shell helper):
 | `POST /v1/chat/completions` | LLM; SSE stream |
 | `POST /v1/chat/session/message` | LLM; mutates session |
 | `POST /v1/sensor_reaction` | LLM speak line |
-| `POST /v1/state/face_seen` | Face + presence mutation (no LLM) |
+| `POST /v1/state/face_seen` | Face + presence mutation; enrolled may return weather `intent` (does **not** arm Work Day; no LLM) |
 | `POST /v1/proactive_greeting` | Always updates face/presence; LLM only if greets |
 | `POST /v1/mood/reflect` | LLM mood rewrite + persist |
 | `POST /v1/soul/dream` | **Costly** LLM job; mutates soul + save |

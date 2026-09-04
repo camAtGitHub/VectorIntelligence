@@ -21,7 +21,8 @@ presence tick loop               BehaviorRuntime
   optional face probe              Continuity / SQLite as needed
                                      ↑
 HTTP (ops / debug)                 routes/* thin glue
-  POST /v1/behaviors/tick          ← only speak decision path for plugins
+  POST /v1/behaviors/tick          ← full “may I speak?” for plugins
+  POST /v1/state/face_seen         ← enrolled: weather-only tick (see §3.2)
   GET  /v1/behaviors/state         ← shared index (dictated envelope)
   GET  /v1/behaviors/<id>          ← per-FSM detail + debug
 ```
@@ -102,7 +103,9 @@ Optional but recommended:
 
 ### 3.2 HTTP: tick (chipper ↔ vector-ai)
 
-`POST /v1/behaviors/tick` is the **only** path that should advance “may I speak?” for behavior plugins. Per-FSM GETs are for **ops/debug**, not alternate speak engines.
+`POST /v1/behaviors/tick` is the **full** “may I speak?” path for behavior plugins: occupancy ingest, `clock_tick`, **all** enabled plugins, arbiter. Per-FSM GETs are for **ops/debug**, not alternate speak engines.
+
+**Narrow exception (morning weather only):** an **enrolled** `POST /v1/state/face_seen` (`face_id > 0` and a name) may run `BehaviorRuntime.tick(now, only_ids={"morning_weather"})` and return `{ok, is_stranger, intent}`. That restricted tick skips `clock_tick`, does **not** `ingest_tick_payload`, skips occupancy dwell, and does **not** return `speak`. Stranger `face_seen` does not tick. Work Day and joke idle stay on the 60s tick — do **not** call full `tick()` from `face_seen` (morning arm is not speech-gated; this path cannot arm `WORKING`). Still not a general speak engine.
 
 **Request (conceptual):**
 
@@ -125,6 +128,7 @@ Optional but recommended:
 {
   "speak": "… or empty …",
   "need_identity": false,
+  "intent": "intent_weather_extend or empty",
   "debug": {}
 }
 ```
@@ -133,6 +137,7 @@ Optional but recommended:
 
 - If `speak` is non-empty → **deliver it** (server already applied quiet/gap/voice policy). Do not second-guess with post-HTTP “recent conversation” drops that leave server timers advanced.  
 - If `need_identity` → short face probe, then tick again with `face`.  
+- Idle enrolled `ProbeFace` (sparse / `need_identity`) POSTs `face_seen` **before** the 60s tick; if that response `intent` is `intent_weather_extend` → `FireWeatherIntent` (WebViz). Ignore `speak`. Voice-start `ObserveFaceBriefly` still notifies (arbiter `recent_voice` denies weather).  
 - Always `Close()` robot connections; no continuous `robot_observed_face` stream for occupancy.
 
 ### 3.3 HTTP: shared state index (dictated envelope)

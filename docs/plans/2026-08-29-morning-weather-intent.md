@@ -1,7 +1,8 @@
 # Morning weather intent
 
 **Status:** implemented 2026-08-29. Owner’s guide: [docs/FSM-morning-weather.md](../FSM-morning-weather.md).  
-**Follow-up (delivery bug):** proactive path must not use AppIntent — see [2026-09-02-fireweather-webviz-cloud-intent.md](./2026-09-02-fireweather-webviz-cloud-intent.md) (WebViz WS cloud inject; proven on robot 2026-09-02).
+**Follow-up (delivery bug):** proactive path must not use AppIntent — see [2026-09-02-fireweather-webviz-cloud-intent.md](./2026-09-02-fireweather-webviz-cloud-intent.md) (WebViz WS cloud inject; proven on robot 2026-09-02).  
+**Follow-up (identity + restricted tick):** enrolled-face gate + weather-only tick from enrolled `face_seen` shipped 2026-09-04 — see [2026-09-04-morning-weather-face-seen-restricted-tick.md](./2026-09-04-morning-weather-face-seen-restricted-tick.md).
 
 ## What
 
@@ -19,7 +20,7 @@ Not an LLM one-liner. Use the existing weather stack (chipper `weatherParser` + 
 
 - Workday FSM in a live working mode (morning-armed `working`, not `off` / `no_show` / `past_end`).
 - Local `WORKDAY_TZ` clock from morning start through lunch (lunch end is **not** a knob yet — add e.g. `WORKDAY_LUNCH_END=12:30` or hard-default 12:00).
-- Occupied desk, identity same manners as other morning pokes.
+- Occupied desk, identity same manners as other morning pokes. **Shipped 2026-09-04:** enrolled named face (`face_id>0`, Work Day primary when set) within `MORNING_WEATHER_FACE_MAX_AGE_S` (default 90s); enrolled `face_seen` runs a weather-only tick (does not arm Work Day).
 - Once per calendar day, speech-gated (don’t burn the day if the arbiter denies).
 - Quiet / recent-voice / min-gap still apply.
 
