@@ -239,6 +239,8 @@ class MorningWeatherConfig:
     window_begin: tuple[int, int] = (9, 0)
     lunch_end: tuple[int, int] = (12, 30)
     min_dwell_s: int = 60
+    # Enrolled-face freshness for weather (not FACE_CACHE_MAX_AGE_S / 1800).
+    face_max_age_s: int = 90
     tz: tzinfo = field(default_factory=_default_tz)
 
 
@@ -265,6 +267,7 @@ def load_morning_weather_config(
             window_begin=window_begin,
             lunch_end=_hhmm(env, "MORNING_WEATHER_LUNCH_END", "12:30"),
             min_dwell_s=_int(env, "MORNING_WEATHER_MIN_DWELL_S", 60),
+            face_max_age_s=_int(env, "MORNING_WEATHER_FACE_MAX_AGE_S", 90),
             tz=tz,
         )
     except Exception as e:

@@ -116,6 +116,8 @@ class BehaviorRuntime:
             or 0.0
         )
         last_user_voice_at = float(self.voice_ts_fn() or 0.0)
+        identity_fresh = self.presence.identity_fresh(now)
+        face_ts = float(getattr(snap, "face_ts", 0.0) or 0.0)
         cards: Dict[str, Any] = {}
         for b in self.behaviors:
             summary_fn = getattr(b, "status_summary", None)
@@ -130,6 +132,9 @@ class BehaviorRuntime:
                                 presence_updated_at=presence_updated_at,
                                 occupied=occupied,
                                 last_user_voice_at=last_user_voice_at,
+                                face=snap.face,
+                                face_ts=face_ts,
+                                identity_fresh=identity_fresh,
                             )
                             or "ok"
                         )
@@ -190,6 +195,8 @@ class BehaviorRuntime:
         presence_updated_at = float(snap.updated_at or 0.0)
         session_started_at = float(getattr(snap, "session_started_at", 0.0) or 0.0)
         last_user_voice_at = float(self.voice_ts_fn() or 0.0)
+        identity_fresh = self.presence.identity_fresh(now)
+        face_ts = float(getattr(snap, "face_ts", 0.0) or 0.0)
 
         status_fn = getattr(b, "status", None)
         if callable(status_fn):
@@ -200,6 +207,9 @@ class BehaviorRuntime:
                     presence_updated_at=presence_updated_at,
                     occupied=occupied,
                     last_user_voice_at=last_user_voice_at,
+                    face=snap.face,
+                    face_ts=face_ts,
+                    identity_fresh=identity_fresh,
                 )
             except TypeError:
                 # Status methods that only take now
@@ -392,6 +402,9 @@ class BehaviorRuntime:
                     "outside morning-lunch window",
                     "already told weather today",
                     "ready to tell weather",
+                    "need enrolled face",
+                    "stranger or non-primary",
+                    "enrolled face too old",
                 ):
                     blog(
                         _TAG,
