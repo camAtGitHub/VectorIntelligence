@@ -322,11 +322,13 @@ class BehaviorRuntime:
         if self.workday is not None:
             self.workday.clock_tick(now, local_dt)
 
-    def tick(self, now: float) -> TickResult:
+    def tick(self, now: float, *, only_ids: Optional[set[str]] = None) -> TickResult:
         from .types import BehaviorContext
 
         local_dt = self._local_dt(now)
-        self.clock_tick(now)
+        # Restricted allowlist (enrolled face_seen): no calendar clock_tick.
+        if only_ids is None:
+            self.clock_tick(now)
 
         quiet = bool(self.quiet_fn())
         voice_ts = float(self.voice_ts_fn() or 0.0)
@@ -350,10 +352,15 @@ class BehaviorRuntime:
         for b in self.behaviors:
             if not b.enabled():
                 continue
+            if only_ids is not None and b.id not in only_ids:
+                continue
             # Note: min_tick_interval attributes on plugins are reserved for a
             # future multi-FSM throttle; runtime does not skip ticks today
             # (would change chipper cadence). Always plan when enabled.
-            r = b.tick(ctx)
+            if only_ids is not None and b.id == MORNING_WEATHER_ID:
+                r = b.tick(ctx, skip_dwell=True)
+            else:
+                r = b.tick(ctx)
             if r.need_identity:
                 need_identity = True
             candidates.append((b, r))

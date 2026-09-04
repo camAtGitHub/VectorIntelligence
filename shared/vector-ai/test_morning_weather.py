@@ -6,18 +6,21 @@ Run from VectorIntelligence repo root:
 from __future__ import annotations
 
 import ast
+import asyncio
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from behaviors.config import (
+    JokeConfig,
     MorningWeatherConfig,
     WorkdayConfig,
     load_morning_weather_config,
     load_runtime_config,
 )
 from behaviors.continuity import ContinuityStore, WorkdayRecord
+from behaviors.joke_idle import JOKE_IDLE_ID, JokeIdleBehavior
 from behaviors.morning_weather import (
     MORNING_WEATHER_ID,
     REASON_DWELL,
@@ -40,6 +43,7 @@ from behaviors.types import (
     PresenceSnapshot,
     WorkdayMode,
 )
+from behaviors.workday import WorkDayBehavior
 
 
 def check(name: str, cond: bool) -> None:
@@ -593,3 +597,245 @@ def test_anti_patterns() -> None:
                 "no service from",
                 not (node.module and node.module.startswith("service")),
             )
+    face_src = (root / "routes" / "face.py").read_text(encoding="utf-8")
+    check("face_seen does not ingest", "ingest_tick_payload" not in face_src)
+    check("face_seen restricted only_ids", "only_ids=" in face_src)
+    check("face_seen does not return speak key", '"speak"' not in face_src)
+    rt_src = (root / "behaviors" / "runtime.py").read_text(encoding="utf-8")
+    check("runtime only_ids param", "only_ids" in rt_src)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: restricted tick (only_ids) + enrolled face_seen hook
+# ---------------------------------------------------------------------------
+
+_PHASE2_NOW = datetime(2026, 8, 29, 10, 10, tzinfo=ZoneInfo("UTC")).timestamp()
+_PHASE2_DATE = "2026-08-29"
+
+
+def _phase2_runtime(
+    store: ContinuityStore,
+    *,
+    behaviors: str = "workday,morning_weather",
+    min_gap: str = "0",
+    suppress_voice: str = "0",
+    weather_dwell: int = 60,
+    joke: bool = False,
+) -> BehaviorRuntime:
+    env = {
+        "BEHAVIORS_ENABLED": behaviors,
+        "SPEECH_MIN_GAP_S": min_gap,
+        "SPEECH_SUPPRESS_AFTER_VOICE_S": suppress_voice,
+    }
+    if joke and JOKE_IDLE_ID not in behaviors.split(","):
+        env["BEHAVIORS_ENABLED"] = f"{behaviors},{JOKE_IDLE_ID}"
+    return BehaviorRuntime(
+        load_runtime_config(env),
+        _wd_cfg(),
+        store,
+        joke_cfg=JokeConfig(enabled=True) if joke else None,
+        weather_cfg=_wx_cfg(min_dwell_s=weather_dwell),
+        voice_ts_fn=lambda: 0.0,
+    )
+
+
+def _waiting_morning(store: ContinuityStore) -> None:
+    store.save_workday(
+        WorkdayRecord(
+            date=_PHASE2_DATE,
+            mode=WorkdayMode.WAITING_MORNING,
+        )
+    )
+
+
+def _call_face_seen(
+    monkeypatch,
+    rt: BehaviorRuntime,
+    *,
+    face_id: int = 1,
+    name: str = "Cam",
+    now: float | None = None,
+    soul=None,
+):
+    import deps
+    from routes.face import state_face_seen
+    from routes.models import FaceSeenRequest
+
+    frozen = _PHASE2_NOW if now is None else now
+    monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+    monkeypatch.setattr(deps, "SOUL", soul, raising=False)
+    monkeypatch.setattr("routes.face._time.time", lambda: frozen)
+    return asyncio.run(state_face_seen(FaceSeenRequest(face_id=face_id, name=name)))
+
+
+def test_restricted_tick_does_not_run_workday_or_clock() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        _waiting_morning(store)
+        rt = _phase2_runtime(store, joke=True)
+        rt.ingest_tick_payload(
+            now=_PHASE2_NOW,
+            occupied=True,
+            voice_recent=False,
+            face=_CAM_FACE_PAYLOAD,
+            hard_face=True,
+        )
+        calls = {"workday": 0, "joke": 0, "clock": 0}
+        orig_wd = WorkDayBehavior.tick
+        orig_joke = JokeIdleBehavior.tick
+        orig_clock = rt.clock_tick
+
+        def _wd(self, ctx):
+            calls["workday"] += 1
+            return orig_wd(self, ctx)
+
+        def _joke(self, ctx):
+            calls["joke"] += 1
+            return orig_joke(self, ctx)
+
+        def _clock(now):
+            calls["clock"] += 1
+            return orig_clock(now)
+
+        WorkDayBehavior.tick = _wd  # type: ignore[method-assign]
+        JokeIdleBehavior.tick = _joke  # type: ignore[method-assign]
+        rt.clock_tick = _clock  # type: ignore[method-assign]
+        try:
+            result = rt.tick(_PHASE2_NOW, only_ids={MORNING_WEATHER_ID})
+        finally:
+            WorkDayBehavior.tick = orig_wd  # type: ignore[method-assign]
+            JokeIdleBehavior.tick = orig_joke  # type: ignore[method-assign]
+            rt.clock_tick = orig_clock  # type: ignore[method-assign]
+        rec = store.load_workday(_PHASE2_DATE)
+        check("workday tick skipped", calls["workday"] == 0)
+        check("joke tick skipped", calls["joke"] == 0)
+        check("clock_tick skipped", calls["clock"] == 0)
+        check("still waiting_morning", rec.mode == WorkdayMode.WAITING_MORNING)
+        check("weather skips when not working", result.intent == "")
+
+
+def test_face_seen_enrolled_working_returns_weather_intent(monkeypatch) -> None:
+    from soul import Soul
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        _arm_working(store, _PHASE2_DATE, _PHASE2_NOW)
+        rt = _phase2_runtime(store, joke=True)
+        soul = Soul(presence=rt.presence)
+        ingest_calls = {"n": 0}
+        orig_ingest = rt.ingest_tick_payload
+
+        def _ingest(*a, **k):
+            ingest_calls["n"] += 1
+            return orig_ingest(*a, **k)
+
+        rt.ingest_tick_payload = _ingest  # type: ignore[method-assign]
+        wd_calls = {"n": 0}
+        joke_calls = {"n": 0}
+        orig_wd = WorkDayBehavior.tick
+        orig_joke = JokeIdleBehavior.tick
+
+        def _wd(self, ctx):
+            wd_calls["n"] += 1
+            return orig_wd(self, ctx)
+
+        def _joke(self, ctx):
+            joke_calls["n"] += 1
+            return orig_joke(self, ctx)
+
+        WorkDayBehavior.tick = _wd  # type: ignore[method-assign]
+        JokeIdleBehavior.tick = _joke  # type: ignore[method-assign]
+        try:
+            body = _call_face_seen(monkeypatch, rt, soul=soul)
+        finally:
+            WorkDayBehavior.tick = orig_wd  # type: ignore[method-assign]
+            JokeIdleBehavior.tick = orig_joke  # type: ignore[method-assign]
+        check("ok", body["ok"] is True)
+        check("not stranger", body["is_stranger"] is False)
+        check("weather intent", body["intent"] == WEATHER_INTENT)
+        check("no speak key", "speak" not in body)
+        check(
+            "daily committed",
+            store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == _PHASE2_NOW,
+        )
+        check("last_source face_seen", rt.presence.last_source == "face_seen")
+        check("no ingest_tick_payload", ingest_calls["n"] == 0)
+        check("workday not ticked", wd_calls["n"] == 0)
+        check("joke not ticked", joke_calls["n"] == 0)
+        rec = store.load_workday(_PHASE2_DATE)
+        check("still working", rec.mode == WorkdayMode.WORKING)
+
+        again = rt.tick(_PHASE2_NOW)
+        check("full tick no second weather", again.intent == "")
+        check(
+            "daily still once",
+            store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == _PHASE2_NOW,
+        )
+
+
+def test_face_seen_waiting_morning_does_not_arm(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        _waiting_morning(store)
+        rt = _phase2_runtime(store)
+        body = _call_face_seen(monkeypatch, rt)
+        check("no intent", body["intent"] == "")
+        check("not stranger", body["is_stranger"] is False)
+        rec = store.load_workday(_PHASE2_DATE)
+        check("did not arm", rec.mode == WorkdayMode.WAITING_MORNING)
+        check("no weather commit", store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == 0.0)
+
+
+def test_face_seen_stranger_skips_restricted_tick(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        _arm_working(store, _PHASE2_DATE, _PHASE2_NOW)
+        rt = _phase2_runtime(store)
+        ticks = {"n": 0}
+        orig = rt.tick
+
+        def _tick(*a, **k):
+            ticks["n"] += 1
+            return orig(*a, **k)
+
+        rt.tick = _tick  # type: ignore[method-assign]
+        body = _call_face_seen(monkeypatch, rt, face_id=-3, name="guest")
+        check("stranger flag", body["is_stranger"] is True)
+        check("intent empty", body["intent"] == "")
+        check("runtime tick not called", ticks["n"] == 0)
+        check(
+            "stranger does not commit",
+            store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == 0.0,
+        )
+
+        ticks["n"] = 0
+        body2 = _call_face_seen(monkeypatch, rt, face_id=1, name="")
+        check("empty name stranger", body2["is_stranger"] is True)
+        check("empty name no intent", body2["intent"] == "")
+        check("empty name no tick", ticks["n"] == 0)
+
+
+def test_face_seen_arbiter_min_gap_does_not_commit(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        _arm_working(store, _PHASE2_DATE, _PHASE2_NOW)
+        rt = _phase2_runtime(store, min_gap="90")
+        rt.arbiter.record_speech(_PHASE2_NOW - 10.0)
+        body = _call_face_seen(monkeypatch, rt)
+        check("denied intent empty", body["intent"] == "")
+        check(
+            "daily untouched",
+            store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == 0.0,
+        )
+
+
+def test_face_seen_weather_unregistered_intent_empty(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        _arm_working(store, _PHASE2_DATE, _PHASE2_NOW)
+        rt = _phase2_runtime(store, behaviors="workday")
+        body = _call_face_seen(monkeypatch, rt)
+        check("ok enrolled", body["ok"] is True)
+        check("not stranger", body["is_stranger"] is False)
+        check("empty allowlist intent", body["intent"] == "")
+        check("no commit", store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == 0.0)

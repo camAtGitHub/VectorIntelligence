@@ -96,7 +96,21 @@ async def state_face_seen(req: FaceSeenRequest):
                 )
         except Exception as e:
             print(f"[face] presence mirror failed: {e}")
-    return {"ok": True, "is_stranger": is_stranger}
+
+    # Enrolled sighting may fire morning weather via a weather-only tick.
+    # Occupancy stays note_face/note_person (no tick-payload ingest).
+    # Do not return speak; chipper honors intent only.
+    intent = ""
+    if not is_stranger:
+        rt = getattr(deps, "BEHAVIOR_RUNTIME", None)
+        if rt is not None:
+            from behaviors.morning_weather import MORNING_WEATHER_ID
+
+            result = rt.tick(now, only_ids={MORNING_WEATHER_ID})
+            intent = (getattr(result, "intent", None) or "")
+            if intent:
+                print(f"[face] intent: {intent!r}")
+    return {"ok": True, "is_stranger": is_stranger, "intent": intent}
 
 
 @router.get("/v1/state/face")
