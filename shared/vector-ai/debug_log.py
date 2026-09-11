@@ -1,7 +1,6 @@
 """Debug flag parsing, payload redaction, and debug() logger for vector-ai."""
 import json
 import os
-from datetime import datetime
 from typing import Any
 
 from logging_util import print  # noqa: F401 - use timestamped print
@@ -92,8 +91,9 @@ def debug(msg: str, data: Any = None) -> None:
     if not DEBUG:
         return
     try:
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"{ts} [debug] {msg}"
+        # logging_util.print adds timestamp + [file:function:line]; skip
+        # debug() itself so the line points at the real call site.
+        line = f"[debug] {msg}"
         if data is not None:
             try:
                 payload = json.dumps(data, ensure_ascii=False, default=str, indent=2)

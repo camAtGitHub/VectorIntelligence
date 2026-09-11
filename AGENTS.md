@@ -164,7 +164,7 @@ shared/
   vector-ai/             FastAPI brain (uvicorn service:app)
     service.py           Composition root only: deps, startup loops, register_routes
     paths.py             ROOT install dir (memory.db / persona.txt)
-    logging_util.py      Timestamped print + access-log filter
+    logging_util.py      Timestamped print with file:function:line + access-log filter
     debug_log.py         DEBUG flag, redaction, debug()
     llm.py               OpenRouter/OpenAI-compatible transport + llm_chat_once
     persona.py           Re-export PERSONA (= PERSONA_FULL) for chat back-compat

@@ -1,5 +1,6 @@
 """Timestamped print wrapper and stdlib logging formatters for vector-ai."""
 import logging
+import os
 import sys
 from datetime import datetime
 
@@ -24,7 +25,11 @@ _configure_stdio()
 
 _orig_print = print
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
-_LOG_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+# loguru-style location: file:function:line (filename is the basename).
+_LOG_FMT = (
+    "%(asctime)s [%(filename)s:%(funcName)s:%(lineno)d] "
+    "%(levelname)s %(name)s: %(message)s"
+)
 
 
 def _safe_write(dest, text: str, *, end: str = "\n") -> None:
@@ -37,8 +42,26 @@ def _safe_write(dest, text: str, *, end: str = "\n") -> None:
         _orig_print(safe, end=end, file=dest, flush=True)
 
 
+def _caller_loc() -> str:
+    """Return `file:function:line` for the first non-logging caller frame."""
+    try:
+        frame = sys._getframe(1)
+    except (ValueError, AttributeError):
+        return "?:?:?"
+    while frame is not None:
+        filename = os.path.basename(frame.f_code.co_filename)
+        func = frame.f_code.co_name
+        if filename == "logging_util.py" or (
+            filename == "debug_log.py" and func == "debug"
+        ):
+            frame = frame.f_back
+            continue
+        return f"{filename}:{func}:{frame.f_lineno}"
+    return "?:?:?"
+
+
 def print(*args, sep=" ", end="\n", file=None, flush=True):  # noqa: A001 - intentional wrap
-    """Prefix lines with YYYY-MM-DD HH:MM:SS for log files.
+    """Prefix lines with `YYYY-MM-DD HH:MM:SS [file:function:line]` for log files.
 
     Never raises UnicodeEncodeError: non-encodable chars are replaced or
     backslash-escaped so request handlers can keep returning LLM text.
@@ -63,7 +86,7 @@ def print(*args, sep=" ", end="\n", file=None, flush=True):  # noqa: A001 - inte
     if len(msg) >= 19 and msg[4:5] == "-" and msg[7:8] == "-" and msg[10:11] == " ":
         _safe_write(dest, msg, end=end)
     else:
-        _safe_write(dest, f"{ts} {msg}", end=end)
+        _safe_write(dest, f"{ts} [{_caller_loc()}] {msg}", end=end)
 
 
 def _apply_log_timestamps() -> None:

@@ -975,6 +975,55 @@ def test_ambient_quiet_expires_on_sleep_gap(tmp_path, monkeypatch):
     assert result.get("text", "") == ""
 
 
+def test_print_includes_caller_location(capsys):
+    """stdio print() stamps file:function:line of the call site, not logging_util."""
+    from logging_util import print as vprint
+
+    vprint("hello-loc")
+    out = capsys.readouterr().out
+    assert "hello-loc" in out
+    assert (
+        "[test_service_modules.py:test_print_includes_caller_location:" in out
+    ), out
+    assert "logging_util.py" not in out.split("hello-loc")[0]
+
+
+def test_debug_includes_caller_location_not_debug_helper(monkeypatch, capsys):
+    """debug() must not stamp itself; location is the real caller."""
+    import debug_log
+
+    monkeypatch.setattr(debug_log, "DEBUG", True)
+    debug_log.debug("loc-check")
+    out = capsys.readouterr().out
+    assert "[debug] loc-check" in out
+    assert (
+        "[test_service_modules.py:test_debug_includes_caller_location_not_debug_helper:"
+        in out
+    ), out
+    prefix = out.split("loc-check")[0]
+    assert "debug_log.py" not in prefix
+
+
+def test_stdlib_formatter_renders_file_func_line():
+    import logging
+    from logging_util import _LOG_DATEFMT, _LOG_FMT
+
+    rec = logging.LogRecord(
+        name="behaviors",
+        level=logging.INFO,
+        pathname="/tmp/workday.py",
+        lineno=88,
+        msg="poke",
+        args=(),
+        exc_info=None,
+        func="tick",
+    )
+    text = logging.Formatter(_LOG_FMT, datefmt=_LOG_DATEFMT).format(rec)
+    assert "[workday.py:tick:88]" in text
+    assert "INFO" in text
+    assert "poke" in text
+
+
 def test_print_survives_charmap_stream():
     """Windows cp1252/charmap must not raise when printing Hangul (sensor path)."""
     import io
