@@ -147,10 +147,9 @@ Stop **brain only**:
 ```text
 %USERPROFILE%\vector-pod\supervisor.log
 %USERPROFILE%\vector-pod\vector-ai.log
-%USERPROFILE%\vector-pod\vector-ai\vector-ai-debug.log   (only if debug on)
 ```
 
-Timestamped; rotate ~10 MB.
+Timestamped; rotate ~10 MB. `VECTORAI_DEBUG=1` dumps payloads into `vector-ai.log` (stdout); there is no separate debug file.
 
 **Debug payload logging** (what Wire-Pod sends / what goes to OpenRouter):
 

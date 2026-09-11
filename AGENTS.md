@@ -163,7 +163,7 @@ linux/                   install + start/stop + apply-config
 shared/
   vector-ai/             FastAPI brain (uvicorn service:app)
     service.py           Composition root only: deps, startup loops, register_routes
-    paths.py             ROOT install dir (memory.db / persona.txt / debug log)
+    paths.py             ROOT install dir (memory.db / persona.txt)
     logging_util.py      Timestamped print + access-log filter
     debug_log.py         DEBUG flag, redaction, debug()
     llm.py               OpenRouter/OpenAI-compatible transport + llm_chat_once
@@ -271,7 +271,7 @@ one-shot move from an old `.env`: `windows/migrate-behavior-config.ps1` or
 | `MEMORY_INJECT_PERSONAL` | Max personal facts in chat system inject (default `8`) |
 | `MEMORY_INJECT_SHARED` | Max shared facts in chat system inject (default `4`) |
 | `MEMORY_INJECT_MENTIONS` | Max “others mentioned this face” facts (default `3`) |
-| `VECTORAI_DEBUG` | Verbose request/response logs (images redacted) |
+| `VECTORAI_DEBUG` | Verbose request/response logs to vector-ai.log (images redacted) |
 
 **`pod.conf` (stack / deploy):**
 

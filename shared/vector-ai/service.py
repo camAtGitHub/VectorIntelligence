@@ -32,7 +32,7 @@ from fastapi import FastAPI
 
 import deps
 import process_state
-from debug_log import DEBUG, DEBUG_MAX_CHARS, _DEBUG_LOG_PATH, debug  # noqa: F401
+from debug_log import DEBUG, DEBUG_MAX_CHARS, debug  # noqa: F401
 from llm import (  # noqa: F401 — re-exports for joke_sources / tools
     LLM_API_KEY,
     LLM_BASE_URL,
@@ -164,7 +164,7 @@ async def _configure_access_log() -> None:
     logging.getLogger("uvicorn.access").addFilter(_SkipHealthAccessLog())
     if DEBUG:
         print(
-            f"[vector-ai] DEBUG logging ON -> stdout + {_DEBUG_LOG_PATH.name} "
+            f"[vector-ai] DEBUG logging ON -> stdout (vector-ai.log) "
             f"(max_chars={DEBUG_MAX_CHARS})"
         )
     else:

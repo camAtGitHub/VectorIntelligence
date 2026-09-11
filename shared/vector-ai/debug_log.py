@@ -2,14 +2,13 @@
 import json
 import os
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from paths import ROOT
 from logging_util import print  # noqa: F401 - use timestamped print
 
 # Debug: VECTORAI_DEBUG=1 / DEBUG=1 / LOG_LEVEL=debug
-# Logs request/response payloads (images redacted) to stdout and vector-ai-debug.log
+# Logs request/response payloads (images redacted) to stdout. Supervisor
+# captures that into vector-ai.log — there is no second debug file.
 _DEBUG_RAW = (
     os.getenv("VECTORAI_DEBUG")
     or os.getenv("DEBUG")
@@ -21,8 +20,6 @@ try:
     DEBUG_MAX_CHARS = max(200, int(os.getenv("VECTORAI_DEBUG_MAX_CHARS", "4000")))
 except ValueError:
     DEBUG_MAX_CHARS = 4000
-_DEBUG_LOG_PATH = ROOT / "vector-ai-debug.log"
-_DEBUG_LOG_MAX = 10 * 1024 * 1024  # rotate debug log at 10 MB
 
 
 def _redact_content(content: Any) -> Any:
@@ -82,18 +79,11 @@ def _redact_body(body: dict) -> dict:
     return b
 
 
-def _debug_rotate() -> None:
-    try:
-        if _DEBUG_LOG_PATH.exists() and _DEBUG_LOG_PATH.stat().st_size > _DEBUG_LOG_MAX:
-            old = _DEBUG_LOG_PATH.with_suffix(".log.old")
-            old.unlink(missing_ok=True)
-            _DEBUG_LOG_PATH.rename(old)
-    except OSError:
-        pass
-
-
 def debug(msg: str, data: Any = None) -> None:
-    """Write a debug line to stdout and vector-ai-debug.log when DEBUG is on.
+    """Write a debug line to stdout when DEBUG is on.
+
+    Supervisor captures stdout into vector-ai.log. There is no second
+    debug file.
 
     Must never raise: callers (llm_chat_once, sensor_reaction, …) invoke this
     on the hot path after a successful upstream reply. A Windows charmap
@@ -113,12 +103,6 @@ def debug(msg: str, data: Any = None) -> None:
                 payload = payload[: DEBUG_MAX_CHARS * 4] + f"\n... <truncated>"
             line = f"{line}\n{payload}"
         print(line)
-        try:
-            _debug_rotate()
-            with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except OSError:
-            pass
     except Exception:
         # Last-resort: debug must never abort a request handler.
         pass

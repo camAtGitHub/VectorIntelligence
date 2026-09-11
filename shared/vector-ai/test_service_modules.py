@@ -1006,6 +1006,24 @@ def test_print_survives_charmap_stream():
     assert "\\uba7f" in joined or "\\u" in joined
 
 
+def test_debug_writes_stdout_not_a_second_file(monkeypatch):
+    """VECTORAI_DEBUG dumps to stdout only (supervisor captures vector-ai.log)."""
+    import debug_log
+    from paths import ROOT
+
+    path = ROOT / "vector-ai-debug.log"
+    before = path.stat().st_size if path.exists() else None
+    printed = []
+    monkeypatch.setattr(debug_log, "DEBUG", True)
+    monkeypatch.setattr(debug_log, "print", lambda *a, **k: printed.append(a[0] if a else ""))
+    debug_log.debug("no-second-file", {"k": 1})
+    assert printed and "no-second-file" in printed[0]
+    if before is None:
+        assert not path.exists()
+    else:
+        assert path.stat().st_size == before
+
+
 def test_llm_chat_once_returns_non_ascii_despite_debug_print(monkeypatch):
     """Regression: Hangul in model reply used to die inside debug() print.
 

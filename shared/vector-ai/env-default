@@ -62,7 +62,7 @@ LLM_TIMEOUT_READ=120
 # MEMORY_INJECT_MENTIONS=3
 
 # Debug: log Wire-Pod requests + OpenRouter send/recv (images redacted).
-# Writes to vector-ai.log (stdout) AND vector-ai-debug.log next to service.py.
+# Writes to stdout; supervisor captures that in vector-ai.log (no second file).
 # VECTORAI_DEBUG=1
 # VECTORAI_DEBUG_MAX_CHARS=4000
 

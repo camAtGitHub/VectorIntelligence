@@ -266,7 +266,7 @@ Voice/pairing ports **443 / 80 / 8084** stay fixed (Vector expects them).
 | File | Content |
 |------|---------|
 | `supervisor.log` | Process manager (timestamped) |
-| `vector-ai.log` | Brain (timestamped); `/health` access lines suppressed |
+| `vector-ai.log` | Brain (timestamped); `/health` suppressed; `VECTORAI_DEBUG=1` payloads here |
 | `chipper.log` | Full install only |
 
 Rotated at ~**10 MB** (`.old` kept).
