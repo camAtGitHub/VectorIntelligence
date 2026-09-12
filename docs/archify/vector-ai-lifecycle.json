@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "vector-ai Application Lifecycle",
+    "locale": "en",
+    "output": "docs/archify/vector-ai-lifecycle.html",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 720],
+    "views": [
+      {
+        "id": "main-path",
+        "label": "Main path",
+        "focus": ["boot", "ready", "ingest", "policy", "deliver"],
+        "note": "Boot wiring through ready serve, request ingest, policy, and Wire-Pod delivery."
+      },
+      {
+        "id": "speech-gates",
+        "label": "Speech and identity gates",
+        "focus": ["policy", "quiet", "need_identity", "deliver"],
+        "note": "Quiet/voice suppress and need_identity pause proactive speech without stopping the process."
+      },
+      {
+        "id": "faults-and-exit",
+        "label": "Faults and process exit",
+        "focus": ["policy", "llm_error", "ready", "deliver", "stopped"],
+        "note": "LLM faults return to ready; supervisor stop is shown from Deliver."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "Runtime phases" },
+    { "id": "gates", "label": "Speech and identity waits" },
+    { "id": "recovery", "label": "Upstream faults" },
+    { "id": "terminal", "label": "Process exit" }
+  ],
+  "states": [
+    {
+      "id": "boot",
+      "type": "start",
+      "label": "Boot",
+      "sublabel": "env · Memory · Soul",
+      "lane": "main",
+      "col": 0,
+      "step": "01",
+      "tag": "startup"
+    },
+    {
+      "id": "ready",
+      "type": "active",
+      "label": "Ready",
+      "sublabel": ":8090 · background loops",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "tag": "serving"
+    },
+    {
+      "id": "ingest",
+      "type": "active",
+      "label": "Ingest",
+      "sublabel": "chat · tick · ambient",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "HTTP"
+    },
+    {
+      "id": "policy",
+      "type": "decision",
+      "label": "Policy",
+      "sublabel": "arbiter · memory · tags",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "tag": "brain"
+    },
+    {
+      "id": "deliver",
+      "type": "success",
+      "label": "Deliver",
+      "sublabel": "stream / speak",
+      "lane": "main",
+      "col": 4,
+      "step": "05",
+      "tag": "TTS"
+    },
+    {
+      "id": "quiet",
+      "type": "waiting",
+      "label": "Quiet suppress",
+      "sublabel": "SPEECH_* gates",
+      "lane": "gates",
+      "col": 0,
+      "tag": "pause"
+    },
+    {
+      "id": "need_identity",
+      "type": "waiting",
+      "label": "Need identity",
+      "sublabel": "face probe",
+      "lane": "gates",
+      "col": 1,
+      "tag": "wait"
+    },
+    {
+      "id": "llm_error",
+      "type": "failure",
+      "label": "LLM fault",
+      "sublabel": "OpenRouter / timeout",
+      "lane": "recovery",
+      "col": 1,
+      "yOffset": 78,
+      "tag": "retryable"
+    },
+    {
+      "id": "stopped",
+      "type": "failure",
+      "label": "Stopped",
+      "sublabel": "supervisor exit",
+      "lane": "terminal",
+      "col": 2,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "policy-quiet",
+      "from": "policy",
+      "to": "quiet",
+      "label": "suppress",
+      "variant": "security",
+      "route": "drop",
+      "labelAt": [520, 230]
+    },
+    {
+      "id": "policy-need-face",
+      "from": "policy",
+      "to": "need_identity",
+      "variant": "default",
+      "route": "drop"
+    },
+    {
+      "id": "quiet-ready",
+      "from": "quiet",
+      "to": "ready",
+      "label": "gates clear",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "bottom",
+      "via": [[100, 307], [100, 220], [248, 220]],
+      "labelAt": [100, 250]
+    },
+    {
+      "id": "face-back",
+      "from": "need_identity",
+      "to": "policy",
+      "variant": "emphasis",
+      "route": "straight",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "policy-llm-fail",
+      "from": "policy",
+      "to": "llm_error",
+      "label": "LLM error",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "right",
+      "via": [[630, 157], [630, 385]],
+      "labelAt": [630, 428]
+    },
+    {
+      "id": "llm-retry",
+      "from": "llm_error",
+      "to": "ready",
+      "label": "recover",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [[20, 385], [20, 80], [248, 80]],
+      "labelAt": [20, 240]
+    },
+    {
+      "id": "deliver-stop",
+      "from": "deliver",
+      "to": "stopped",
+      "label": "shutdown",
+      "variant": "security",
+      "route": "straight",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 28
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Main path",
+      "items": [
+        "service.py boots Memory, Soul, and BehaviorRuntime, then serves :8090",
+        "Ingest covers chat completions plus behavior tick, ambient, and sensor routes",
+        "After Deliver, the process stays Ready for the next turn until shutdown"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Gates and exits",
+      "items": [
+        "Quiet mode and SPEECH_SUPPRESS_AFTER_VOICE_S drop proactive lines without ending the process",
+        "need_identity is a juncture wait — occupancy stays sticky and cheap",
+        "LLM faults return to Ready; supervisor/process stop is the terminal exit"
+      ]
+    }
+  ]
+}
