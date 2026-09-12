@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "vector-ai Application Logic",
+    "locale": "en",
+    "output": "docs/archify/vector-ai-logic.html",
+    "quality_profile": "showcase",
+    "viewBox": [1120, 640],
+    "views": [
+      {
+        "id": "chat-path",
+        "label": "Chat knowledge path",
+        "focus": ["wirepod", "routes", "chat_path", "llm", "openrouter"],
+        "note": "Wire-Pod knowledge chat through assemble/stream and OpenRouter."
+      },
+      {
+        "id": "proactive-path",
+        "label": "Proactive behavior path",
+        "focus": ["wirepod", "routes", "soul", "behaviors", "arbiter"],
+        "note": "Tick/ambient enter BehaviorRuntime; SpeechArbiter gates proactive lines returned on the tick response."
+      },
+      {
+        "id": "memory-continuity",
+        "label": "Memory and continuity",
+        "focus": ["service", "chat_path", "behaviors", "memory"],
+        "note": "Composition root wires MemoryStore; chat inject and FSMs both read durable state."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "wirepod",
+      "type": "external",
+      "label": "Wire-Pod",
+      "sublabel": "STT · TTS · body",
+      "pos": [40, 270],
+      "size": [140, 60],
+      "tag": "chipper"
+    },
+    {
+      "id": "routes",
+      "type": "backend",
+      "label": "HTTP routes",
+      "sublabel": "FastAPI :8090",
+      "pos": [240, 270],
+      "size": [140, 60],
+      "tag": "/v1/*"
+    },
+    {
+      "id": "chat_path",
+      "type": "backend",
+      "label": "Chat path",
+      "sublabel": "assemble · stream · tags",
+      "pos": [460, 270],
+      "size": [150, 60],
+      "tag": "knowledge"
+    },
+    {
+      "id": "llm",
+      "type": "backend",
+      "label": "llm.py",
+      "sublabel": "OpenAI-compatible client",
+      "pos": [670, 270],
+      "size": [140, 60]
+    },
+    {
+      "id": "openrouter",
+      "type": "cloud",
+      "label": "OpenRouter",
+      "sublabel": "chat / vision / summary",
+      "pos": [880, 270],
+      "size": [140, 60],
+      "tag": "HTTPS"
+    },
+    {
+      "id": "service",
+      "type": "backend",
+      "label": "service.py",
+      "sublabel": "composition root",
+      "pos": [240, 120],
+      "size": [140, 56],
+      "tag": "wiring"
+    },
+    {
+      "id": "memory",
+      "type": "database",
+      "label": "MemoryStore",
+      "sublabel": "memory.db SQLite",
+      "pos": [460, 120],
+      "size": [150, 56],
+      "tag": "facts · desk · mood"
+    },
+    {
+      "id": "soul",
+      "type": "backend",
+      "label": "Soul",
+      "sublabel": "PresenceCache · goals",
+      "pos": [240, 420],
+      "size": [140, 56]
+    },
+    {
+      "id": "behaviors",
+      "type": "backend",
+      "label": "BehaviorRuntime",
+      "sublabel": "workday · joke · weather",
+      "pos": [460, 420],
+      "size": [150, 56],
+      "tag": "FSMs"
+    },
+    {
+      "id": "arbiter",
+      "type": "security",
+      "label": "SpeechArbiter",
+      "sublabel": "quiet · gap · voice",
+      "pos": [670, 420],
+      "size": [140, 56],
+      "tag": "proactive gate"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "vector-ai process",
+      "wraps": ["service", "routes", "chat_path", "llm", "behaviors", "arbiter", "soul", "memory"]
+    },
+    {
+      "kind": "security-group",
+      "label": "localhost trust :8090",
+      "wraps": ["routes", "chat_path", "behaviors"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "wp-routes",
+      "from": "wirepod",
+      "to": "routes",
+      "label": "HTTP /v1",
+      "variant": "emphasis"
+    },
+    {
+      "id": "routes-chat",
+      "from": "routes",
+      "to": "chat_path",
+      "label": "completions"
+    },
+    {
+      "id": "chat-llm",
+      "from": "chat_path",
+      "to": "llm",
+      "label": "messages"
+    },
+    {
+      "id": "llm-or",
+      "from": "llm",
+      "to": "openrouter",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "routes-behaviors",
+      "from": "routes",
+      "to": "behaviors",
+      "label": "tick / ambient",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "soul-behaviors",
+      "from": "soul",
+      "to": "behaviors",
+      "label": "presence"
+    },
+    {
+      "id": "behaviors-arbiter",
+      "from": "behaviors",
+      "to": "arbiter",
+      "label": "candidates",
+      "variant": "security",
+      "labelDy": 36
+    },
+    {
+      "id": "chat-memory",
+      "from": "chat_path",
+      "to": "memory",
+      "label": "inject",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "service-routes",
+      "from": "service",
+      "to": "routes",
+      "label": "register",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 20
+    },
+    {
+      "id": "service-memory",
+      "from": "service",
+      "to": "memory",
+      "label": "construct"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Chat knowledge path",
+      "items": [
+        "Wire-Pod → /v1/chat/completions → assemble/stream → OpenRouter",
+        "Tags stripped before TTS; ranked MemoryStore facts inject into prompts"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Proactive path",
+      "items": [
+        "BehaviorRuntime + SpeechArbiter gate Work Day / joke / weather lines",
+        "Allowed speak returns on the tick response for chipper delivery"
+      ]
+    }
+  ]
+}
