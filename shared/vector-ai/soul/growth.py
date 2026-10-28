@@ -14,8 +14,8 @@ from logging_util import print  # noqa: F401
 
 from .growth_prompts import DREAM_SYSTEM, build_dream_user_message
 
-# At most one dream job per ~local night (auto + chat tags).
-DREAM_DEBOUNCE_S = 20 * 3600
+# Allow possible dream, still relies on AMBIENT_SLEEP_GAP > 4hours  (auto + chat tags).
+DREAM_DEBOUNCE_S = 4 * 3600
 
 # Dream temperature a bit higher than pure summary extract.
 _DREAM_TEMPERATURE = 0.7

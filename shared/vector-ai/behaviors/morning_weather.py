@@ -1,7 +1,9 @@
-"""Morning weather FSM: once per live workday morning, fire built-in weather intent.
+"""Morning weather FSM: once per live workday (working or late_working), fire built-in weather intent.
 
-Pure and synchronous. No network/LLM in tick(). Daily commit only via
-on_speak_allowed (speech-gated). Chipper fires intent_weather_extend.
+Pure and synchronous. No network/LLM in tick(). Arbiter allow only *proposes*
+intent_weather_extend; the daily lock is committed when chipper POSTs
+/v1/behaviors/morning_weather/fired after a successful robot inject (or speak
+fallback). Committing on allow burned the day while robots stayed idle.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from .config import MorningWeatherConfig, minutes_since_midnight
 from .continuity import ContinuityStore, WorkdayRecord
 from .logutil import blog
 from .types import BehaviorContext, FaceIdentity, TickResult, WorkdayMode
-from .workday import _identified_primary
+
 
 MORNING_WEATHER_ID = "morning_weather"
 WEATHER_INTENT = "intent_weather_extend"
@@ -29,6 +31,21 @@ REASON_STRANGER = "stranger or non-primary"
 REASON_FACE_OLD = "enrolled face too old"
 REASON_READY = "ready to tell weather"
 REASON_PROPOSE = "proposing weather"
+
+_ARMED_MODES = (WorkdayMode.WORKING, WorkdayMode.LATE_WORKING)
+
+
+def _day_started(rec: WorkdayRecord) -> bool:
+    return rec.mode in _ARMED_MODES
+
+
+def _weather_enrolled(face: Optional[FaceIdentity]) -> bool:
+    """Any enrolled named face (not a stranger). Work Day primary is not required."""
+    if face is None or face.is_stranger:
+        return False
+    if face.face_id <= 0 or not (face.name or "").strip():
+        return False
+    return True
 
 
 def _in_window(local_dt: datetime, begin: tuple[int, int], end: tuple[int, int]) -> bool:
@@ -58,10 +75,10 @@ class MorningWeatherBehavior:
         face_ts: float,
         identity_fresh: bool,
     ) -> Optional[str]:
-        """Skip reason for enrolled/primary/freshness, or None if the face is ok."""
+        """Skip reason for enrolled/freshness, or None if the face is ok."""
         if not identity_fresh or face is None:
             return REASON_NEED_FACE
-        if not _identified_primary(face, rec):
+        if not _weather_enrolled(face):
             return REASON_STRANGER
         ts = float(face_ts or 0.0)
         if ts <= 0 or (now - ts) > float(self.cfg.face_max_age_s):
@@ -94,10 +111,10 @@ class MorningWeatherBehavior:
         mode = rec.mode.value if isinstance(rec.mode, WorkdayMode) else str(rec.mode)
         ts = float(face_ts or 0.0)
         face_age_s = (now - ts) if ts > 0 else None
-        enrolled_primary = bool(face is not None and _identified_primary(face, rec))
+        enrolled_primary = bool(face is not None and _weather_enrolled(face))
         face_reason = self._face_gate(now, rec, face, ts, identity_fresh)
 
-        if rec.mode != WorkdayMode.WORKING:
+        if not _day_started(rec):
             reason = REASON_NOT_WORKING
         elif not in_window:
             reason = REASON_WINDOW
@@ -186,7 +203,7 @@ class MorningWeatherBehavior:
             return r
 
         rec = self.store.load_workday(date)
-        if rec.mode != WorkdayMode.WORKING:
+        if not _day_started(rec):
             return _skip(REASON_NOT_WORKING, workday_mode=rec.mode.value)
 
         if not _in_window(local_dt, cfg.window_begin, cfg.lunch_end):
@@ -220,14 +237,7 @@ class MorningWeatherBehavior:
             if quiet_dwell < float(cfg.min_dwell_s):
                 return _skip(REASON_DWELL)
 
-        spoke_date, spoke_at = date, ctx.now
-
-        def _on_allowed() -> None:
-            self.store.weather_commit_fired(spoke_date, spoke_at)
-            blog(_TAG, f"fired {WEATHER_INTENT} [day committed]")
-
         r.intent = WEATHER_INTENT
-        r.on_speak_allowed = _on_allowed
         r.debug = {
             "mode": "idle",
             "reason": REASON_PROPOSE,
@@ -235,6 +245,7 @@ class MorningWeatherBehavior:
         }
         blog(
             _TAG,
-            f"want {WEATHER_INTENT} — waiting on speech arbiter",
+            f"want {WEATHER_INTENT} — waiting on speech arbiter "
+            "(day not committed until chipper injects)",
         )
         return r

@@ -1,5 +1,6 @@
 """POST /v1/behaviors/tick, GET /v1/behaviors/state (envelope v1), GET detail."""
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
@@ -82,6 +83,24 @@ async def behaviors_tick(req: BehaviorTickRequest):
     if DEBUG:
         out["debug"] = result.debug
     return out
+
+
+@router.post("/v1/behaviors/morning_weather/fired")
+async def morning_weather_fired():
+    """Chipper calls this after a successful robot weather inject (or speak fallback).
+
+    Arbiter allow only returns intent; it must not burn the daily lock.
+    """
+    rt = deps.BEHAVIOR_RUNTIME
+    now = time.time()
+    tz = timezone.utc
+    wcfg = getattr(rt, "workday_cfg", None)
+    if wcfg is not None and getattr(wcfg, "tz", None) is not None:
+        tz = wcfg.tz
+    date = datetime.fromtimestamp(now, tz=tz).date().isoformat()
+    rt.store.weather_commit_fired(date, now)
+    print(f"[behaviors] morning_weather fired committed date={date}")
+    return {"ok": True, "date": date, "last_fired_at": now}
 
 
 @router.get("/v1/behaviors/state")

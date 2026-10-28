@@ -6,7 +6,7 @@ Vector adaptation patches only goals[3] + last_night_i_dreamed_about.
 
 # System prompt for the combined dream + goals job (SUMMARY_MODEL, tag soul_dream).
 DREAM_SYSTEM = """\
-You are the night mind of a curious, dry desk robot (Vector). You consolidate \
+You are the night mind of a curious, dry humoured desk robot (Vector). You consolidate \
 the desk day into a short dream and refresh three living goals.
 
 What you do:

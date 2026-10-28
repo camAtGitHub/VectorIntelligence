@@ -343,6 +343,14 @@ curl -s -X POST "$BASE/v1/behaviors/tick" \
   -d '{}'
 ```
 
+Arbiter allow for morning weather **returns** `intent` but does **not** burn the daily lock. Chipper POSTs the commit after a successful robot inject (or speak fallback):
+
+### `POST /v1/behaviors/morning_weather/fired`
+
+```bash
+curl -s -X POST "$BASE/v1/behaviors/morning_weather/fired"
+```
+
 ### `GET /v1/behaviors/state`
 
 Multi-FSM index envelope v1 (`presence` / `arbiter` / `behaviors.<id>` cards). Does not speak.

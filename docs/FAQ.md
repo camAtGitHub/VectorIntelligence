@@ -59,19 +59,84 @@ Sources: `wire-pod/.../ttr/kgsim_cmds.go` (`getImage` / `DoGetImage`); `VectorIn
 - Constant: `DREAM_DEBOUNCE_S = 20 * 3600` in `shared/vector-ai/soul/growth.py` — “at most about once per local night.”
 - On each trigger, `run_dream_job` checks `last_dream_job_at`. If the last successful dream was **less than 20h ago** (and `force` is false), the job is **skipped**. If **≥20h** (or never dreamed), it runs immediately as a short LLM call, then updates soul and saves.
 - `last_dream_job_at` is **persisted in `soul.json`**, so restarts keep the cooldown; you do not “lose progress” on a 20h countdown by bouncing the process.
-
-**What actually triggers a dream (event-driven, not a 20h sleep):**
-
-| Path | When |
-|------|------|
-| Ambient sleep gap | First ambient call after a long quiet gap (`AMBIENT_SLEEP_GAP`); schedules dream if debounce elapsed (`routes/ambient.py`, reason `ambient_sleep_gap`) |
-| Chat tag | Assistant emits `{{soulDream}}` (stripped before speech; background schedule) |
-| Ops HTTP | `POST /v1/soul/dream` (optional `force: true` bypasses debounce) |
-| Goals-only | `POST /v1/soul/reflect_goals` (same job, cooler temperature) |
+- **Exception:** ops `POST /v1/soul/dream` with `force: true` (default on that endpoint) **bypasses** the 20h gate. Chat tag and ambient sleep gap always use `force=False`.
 
 So vector-ai only needs to be **up when a trigger fires** (e.g. morning ambient after overnight quiet). It does **not** need to remain running for 20 straight hours waiting for a timer.
 
-Source: `shared/vector-ai/soul/growth.py`, `routes/ambient.py`, `routes/soul.py`, `response_cleanup.py`, `soul/persist.py`.
+## How often and when is dreaming triggered?
+
+Three automatic/ops paths feed the same `run_dream_job` (reason string differs). Non-forced paths share the **20h debounce**.
+
+| Path | `reason` | Debounce |
+|------|----------|----------|
+| Ambient sleep gap | `ambient_sleep_gap` | Yes (`force=False`) |
+| Chat silent tag `{{soulDream}}` | `chat_tag` | Yes (`force=False`) |
+| Ops HTTP `POST /v1/soul/dream` | `http_dream` | Bypassed when `force=true` (default) |
+| Ops goals-only `POST /v1/soul/reflect_goals` | `http_reflect_goals` | Same force flag; cooler temp |
+
+### 1. Admin / ops (manual)
+
+`POST /v1/soul/dream` with JSON `{"force":true}` (see “How do I force the dreaming mechanism?”). Runs the LLM job immediately; mutates dream + goals + `last_dream_job_at`.
+
+### 2. Chat tag `{{soulDream}}` — and prompt instructions
+
+**Runtime:** After a chat reply, `response_cleanup` parses `{{soulDream}}` (case-insensitive), **strips it before speech**, and calls `maybe_schedule_dream_job(..., reason="chat_tag", force=False)`. The dream LLM does **not** block the spoken reply.
+
+**Prompt instructions today:** **None are injected.** The v2 plan called for a “SOUL GROWTH” teach line in `_build_memory_section` (when soul is live), but that line was **removed**. Tests assert `"SOUL GROWTH"` and `"{{soulDream}}"` are **absent** from the memory section (`test_soul_growth.py`). The tag still works if the model emits it by chance or from older habits; the live system prompt does **not** currently teach when to emit it.
+
+Planned (docs-only) wording from `docs/plans/2026-07-29-soul-v2-persist-llm-view.md` was roughly: when the human asks what you dreamed, or after a long day feels closed, emit `{{soulDream}}` once so a background dream consolidates — do not narrate the tag. Companion: `{{soulGoals||g1||g2||g3}}` (applied immediately, not debounced as a dream job).
+
+### 3. Ambient sleep gap — explicit trigger chain
+
+This is **not** a nightly cron. It fires on the **first `/v1/ambient` request after a long gap** with no ambient calls.
+
+1. **Chipper ambient loop** (`wire-pod/.../ttr/ambient.go`) normally POSTs a camera frame to `/v1/ambient` about every **3 minutes** when idle.
+2. During the host **night window 23:00–07:00** (`ambientNightStart`/`ambientNightEnd`), the loop **skips** glances (`ambientInNightHours`). Voice activity and calm/sleep power mode can also skip. Overnight (or any multi-hour stop) means `last_ambient_call` on vector-ai stops updating.
+3. When glances resume (e.g. after 07:00), chipper POSTs `/v1/ambient` again.
+4. In `routes/ambient.py`, before processing the glance:
+   - `sleep_gap = (now - last_ambient_call) > AMBIENT_SLEEP_GAP`
+   - `AMBIENT_SLEEP_GAP = 4 * 3600` (**4 hours**) in `process_state.py`
+5. If `sleep_gap` is true:
+   - Clear sticky desk presence (`soul.apply_sleep_clear`)
+   - If `last_dream_job_at` is unset **or** older than **20h**, schedule `maybe_schedule_dream_job(..., reason="ambient_sleep_gap", force=False)` (fire-and-forget)
+6. `run_dream_job` re-checks the 20h debounce; if still inside the window, returns `{"skipped": true, "reason": "debounce"}`.
+
+**Practical picture:** After ~8h overnight with no ambient calls, the first morning glance clears presence and usually schedules a dream (if none in the last 20h). A short gap under 4h does **not** count as a sleep gap. Quiet mode expiry uses the same 4h gap (or a 24h quiet cap) but is separate from dreaming.
+
+Source: `shared/vector-ai/soul/growth.py`, `routes/ambient.py`, `process_state.py`, `routes/soul.py`, `response_cleanup.py`, `soul/persist.py`, `wire-pod/chipper/pkg/wirepod/ttr/ambient.go`, `docs/plans/2026-07-29-soul-v2-persist-llm-view.md`.
+
+## How do I force the dreaming mechanism?
+
+Call the ops endpoint on vector-ai (default `http://127.0.0.1:8090`). Body `{"force":true}` bypasses the 20h debounce (and is the documented default for this endpoint).
+
+```bash
+export BASE=http://127.0.0.1:8090
+curl -s -X POST "$BASE/v1/soul/dream" \
+  -H 'Content-Type: application/json' \
+  -d '{"force":true}'
+```
+
+**Must send `Content-Type: application/json`.** Bare `curl -d '{"force":true}'` defaults to `application/x-www-form-urlencoded`, and FastAPI returns **422** (body validation) because it expects a JSON object matching `SoulDreamRequest`. Empty body / wrong media type → 422, not a dream-job error.
+
+**PowerShell:** `curl` is often an alias for `Invoke-WebRequest`, and quote escaping strips the `"` around JSON keys so the server sees `{force:true}` → `json_invalid` / “Expecting property name enclosed in double quotes”. Prefer:
+
+```powershell
+# Real curl binary + empty object (force defaults to true on the endpoint)
+curl.exe -s -X POST "http://127.0.0.1:8090/v1/soul/dream" `
+  -H "Content-Type: application/json" -d "{}"
+
+# Or native PowerShell (no curl quoting fights)
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8090/v1/soul/dream" `
+  -ContentType "application/json" `
+  -Body '{"force":true}'
+```
+
+That runs the dream+goals LLM job, mutates soul (`last_night_i_dreamed_about`, goals, `last_dream_job_at`), and saves. It is **costly**. Goals-only variant: `POST /v1/soul/reflect_goals` with the same `force` body.
+
+To set the dream string without an LLM job: `PATCH /v1/soul` with `{"last_night_i_dreamed_about":"..."}`.
+
+Source: `docs/ENDPOINTS.md` (`POST /v1/soul/dream`), `shared/vector-ai/routes/soul.py`, `shared/vector-ai/soul/growth.py`.
 
 ## How do I manually trigger ambient for testing / debug?
 
@@ -430,13 +495,23 @@ To **see** original commits without merging: `git fetch upstream && git log --on
 1. `morning_weather` listed in `BEHAVIORS_ENABLED` (e.g. `workday,morning_weather`)
 2. `MORNING_WEATHER_ENABLED=1` in **pod.conf**
 
-Work Day must actually arm that morning (`WORKING`). Vector then fires the built-in `intent_weather_extend` once between the morning window and lunch (default 12:30) when an **enrolled named face** is recent (default ≤90s). Not an LLM weather line.
+Work Day must actually be armed (`working` or `late_working`). Vector then fires the built-in `intent_weather_extend` once between the morning window and lunch (default 12:30) when an **enrolled named face** is recent (default ≤90s). Not an LLM weather line.
 
 Guide: [FSM-morning-weather.md](FSM-morning-weather.md).
 
+## Does morning weather fire when Work Day is `late_working`?
+
+**Yes.** Weather treats `working` and `late_working` the same: the day is armed. `GET /v1/behaviors/workday` with `mode: late_working`, `arm_source: late_yes`, and a `started_at` is enough for the workday gate.
+
+`workday not started` is the skip for modes that are **not** armed: `waiting_morning`, `no_show`, `late_check`, `paused`. `GET /v1/behaviors/morning_weather` always lists `"intent": "intent_weather_extend"` — that is the intent it *would* fire, not a proposal. Look at `reason` (and `workday_mode`).
+
+The clock window is still `MORNING_WEATHER_WINDOW_BEGIN`–`MORNING_WEATHER_LUNCH_END` (default 09:00–12:30). A late arm after lunch still needs the window open (or a later `LUNCH_END`). After the workday gate, enrolled face must also be within `MORNING_WEATHER_FACE_MAX_AGE_S` (default 90s). A `face_age_s` of ~222 with `face_max_age_s: 90` is `enrolled face too old`.
+
+Source: `shared/vector-ai/behaviors/morning_weather.py` (`_day_started` = `working` | `late_working`); `test_propose_late_working`. Guide: [FSM-morning-weather.md](FSM-morning-weather.md).
+
 ## Can morning weather wait for an enrolled `face_seen` and fire close to that event?
 
-**Yes.** Morning weather requires an **enrolled named face** (`face_id > 0`, not a stranger, Work Day primary when one is set) whose `face_ts` is within `MORNING_WEATHER_FACE_MAX_AGE_S` (default **90s** — not the 30-minute `FACE_CACHE_MAX_AGE_S`). Occupied desk, Work Day `WORKING`, morning–lunch window, daily lock, quiet / recent-voice / min-gap still apply.
+**Yes.** Morning weather requires an **enrolled named face** (`face_id > 0`, not a stranger — any enrolled person, not only the Work Day primary) whose `face_ts` is within `MORNING_WEATHER_FACE_MAX_AGE_S` (default **90s** — not the 30-minute `FACE_CACHE_MAX_AGE_S`). Occupied desk, Work Day armed (`working` or `late_working`), morning–lunch window, daily lock, quiet / recent-voice / min-gap still apply.
 
 Idle enrolled sighting comes from sparse / `need_identity` **ProbeFace**, not a continuous face stream and not a sensor loop that pings `face_seen` while a face is in view. First `[face] observed: id=… 'Cam' (enrolled)` is bounded by that glance (**≤2 min**); weather anim then follows in **seconds of that log line**, not of walking into view. Voice-start `ObserveFaceBriefly` still notifies; the arbiter `recent_voice` deny keeps weather off “hey Vector.”
 
@@ -454,11 +529,119 @@ Sources: `shared/vector-ai/behaviors/morning_weather.py`; `routes/face.py`; `wir
 | `POST /v1/behaviors/tick` | Chipper every ~60s | Occupancy ingest, **all** plugins, weather **keeps** dwell, arbiter | — Work Day still lives here |
 
 - Allowlist is **only** `morning_weather`. Occupancy policy and Work Day stay on the 60s tick.
-- Weather still needs `WORKING`. Restricted tick **cannot** arm the day; `WAITING_MORNING` → `intent ""`.
+- Weather still needs Work Day armed (`working` or `late_working`). Restricted tick **cannot** arm the day; `WAITING_MORNING` → `intent ""`.
 - Stranger `face_seen` (`face_id <= 0` or empty name) does not tick weather.
 - Arbiter deny does **not** consume the daily lock.
 - GETs (`/v1/behaviors/morning_weather`, `/v1/behaviors/state`) stay ops-only.
 
 Sources: `routes/face.py`; `behaviors/runtime.py` (`only_ids`); `wire-pod/.../ttr/sensor_reactions.go` (`notifyFaceSeen`); `behavior_tick.go` (`FireWeatherIntent`). Guide: [FSM-morning-weather.md](FSM-morning-weather.md) · [FSM-implementation.md](FSM-implementation.md) §3.2.
+
+## Did the speech arbiter delay morning weather and then mark it as already fired?
+
+**No.** The arbiter is allow/deny on the same tick, not a delay queue. `want intent_weather_extend — waiting on speech arbiter` is logged **before** `arbiter.allow`, when weather only *proposes*. Deny skips `on_speak_allowed` and does **not** set `last_fired_at`.
+
+If the next lines on that same second are `ALLOWED speech from morning_weather` and `POST /v1/behaviors/tick` 200, the arbiter **allowed** and returned `intent`. That is **not** the firmware weather anim. Chipper must then `FireWeatherIntent` (WebViz `:8888`). The daily lock is committed only when chipper POSTs `/v1/behaviors/morning_weather/fired` after inject (or a speak fallback). A silent miss can retry on the next tick.
+
+Older vector-ai committed on allow (`fired intent_weather_extend [day committed]`), so `already told weather today` a minute later meant the lock burned even if both robots stayed idle.
+
+On the **chipper** log at the same timestamp (lines are `YYYY-MM-DD HH:MM:SS [behavior-tick] …`), look for:
+
+| Line | Meaning |
+|------|---------|
+| `vector-ai tick … intent="intent_weather_extend"` | Chipper decoded the intent |
+| `FireWeatherIntent start esn=…` | Delivery started |
+| `weather WebViz inject ok esn=… ip=…` | WS write to that robot |
+| `weather WebViz inject failed …` | Dial/write to `:8888` failed; other robots still tried |
+| `speaking fallback` | All WebViz injects failed; KGSim speaks the conditions |
+| `weather day committed via /v1/behaviors/morning_weather/fired` | Daily lock burned **after** delivery attempt |
+| no `intent=` / no `FireWeatherIntent` | Chipper never handled `intent` — **rebuild/restart chipper**, not only vector-ai |
+
+`joke_idle` `cooldown after last joke (850s left)` is joke-idle’s own timer, not the weather arbiter.
+
+Sources: `behaviors/arbiter.py`; `behaviors/runtime.py`; `behaviors/morning_weather.py`; `routes/behaviors_http.py` (`POST /v1/behaviors/morning_weather/fired`); `wire-pod/.../ttr/behavior_tick.go` (`FireWeatherIntent`).
+
+## Why is morning weather stuck on `stranger or non-primary` when Cam is at the desk?
+
+**It was requiring the Work Day primary `face_id`.** Vector remints enrolled slots (workday primary Cam id=2, live enrolled Cam id=1). Weather now allows **any enrolled named face** (`face_id > 0`, not a stranger). Strangers still skip.
+
+After restart, a remaining skip is `face_age_s` vs `face_max_age_s` (e.g. 866s vs 300s → `enrolled face too old`). Occupancy can stay fresh while `face_ts` is not — look at Vector so ProbeFace refreshes the enrolled sighting.
+
+Source: `behaviors/morning_weather.py` (`_weather_enrolled`); `test_enrolled_non_primary_proposes`. Guide: [FSM-morning-weather.md](FSM-morning-weather.md).
+
+## Is speech-volume ducking (`VOLUME_DROP` / `VECTOR_VOLUME_DROP`) still working?
+
+**In source: yes, on current `main`.** It is not stranded on a side branch. This workspace does not run chipper, so runtime on a robot is not verified here.
+
+Idle sits `clamp(desired − DROP)` presets below the user’s speak level. Speech raises `master_volume` to desired; the restore loop ducks after the hold expires. Default **DROP=2**. Presets: `0` Mute … `5` High. **`VOLUME_DROP=0` / `VECTOR_VOLUME_DROP=0` disables the whole path** (no raise and no duck).
+
+**Config:** `pod.conf` `VOLUME_DROP` or `VECTOR_VOLUME_DROP` (`VECTOR_*` wins). Supervisor injects `VECTOR_VOLUME_DROP` into the chipper child. Chipper reads it at process start (`speech_volume.go`). Restart chipper after changing it.
+
+**Call sites still wired on `wire-pod` `main`:**
+
+| Call | Where |
+|------|--------|
+| `SpeechVolumeBump` | wake/STT start (`preqs/intent_graph.go`) |
+| `SpeechVolumeHoldFor` | `SayText(esn)`, ambient/greeting/behavior-tick `ambientReact`, LLM `DoSayText` |
+| `SpeechVolumeEnterSession` | blackjack + `newVoiceRequest` |
+| `SpeechVolumeSetDesired` | web UI volume + absolute volume intents |
+
+**Branches (searched):**
+
+| Repo / branch | Ducking in tree? |
+|---------------|------------------|
+| VectorIntelligence `main`, `gRPC-channels-fix`, `growBotHarness`, `origin/main` | Yes |
+| wire-pod `main`, `vector-intels-commit`, `origin/main` | Yes — **identical** `speech_volume.go` |
+| wire-pod `WebUI`, `web_ui_ai_gen`, `upstream/main` | **No** — stock / UI branches never got this file |
+
+If it “used to work” and then stopped, the usual cause is **not** that `main` lost `VOLUME_DROP`. It is running a chipper **without** this tree: `WebUI` / stock `upstream/main`, or companion mode (`EXTERNAL_CHIPPER=1`) against packaged Wire-Pod that was never built from monorepo `wire-pod/`. Full install still runs the archived patch `add-speech-volume-bump.py`; the live source of truth is in-tree Go.
+
+**Gaps that can make ducking feel broken even when the code is present:**
+
+- `SpeechVolumeEnterTurn` and `SpeechVolumeLeaveSession` exist but have **no callers**. LLM replies only extend volume via per-chunk `HoldFor`.
+- `SpeechVolumeBump` at STT holds only `VECTOR_VOLUME_HANG_MS` (default 2.5s). A slow LLM lets restore duck **before** the first TTS chunk, then `DoSayText` raises again (chirp / quiet start).
+- `KGSim()` (LLM error lines, weather-API errors, plugin text) and `/api-sdk/say_text` call `Conn.SayText` **without** a hold — those lines stay at idle.
+- First boot with no `wirepod.SpeechVolume` jdoc seeds desired from live `master_volume`. If the robot was already ducked, desired is too low until you set volume once in the UI.
+
+Sources: `wire-pod/chipper/pkg/wirepod/ttr/speech_volume.go`; `VectorIntelligence/shared/supervisor.py`; `shared/patches/add-speech-volume-bump.py`. Tests: `speech_volume_test.go`, `shared/test_supervisor_pod_conf.py`.
+
+## Can a system prompt and a parser inside VectorIntelligence trigger wire-pod intents?
+
+**The prompt can choose the intent. vector-ai cannot play it.** Chipper is the process with the robot connection. `/v1/chat/completions` receives an OpenAI-style message list and returns text. That request has no robot IP and no ESN.
+
+What has to happen for an intent to run:
+
+1. **One voice-stream reply, already used.** On the intent-graph path, chipper `IntentPass`es `intent_greeting_hello` as soon as the first sentence of the LLM reply arrives (`StreamingKGSim` in `kgsim.go`). That closes the stream. A later token from vector-ai cannot be sent on it. `IntentPass` is how spoken "what's the weather" reaches firmware.
+2. **Then chipper holds `BehaviorControl` at `OVERRIDE_BEHAVIORS` for the whole spoken reply.** A cloud intent injected during that lease does not play. Morning weather refuses to take control for this reason.
+3. **Chipper only executes commands it already parses** (`{{playAnimationWI}}`, `{{getImage}}`, `{{eyeColor}}`, memory, quiet mode, `{{newVoiceRequest}}` in `kgsim_cmds.go`). An `{{intent||...}}` token parsed only inside vector-ai is stripped or spoken. Chipper drops unknown commands. `BuiltinBehaviorIntent` maps just `dance` and `lookAtUser`, and it uses `AppIntent`.
+4. **`AppIntent` is silent for cloud-only intents.** Weather is the proven case: the SDK call succeeds and the robot does nothing. Delivery that works without a voice stream is WebViz `ws://<robot-ip>:8888/socket` → `SetCloudIntentPendingFromString` (`InjectCloudIntentWebViz`). That helper is generic. The weather-only part is the name check in `behavior_tick.go` and `weatherParser` filling `condition`, `temperature`, location, units, and `local_datetime`.
+5. **A bare name is enough for dance, sleep, charger, explore, come, fistbump. It is not enough for weather, eye color, volume, timer, photo, or username.** Those parameters are built in chipper from the transcript, robot jdocs, and the weather API. A prompt that invents a temperature shows that number on the weather card.
+
+A parser in vector-ai is the right place to *decide*. Playing it means the reply tells chipper the intent name (and only slots the model actually knows, such as a color), chipper fills robot-side parameters, skips the `OVERRIDE` speak lease, and injects with the existing WebViz helper. Opening that socket from Python races the speech lease and has no weather/jdoc context.
+
+Sources: `wire-pod/.../ttr/kgsim.go` (`IntentPass` of `intent_greeting_hello`, then `WithControl`); `kgsim_cmds.go` (`BuiltinBehaviorIntent`, `tryBuiltinBehavior`); `webviz_intent.go`; `behavior_tick.go` (`FireWeatherIntent`); `robotsession/control.go` (default priority `OVERRIDE_BEHAVIORS`).
+
+## How does morning weather open a connection after the voice stream is gone?
+
+**It dials a different port.** The voice stream is the robot calling chipper. Weather is chipper calling the robot.
+
+`FireWeatherIntent` (`behavior_tick.go`) builds the weather parameter map, then `InjectCloudIntentWebViz` (`webviz_intent.go`) opens a new WebSocket to `ws://<robot-ip>:8888/socket`. Port 8888 is the robot's WebViz server. It is up whenever Vector is on the network. Chipper subscribes to the `intents` module and writes one message: `intentType: "cloud"` plus a CloudMic JSON string (`intent_weather_extend` and the stringified `condition` / `temperature` / location / units / `local_datetime`). The engine runs `SetCloudIntentPendingFromString` and plays the weather behavior. The socket is closed after that write.
+
+The behavior tick does not take `BehaviorControl`. An `OVERRIDE_BEHAVIORS` lease would block that firmware behavior, which is why this path leaves control alone.
+
+The same dial works for any other cloud intent. The chat path never calls it: on a voice reply chipper is inside `WithControl` at `OVERRIDE_BEHAVIORS` for the spoken line, and a WebViz inject during that lease is delivered and then does not play.
+
+## Can VectorIntelligence dial `ws://<robot-ip>:8888/socket` itself?
+
+**Yes.** WebViz does not check that the client is chipper. A Python websocket from vector-ai, sending the same subscribe plus `intentType: "cloud"` body, is the same inject `FireWeatherIntent` performs.
+
+vector-ai does not have what chipper uses to make that inject useful:
+
+| Chipper already has | vector-ai receives today |
+|---|---|
+| Robot LAN IP in `BotInfo.Robots[].IPAddress` | Tick POST is `occupied`, `on_charger`, `voice_recent`, and an optional face. Chat completions is messages only. No IP, no ESN. |
+| `weatherParser` plus the robot jdoc location and units | An intent name. Firmware weather needs the parameter string (`condition`, `temperature`, location, units, `local_datetime`). |
+| A tick that skips `recentlyConversed()` and never takes `BehaviorControl` | A chat reply where chipper takes `OVERRIDE_BEHAVIORS` as soon as the first sentence arrives |
+
+From a behavior tick, vector-ai can dial `:8888` once it is given the robot IP and, for weather, the parameter string. The tick response then stays `speak: ""` and `intent: ""`, so chipper does not speak a second line or call `FireWeatherIntent` again. From inside `/v1/chat/completions`, chipper still grabs override and sends `intent_greeting_hello` when the reply starts, and that lease blocks the firmware behavior.
 
 

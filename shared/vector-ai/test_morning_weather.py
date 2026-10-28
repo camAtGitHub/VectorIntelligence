@@ -99,6 +99,19 @@ def _arm_working(store: ContinuityStore, date: str, now: float) -> None:
     )
 
 
+def _arm_late_working(store: ContinuityStore, date: str, now: float) -> None:
+    store.save_workday(
+        WorkdayRecord(
+            date=date,
+            mode=WorkdayMode.LATE_WORKING,
+            primary_face_id=1,
+            primary_face_name="Cam",
+            started_at=now,
+            arm_source="late_yes",
+        )
+    )
+
+
 def _ctx(
     behavior: MorningWeatherBehavior,
     now: float,
@@ -211,21 +224,50 @@ def test_skip_when_workday_not_working() -> None:
         check("reason", r.debug.get("reason") == REASON_NOT_WORKING)
 
 
-def test_skip_late_working() -> None:
+def test_propose_late_working() -> None:
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "w.db")
         now = datetime(2026, 8, 29, 10, 0, tzinfo=ZoneInfo("UTC")).timestamp()
-        store.save_workday(
-            WorkdayRecord(
-                date="2026-08-29",
-                mode=WorkdayMode.LATE_WORKING,
-                arm_source="late_yes",
-                started_at=now,
-            )
-        )
+        _arm_late_working(store, "2026-08-29", now)
         b = MorningWeatherBehavior(_wx_cfg(), store)
         r = b.tick(_ctx(b, now, hour=10, minute=0, occupied=True))
-        check("late working skipped", r.debug.get("reason") == REASON_NOT_WORKING)
+        check("late working proposes", r.intent == WEATHER_INTENT)
+        check("propose", r.debug.get("reason") == REASON_PROPOSE)
+        snap = b.status(
+            now,
+            session_started_at=now - 300,
+            occupied=True,
+            face=_CAM_FACE,
+            face_ts=now,
+            identity_fresh=True,
+        )
+        check("status ready", snap["reason"] == REASON_READY)
+        check("mode late_working", snap["workday_mode"] == WorkdayMode.LATE_WORKING.value)
+
+
+def test_skip_unarmed_modes() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        now = datetime(2026, 8, 29, 10, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        b = MorningWeatherBehavior(_wx_cfg(), store)
+        for mode in (
+            WorkdayMode.WAITING_MORNING,
+            WorkdayMode.NO_SHOW,
+            WorkdayMode.LATE_CHECK,
+            WorkdayMode.PAUSED,
+        ):
+            store.save_workday(
+                WorkdayRecord(
+                    date="2026-08-29",
+                    mode=mode,
+                    primary_face_id=1,
+                    primary_face_name="Cam",
+                    started_at=now,
+                )
+            )
+            r = b.tick(_ctx(b, now, hour=10, minute=0, occupied=True))
+            check(f"{mode.value} no intent", r.intent == "")
+            check(f"{mode.value} not started", r.debug.get("reason") == REASON_NOT_WORKING)
 
 
 def test_skip_outside_window() -> None:
@@ -321,7 +363,7 @@ def test_skip_stranger() -> None:
         )
 
 
-def test_skip_wrong_primary() -> None:
+def test_enrolled_non_primary_proposes() -> None:
     with tempfile.TemporaryDirectory() as td:
         store = ContinuityStore(Path(td) / "w.db")
         now = datetime(2026, 8, 29, 10, 0, tzinfo=ZoneInfo("UTC")).timestamp()
@@ -338,13 +380,54 @@ def test_skip_wrong_primary() -> None:
                 identity_fresh=True,
             )
         )
-        check("no intent", r.intent == "")
-        check("non-primary", r.debug.get("reason") == REASON_STRANGER)
+        check("any enrolled proposes", r.intent == WEATHER_INTENT)
+        check("propose", r.debug.get("reason") == REASON_PROPOSE)
         check("no need_identity", r.need_identity is False)
         check(
-            "daily untouched",
+            "ungated until apply",
             store.weather_load_daily("2026-08-29")["last_fired_at"] == 0.0,
         )
+
+
+def test_same_primary_name_reminted_face_id_proposes() -> None:
+    """Vector can remint enrolled IDs; Cam id=1 vs workday primary id=2 is still Cam."""
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        now = datetime(2026, 8, 29, 10, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+        store.save_workday(
+            WorkdayRecord(
+                date="2026-08-29",
+                mode=WorkdayMode.WORKING,
+                primary_face_id=2,
+                primary_face_name="Cam",
+                started_at=now - 600,
+                arm_source="morning",
+            )
+        )
+        b = MorningWeatherBehavior(_wx_cfg(), store)
+        r = b.tick(
+            _ctx(
+                b,
+                now,
+                hour=10,
+                minute=0,
+                occupied=True,
+                face=FaceIdentity(1, "Cam", False),
+                identity_fresh=True,
+            )
+        )
+        check("same name proposes", r.intent == WEATHER_INTENT)
+        check("propose", r.debug.get("reason") == REASON_PROPOSE)
+        snap = b.status(
+            now,
+            session_started_at=now - 300,
+            occupied=True,
+            face=FaceIdentity(1, "Cam", False),
+            face_ts=now,
+            identity_fresh=True,
+        )
+        check("enrolled primary by name", snap["enrolled_primary"] is True)
+        check("status ready", snap["reason"] == REASON_READY)
 
 
 def test_skip_face_too_old() -> None:
@@ -401,8 +484,8 @@ def test_skip_dwell_kw_bypasses_dwell() -> None:
         )
         _apply(r)
         check(
-            "committed after allow",
-            store.weather_load_daily("2026-08-29")["last_fired_at"] == now,
+            "allow does not commit",
+            store.weather_load_daily("2026-08-29")["last_fired_at"] == 0.0,
         )
 
 
@@ -428,9 +511,11 @@ def test_propose_and_speech_gated_commit() -> None:
         check("no need_identity", r.need_identity is False)
         check("ungated daily", store.weather_load_daily("2026-08-29")["last_fired_at"] == 0.0)
         _apply(r)
-        d = store.weather_load_daily("2026-08-29")
-        check("committed", d["last_fired_at"] == now)
-
+        check(
+            "allow does not burn the day",
+            store.weather_load_daily("2026-08-29")["last_fired_at"] == 0.0,
+        )
+        store.weather_commit_fired("2026-08-29", now)
         r2 = b.tick(
             _ctx(
                 b,
@@ -470,9 +555,25 @@ def test_runtime_allow_returns_intent() -> None:
         check("runtime speak empty", result.speak == "")
         check("spoke_from", (result.debug or {}).get("spoke_from") == MORNING_WEATHER_ID)
         check(
-            "committed via runtime",
-            store.weather_load_daily("2026-08-29")["last_fired_at"] == now,
+            "runtime allow does not commit",
+            store.weather_load_daily("2026-08-29")["last_fired_at"] == 0.0,
         )
+
+
+def test_fired_http_commits(monkeypatch) -> None:
+    import deps
+    from routes.behaviors_http import morning_weather_fired
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ContinuityStore(Path(td) / "w.db")
+        rcfg = load_runtime_config({"BEHAVIORS_ENABLED": "morning_weather"})
+        rt = BehaviorRuntime(rcfg, _wd_cfg(), store, weather_cfg=_wx_cfg())
+        monkeypatch.setattr(deps, "BEHAVIOR_RUNTIME", rt, raising=False)
+        body = asyncio.run(morning_weather_fired())
+        check("ok", body["ok"] is True)
+        date = body["date"]
+        check("date set", bool(date))
+        check("committed", store.weather_load_daily(date)["last_fired_at"] > 0)
 
 
 def test_runtime_arbiter_deny_does_not_commit() -> None:
@@ -755,8 +856,8 @@ def test_face_seen_enrolled_working_returns_weather_intent(monkeypatch) -> None:
         check("weather intent", body["intent"] == WEATHER_INTENT)
         check("no speak key", "speak" not in body)
         check(
-            "daily committed",
-            store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == _PHASE2_NOW,
+            "face_seen allow does not commit",
+            store.weather_load_daily(_PHASE2_DATE)["last_fired_at"] == 0.0,
         )
         check("last_source face_seen", rt.presence.last_source == "face_seen")
         check("no ingest_tick_payload", ingest_calls["n"] == 0)
@@ -765,6 +866,7 @@ def test_face_seen_enrolled_working_returns_weather_intent(monkeypatch) -> None:
         rec = store.load_workday(_PHASE2_DATE)
         check("still working", rec.mode == WorkdayMode.WORKING)
 
+        store.weather_commit_fired(_PHASE2_DATE, _PHASE2_NOW)
         again = rt.tick(_PHASE2_NOW)
         check("full tick no second weather", again.intent == "")
         check(

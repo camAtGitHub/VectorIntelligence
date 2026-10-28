@@ -1,6 +1,6 @@
 # Morning weather — owner’s guide
 
-Optional **desk aliveness** for Vector: once Work Day has actually started for the morning, and it is still morning through lunch, he fires the **built-in weather intent** (`intent_weather_extend`) — the same firmware animation/voice as you saying “what’s the weather.” Once per calendar morning. Not an LLM one-liner.
+Optional **desk aliveness** for Vector: once Work Day has actually started (`working` or `late_working`), and the local clock is still in the fire window (morning through lunch by default), he fires the **built-in weather intent** (`intent_weather_extend`) — the same firmware animation/voice as you saying “what’s the weather.” Once per calendar day. Not an LLM one-liner.
 
 **Default: off.** Safe for holidays and guests.
 
@@ -12,12 +12,12 @@ Related: [FSM-workday-companion.md](./FSM-workday-companion.md) · [FSM-implemen
 
 ## What it does
 
-1. Work Day is **WORKING** (morning start armed — not `no_show` / `late_working` / paused). This path **cannot** arm the day.
+1. Work Day is **armed** (`working` or `late_working` — not `no_show` / `late_check` / `waiting_morning` / paused). This path **cannot** arm the day.
 2. Local clock is from the morning window begin through **lunch** (default 09:00–12:30).
 3. Someone is at the occupied desk.
-4. An **enrolled named face** is recent: `face_id > 0`, not a stranger, matches the Work Day primary when one is set, and `face_ts` is within `MORNING_WEATHER_FACE_MAX_AGE_S` (default **90s** — not the 30-minute face cache).
+4. An **enrolled named face** is recent: `face_id > 0`, not a stranger (any enrolled person — not limited to the Work Day primary), and `face_ts` is within `MORNING_WEATHER_FACE_MAX_AGE_S` (default **90s** — not the 30-minute face cache).
 5. He has not already told weather today.
-6. Chipper then runs `weatherParser` and injects `intent_weather_extend` via **WebViz** cloud intent (`ws://<robot-ip>:8888/socket`) — `FireWeatherIntent`, not AppIntent. Spoken “what’s the weather” still uses the voice IntentPass stream.
+6. Chipper then runs `weatherParser` and injects `intent_weather_extend` via **WebViz** cloud intent (`ws://<robot-ip>:8888/socket`) — `FireWeatherIntent`, not AppIntent. Vector-ai **proposing** the intent does not lock the day; chipper POSTs `/v1/behaviors/morning_weather/fired` after inject (or a speak fallback if WebViz fails every robot). Spoken “what’s the weather” still uses the voice IntentPass stream.
 
 He does **not** invent a weather sentence in vector-ai. If the weather API is not configured, chipper says the same error line as a failed user weather request.
 
@@ -45,7 +45,7 @@ MORNING_WEATHER_ENABLED=1
 WORKDAY_TZ=Australia/Sydney
 ```
 
-Weather will never fire if Work Day did not arm that morning.
+Weather will never fire if Work Day is not armed (`working` or `late_working`). A late-yes afternoon start is enough; `waiting_morning` / `no_show` / `late_check` / paused are not.
 
 | Knob | Default | Purpose |
 |------|---------|---------|
